@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+
+.gradle/
+build/
+android/.gradle/
+android/**/build/
+local.properties
+xcuserdata/
+*.xcuserstate
+
+.DS_Store

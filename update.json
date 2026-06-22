@@ -1,0 +1,18 @@
+{
+  "android": {
+    "versionCode": 76,
+    "versionName": "0.6.65",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.65.apk",
+    "apkUrls": [
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.65.apk"
+    ],
+    "sha256": "91bf2a5cd0a212b5a6e59529e9ddb1d6cb66585e520f3b9eb07124103222e3e6",
+    "minSupportedVersionCode": 66,
+    "forceUpdate": true,
+    "notes": "Settings icon polish: quiet hours, theme, mask sensitive text, and diagnostics icons are now centered and sized consistently."
+  },
+  "python": {
+    "version": "0.3.2",
+    "packageUrl": "https://pypi.org/project/haoleme/"
+  }
+}

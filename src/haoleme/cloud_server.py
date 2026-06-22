@@ -1,0 +1,2235 @@
+from __future__ import annotations
+
+import argparse
+import shutil
+import hashlib
+import json
+import os
+import secrets
+import sqlite3
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
+
+from . import __version__
+
+
+DEFAULT_MIN_ANDROID_VERSION_CODE = 22
+PAIR_TTL_SECONDS = 300
+PAIR_START_RATE_LIMIT = 20
+APP_REGISTER_RATE_LIMIT = 20
+PAIR_CONFIRM_RATE_LIMIT = 30
+PAIR_CONFIRM_RATE_WINDOW_SECONDS = 60
+READ_RATE_LIMIT = 120
+WRITE_RATE_LIMIT = 180
+READ_RATE_WINDOW_SECONDS = 60
+AUTH_FAILURE_RATE_LIMIT = 120
+MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
+MAX_OUTPUT_TAIL = 1_000_000
+DEVICE_ONLINE_WINDOW_SECONDS = 90
+STALE_RUNNING_GRACE_SECONDS = 90
+STALE_RUNNING_SECONDS = DEVICE_ONLINE_WINDOW_SECONDS + STALE_RUNNING_GRACE_SECONDS
+DOWNLOADS_DIR_NAME = "downloads"
+DEFAULT_BACKUP_KEEP = 14
+DEFAULT_MONITOR_MIN_FREE_BYTES = 512 * 1024 * 1024
+DEFAULT_MONITOR_MAX_BACKUP_AGE_HOURS = 30
+SPACE_JOIN_CODE_TTL_SECONDS = 300
+
+
+@dataclass(frozen=True)
+class AuthContext:
+    account_key: str
+    token_hash: str
+    scope: str
+    device_id: str = ""
+    device_name: str = ""
+
+
+class RequestBodyTooLarge(ValueError):
+    pass
+
+
+class HaolemeCloudServer(ThreadingHTTPServer):
+    def __init__(self, server_address: tuple[str, int], db_path: Path, min_android_version_code: int) -> None:
+        super().__init__(server_address, HaolemeCloudHandler)
+        self.db_path = db_path
+        self.min_android_version_code = min_android_version_code
+        self.pair_confirm_attempts: dict[str, list[float]] = {}
+        self.pair_confirm_attempts_lock = threading.Lock()
+        self.pair_start_attempts: dict[str, list[float]] = {}
+        self.pair_start_attempts_lock = threading.Lock()
+        self.app_register_attempts: dict[str, list[float]] = {}
+        self.app_register_attempts_lock = threading.Lock()
+        self.auth_failure_attempts: dict[str, list[float]] = {}
+        self.auth_failure_attempts_lock = threading.Lock()
+        self.read_attempts: dict[str, list[float]] = {}
+        self.read_attempts_lock = threading.Lock()
+        self.write_attempts: dict[str, list[float]] = {}
+        self.write_attempts_lock = threading.Lock()
+        init_db(db_path)
+
+
+class HaolemeCloudHandler(BaseHTTPRequestHandler):
+    server: HaolemeCloudServer
+
+    def setup(self) -> None:
+        self.request_started_at = time.time()
+        super().setup()
+
+    def handle_one_request(self) -> None:
+        try:
+            super().handle_one_request()
+        except RequestBodyTooLarge:
+            self.send_json({"error": "request body too large", "code": "request_body_too_large"}, status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_cors_headers()
+        self.end_headers()
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/health":
+            auth = self.authenticated_context(allow_legacy=False)
+            self.send_json(health_payload(self.server.db_path, self.server.min_android_version_code, detailed=auth is not None))
+            return
+        if parsed.path.startswith("/downloads/"):
+            self.send_download(parsed.path.removeprefix("/downloads/"))
+            return
+
+        auth = self.authenticated_context()
+        if parsed.path.startswith("/api/") and not auth:
+            self.send_unauthorized()
+            return
+        if parsed.path.startswith("/api/") and auth.scope != "admin":
+            self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+            return
+        if parsed.path.startswith("/api/") and not self.allow_read_attempt(auth):
+            self.send_json(
+                {"error": "too many read requests, slow down", "code": "read_rate_limited"},
+                status=HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            return
+
+        if parsed.path == "/api/runs":
+            query = parse_qs(parsed.query)
+            limit = parse_limit(query.get("limit", ["100"])[0])
+            device_id = first_query_value(query, "deviceId")
+            status_filter = first_query_value(query, "status")
+            project_filter = first_query_value(query, "project")
+            self.send_json({"runs": list_runs(self.server.db_path, auth.account_key, limit, device_id, status_filter, project_filter)})
+            return
+
+        if parsed.path == "/api/devices":
+            self.send_json({"devices": list_devices(self.server.db_path, auth.account_key)})
+            return
+
+        if parsed.path == "/api/events":
+            query = parse_qs(parsed.query)
+            since = query.get("since", [None])[0]
+            limit = parse_limit(query.get("limit", ["100"])[0])
+            events = list_events(self.server.db_path, auth.account_key, since, limit)
+            latest = max((run.get("updatedAt", "") for run in events), default=since or "")
+            self.send_json({"events": events, "latest": latest})
+            return
+
+        if parsed.path.startswith("/api/runs/"):
+            run_id = parsed.path.removeprefix("/api/runs/")
+            run = get_run(self.server.db_path, auth.account_key, run_id)
+            if run is None:
+                self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"run": run})
+            return
+
+        self.send_json({"error": "not found", "code": "not_found"}, status=HTTPStatus.NOT_FOUND)
+
+    def do_HEAD(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/downloads/"):
+            self.send_download(parsed.path.removeprefix("/downloads/"), head_only=True)
+            return
+        if parsed.path == "/health":
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", "0")
+            self.send_cors_headers()
+            self.end_headers()
+            return
+        self.send_response(HTTPStatus.NOT_FOUND)
+        self.send_header("Content-Length", "0")
+        self.send_cors_headers()
+        self.end_headers()
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/pair/start":
+            if not self.allow_pair_start_attempt():
+                self.send_json(
+                    {"error": "too many pair requests, try again later", "code": "pair_start_rate_limited"},
+                    status=HTTPStatus.TOO_MANY_REQUESTS,
+                )
+                return
+            self.start_pairing()
+            return
+        if parsed.path == "/api/pair/status":
+            self.pairing_status()
+            return
+        if parsed.path == "/api/pair/cancel":
+            self.cancel_pairing()
+            return
+        if parsed.path == "/api/apps/register":
+            if not self.allow_app_register_attempt():
+                self.send_json(
+                    {"error": "too many app registration requests, try again later", "code": "app_register_rate_limited"},
+                    status=HTTPStatus.TOO_MANY_REQUESTS,
+                )
+                return
+            self.register_app()
+            return
+        if parsed.path == "/api/space/join":
+            self.join_sync_space()
+            return
+
+        auth = self.authenticated_context()
+        if parsed.path.startswith("/api/") and not auth:
+            self.send_unauthorized()
+            return
+
+        if parsed.path == "/api/space/share":
+            if auth.scope != "admin":
+                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            self.share_sync_space(auth)
+            return
+        if parsed.path == "/api/pair/info":
+            if auth.scope != "admin":
+                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            self.pairing_info()
+            return
+        if parsed.path == "/api/pair/confirm":
+            if auth.scope != "admin":
+                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            self.confirm_pairing()
+            return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/rename"):
+            if auth.scope != "admin":
+                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            device_id = unquote(parsed.path.removeprefix("/api/devices/").removesuffix("/rename")).strip("/")
+            self.rename_device(auth, device_id)
+            return
+        if parsed.path == "/api/devices/heartbeat":
+            if not self.allow_write_attempt(auth):
+                self.send_json({"error": "too many write requests, slow down", "code": "write_rate_limited"}, status=HTTPStatus.TOO_MANY_REQUESTS)
+                return
+            self.device_heartbeat(auth)
+            return
+        if parsed.path == "/api/runs":
+            if not self.allow_write_attempt(auth):
+                self.send_json({"error": "too many write requests, slow down", "code": "write_rate_limited"}, status=HTTPStatus.TOO_MANY_REQUESTS)
+                return
+            payload = self.read_json()
+            run = payload.get("run") if isinstance(payload.get("run"), dict) else payload
+            if not isinstance(run, dict) or not run.get("id"):
+                self.send_json({"error": "missing run", "code": "missing_run"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            stored = normalize_run(run)
+            if server_requires_e2ee() and not is_e2ee_run(stored):
+                self.send_json(
+                    {"error": "end-to-end encryption required", "code": "e2ee_required"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            if auth.scope == "write":
+                stored["deviceId"] = auth.device_id
+                if not stored.get("deviceName"):
+                    stored["deviceName"] = auth.device_name
+            upsert_run(self.server.db_path, auth.account_key, stored)
+            if stored.get("deviceId"):
+                upsert_device(
+                    self.server.db_path,
+                    auth.account_key,
+                    stored.get("deviceId", ""),
+                    stored.get("deviceName", "") or "好了么 CLI",
+                    stored.get("updatedAt", "") or iso_now(),
+                )
+            touch_token(self.server.db_path, auth.token_hash, stored.get("updatedAt", "") or iso_now())
+            self.send_json({"ok": True})
+            return
+
+        self.send_json({"error": "not found", "code": "not_found"}, status=HTTPStatus.NOT_FOUND)
+
+    def rename_device(self, auth: AuthContext, device_id: str) -> None:
+        if not device_id:
+            self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        payload = self.read_json()
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            self.send_json({"error": "missing device name", "code": "missing_device_name"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        device = rename_device(self.server.db_path, auth.account_key, device_id, name[:80])
+        if device is None:
+            self.send_json({"error": "device not found", "code": "device_not_found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"ok": True, "device": device})
+
+    def device_heartbeat(self, auth: AuthContext) -> None:
+        payload = self.read_json()
+        if auth.scope == "write":
+            device_id = auth.device_id
+            device_name = auth.device_name
+        else:
+            device_id = str(payload.get("deviceId") or "").strip()
+            device_name = str(payload.get("deviceName") or "").strip()
+        if not device_id:
+            self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        seen_at = iso_now()
+        device = record_device_heartbeat(
+            self.server.db_path,
+            auth.account_key,
+            device_id,
+            device_name or "好了么 CLI",
+            seen_at,
+        )
+        touch_token(self.server.db_path, auth.token_hash, seen_at)
+        self.send_json({"ok": True, "device": device, "onlineWindowSeconds": DEVICE_ONLINE_WINDOW_SECONDS})
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        auth = self.authenticated_context()
+        if parsed.path.startswith("/api/") and not auth:
+            self.send_unauthorized()
+            return
+        if parsed.path.startswith("/api/") and auth.scope != "admin":
+            self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+            return
+
+        if parsed.path.startswith("/api/runs/"):
+            run_id = parsed.path.removeprefix("/api/runs/")
+            deleted = delete_run(self.server.db_path, auth.account_key, run_id)
+            if not deleted:
+                self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"deleted": True})
+            return
+
+        if parsed.path == "/api/runs":
+            deleted = delete_all_runs(self.server.db_path, auth.account_key)
+            self.send_json({"deleted": deleted})
+            return
+
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/runs"):
+            device_id = unquote(parsed.path.removeprefix("/api/devices/").removesuffix("/runs")).strip("/")
+            if not device_id:
+                self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if get_device(self.server.db_path, auth.account_key, device_id) is None:
+                self.send_json({"error": "device not found", "code": "device_not_found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            deleted = delete_runs_for_device(self.server.db_path, auth.account_key, device_id)
+            self.send_json({"deleted": deleted})
+            return
+
+        if parsed.path.startswith("/api/devices/"):
+            device_id = unquote(parsed.path.removeprefix("/api/devices/")).strip("/")
+            revoked = revoke_device(self.server.db_path, auth.account_key, device_id)
+            if not revoked:
+                self.send_json({"error": "device not found", "code": "device_not_found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"revoked": True})
+            return
+
+        if parsed.path == "/api/account":
+            deleted = delete_account(self.server.db_path, auth.account_key)
+            self.send_json({"deleted": deleted})
+            return
+
+        self.send_json({"error": "not found", "code": "not_found"}, status=HTTPStatus.NOT_FOUND)
+
+    def register_app(self) -> None:
+        token = self.bearer_token()
+        if not token or len(token) < 32:
+            self.send_unauthorized()
+            return
+        payload = self.read_json()
+        platform = str(payload.get("platform") or "android")[:24].lower()
+        client_id = str(payload.get("clientId") or "").strip()
+        if not client_id.startswith("app_"):
+            client_id = "app_" + secrets.token_urlsafe(12).replace("-", "_")
+        client_name = str(payload.get("clientName") or "Haoleme App")[:80]
+        account_key = token_hash(token)
+        registered_at = iso_now()
+        store_app_token(
+            self.server.db_path,
+            account_key,
+            client_id,
+            client_name,
+            platform,
+            token,
+            registered_at,
+        )
+        self.send_json({
+            "ok": True,
+            "account": "default",
+            "clientId": client_id,
+            "clientName": client_name,
+            "registeredAt": registered_at,
+            "spaceId": sync_space_id(account_key),
+        })
+
+    def start_pairing(self) -> None:
+        cleanup_expired_pairs(self.server.db_path)
+        cleanup_expired_space_join_codes(self.server.db_path)
+        payload = self.read_json()
+        device_name = str(payload.get("deviceName") or "好了么 CLI")[:80]
+        requested_device_id = str(payload.get("deviceId") or "").strip()
+        public_key = str(payload.get("publicKey") or "").strip()
+        device_id = requested_device_id if is_valid_device_id(requested_device_id) else "dev_" + secrets.token_urlsafe(12).replace("-", "_")
+        now = time.time()
+        for _attempt in range(10):
+            code = f"{secrets.randbelow(1000000):06d}"
+            pair_token = secrets.token_urlsafe(32)
+            if create_pair(self.server.db_path, code, pair_token, device_id, device_name, now, public_key):
+                self.send_json({
+                    "code": code,
+                    "pairToken": pair_token,
+                    "expiresIn": PAIR_TTL_SECONDS,
+                    "deviceId": device_id,
+                    "deviceName": device_name,
+                    "serverTime": iso_now(),
+                })
+                return
+        self.send_json(
+            {"error": "could not allocate pair code", "code": "pair_code_unavailable"},
+            status=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+
+    def pairing_status(self) -> None:
+        cleanup_expired_pairs(self.server.db_path)
+        cleanup_expired_space_join_codes(self.server.db_path)
+        payload = self.read_json()
+        code = normalize_pair_code(payload.get("code"))
+        pair_token = str(payload.get("pairToken") or "")
+        pair = get_pair(self.server.db_path, code)
+        if not code or not pair_token or pair is None or not pair_token_matches(pair["pair_token"], pair_token):
+            self.send_json(
+                {"error": "pair code expired or not found", "code": "pair_code_expired"},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        if pair["status"] == "cancelled":
+            self.send_json(
+                {"error": "pair code cancelled", "code": "pair_code_cancelled"},
+                status=HTTPStatus.GONE,
+            )
+            return
+        if pair["status"] != "confirmed":
+            self.send_json({
+                "status": "pending",
+                "deviceId": pair["device_id"] or "",
+                "deviceName": pair["device_name"] or "",
+                "expiresAt": iso_from_epoch(pair["expires_at"]),
+            })
+            return
+        response = {
+            "status": "confirmed",
+            "account": pair["account"] or "default",
+            "token": pair["token"],
+            "deviceId": pair["device_id"] or "",
+            "deviceName": pair["device_name"] or "",
+            "pairedAt": pair["confirmed_at"] or "",
+            "encryptedAccountKey": pair["encrypted_account_key"] or "",
+            "encryptedAccountKeyAlgorithm": pair["encrypted_account_key_algorithm"] or "",
+            "e2eeVersion": pair["e2ee_version"] or 0,
+        }
+        delete_pair(self.server.db_path, code)
+        self.send_json(response)
+
+    def pairing_info(self) -> None:
+        cleanup_expired_pairs(self.server.db_path)
+        cleanup_expired_space_join_codes(self.server.db_path)
+        payload = self.read_json()
+        code = normalize_pair_code(payload.get("code"))
+        pair = get_pair(self.server.db_path, code)
+        if pair is None:
+            self.send_json(
+                {"error": "pair code expired or not found", "code": "pair_code_expired"},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        if pair["status"] == "cancelled":
+            self.send_json({"error": "pair code cancelled", "code": "pair_code_cancelled"}, status=HTTPStatus.GONE)
+            return
+        if pair["status"] != "pending":
+            self.send_json({"error": "pair code already used", "code": "pair_code_used"}, status=HTTPStatus.CONFLICT)
+            return
+        self.send_json({
+            "status": "pending",
+            "deviceId": pair["device_id"] or "",
+            "deviceName": pair["device_name"] or "",
+            "publicKey": pair["public_key"] or "",
+            "expiresAt": iso_from_epoch(pair["expires_at"]),
+            "serverTime": iso_now(),
+        })
+
+    def cancel_pairing(self) -> None:
+        cleanup_expired_pairs(self.server.db_path)
+        cleanup_expired_space_join_codes(self.server.db_path)
+        payload = self.read_json()
+        code = normalize_pair_code(payload.get("code"))
+        pair_token = str(payload.get("pairToken") or "")
+        if not code or not pair_token:
+            self.send_json({"error": "missing pair credentials", "code": "missing_pair_credentials"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        cancelled = cancel_pair(self.server.db_path, code, pair_token, iso_now())
+        self.send_json({"cancelled": cancelled})
+
+    def confirm_pairing(self) -> None:
+        cleanup_expired_pairs(self.server.db_path)
+        cleanup_expired_space_join_codes(self.server.db_path)
+        if not self.allow_pair_confirm_attempt():
+            self.send_json(
+                {"error": "too many pair attempts, try again later", "code": "pair_rate_limited"},
+                status=HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            return
+        payload = self.read_json()
+        app_version_code = int_or_none(payload.get("appVersionCode"))
+        platform = str(payload.get("platform") or "android")[:24].lower()
+        if is_app_version_too_old(platform, app_version_code, self.server.min_android_version_code):
+            self.send_json(
+                {
+                    "error": "app version too old",
+                    "code": "app_version_too_old",
+                    "minAndroidVersionCode": self.server.min_android_version_code,
+                },
+                status=HTTPStatus.UPGRADE_REQUIRED,
+            )
+            return
+
+        auth = self.authenticated_context()
+        if not auth or auth.scope != "admin":
+            self.send_unauthorized()
+            return
+
+        code = normalize_pair_code(payload.get("code"))
+        if not code:
+            self.send_json({"error": "missing code", "code": "missing_pair_code"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        pair = get_pair(self.server.db_path, code)
+        if pair is None:
+            self.send_json(
+                {"error": "pair code expired or not found", "code": "pair_code_expired"},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        if pair["status"] == "cancelled":
+            self.send_json({"error": "pair code cancelled", "code": "pair_code_cancelled"}, status=HTTPStatus.GONE)
+            return
+        if pair["status"] != "pending":
+            self.send_json({"error": "pair code already used", "code": "pair_code_used"}, status=HTTPStatus.CONFLICT)
+            return
+
+        confirmed_at = iso_now()
+        device_token = secrets.token_urlsafe(32)
+        encrypted_account_key = str(payload.get("encryptedAccountKey") or "").strip()
+        encrypted_account_key_algorithm = str(payload.get("encryptedAccountKeyAlgorithm") or "")[:40]
+        e2ee_version = int_or_none(payload.get("e2eeVersion"))
+        confirmed_device_id = pair["device_id"] or ""
+        confirmed_device_name = pair["device_name"] or "好了么 CLI"
+        reuse_device = get_device(self.server.db_path, auth.account_key, confirmed_device_id)
+        if reuse_device is not None:
+            confirmed_device_id = reuse_device["id"]
+            confirmed_device_name = reuse_device["name"] or confirmed_device_name
+        confirm_pair(
+            self.server.db_path,
+            code,
+            device_token,
+            confirmed_device_id,
+            confirmed_device_name,
+            app_version_code,
+            str(payload.get("appVersionName") or "")[:40],
+            platform,
+            confirmed_at,
+            encrypted_account_key,
+            encrypted_account_key_algorithm,
+            e2ee_version,
+        )
+        upsert_device(
+            self.server.db_path,
+            auth.account_key,
+            confirmed_device_id,
+            confirmed_device_name,
+            confirmed_at,
+        )
+        store_device_token(
+            self.server.db_path,
+            auth.account_key,
+            confirmed_device_id,
+            confirmed_device_name,
+            device_token,
+            confirmed_at,
+        )
+        self.send_json({
+            "ok": True,
+            "account": "default",
+            "deviceId": confirmed_device_id,
+            "deviceName": confirmed_device_name,
+            "pairedAt": confirmed_at,
+            "serverTime": iso_now(),
+        })
+
+    def share_sync_space(self, auth: AuthContext) -> None:
+        cleanup_expired_space_join_codes(self.server.db_path)
+        payload = self.read_json()
+        encryption_key = str(payload.get("encryptionKey") or "").strip()
+        client_name = str(payload.get("clientName") or "")[:80]
+        now = time.time()
+        for _attempt in range(10):
+            code = f"{secrets.randbelow(1000000):06d}"
+            share_token = secrets.token_urlsafe(24)
+            if create_space_join_code(
+                self.server.db_path,
+                code,
+                share_token,
+                auth.account_key,
+                auth.token_hash,
+                now,
+                encryption_key,
+                client_name,
+            ):
+                self.send_json({
+                    "code": code,
+                    "shareToken": share_token,
+                    "expiresIn": SPACE_JOIN_CODE_TTL_SECONDS,
+                    "expiresAt": iso_from_epoch(now + SPACE_JOIN_CODE_TTL_SECONDS),
+                    "spaceId": sync_space_id(auth.account_key),
+                    "serverTime": iso_now(),
+                })
+                return
+        self.send_json(
+            {"error": "could not allocate sync space code", "code": "space_code_unavailable"},
+            status=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+
+    def join_sync_space(self) -> None:
+        cleanup_expired_space_join_codes(self.server.db_path)
+        if not self.allow_pair_confirm_attempt():
+            self.send_json(
+                {"error": "too many join attempts, try again later", "code": "space_rate_limited"},
+                status=HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            return
+        payload = self.read_json()
+        app_version_code = int_or_none(payload.get("appVersionCode"))
+        platform = str(payload.get("platform") or "android")[:24].lower()
+        if is_app_version_too_old(platform, app_version_code, self.server.min_android_version_code):
+            self.send_json(
+                {
+                    "error": "app version too old",
+                    "code": "app_version_too_old",
+                    "minAndroidVersionCode": self.server.min_android_version_code,
+                },
+                status=HTTPStatus.UPGRADE_REQUIRED,
+            )
+            return
+
+        code = normalize_pair_code(payload.get("code"))
+        share_token = str(payload.get("shareToken") or "").strip()
+        join = get_space_join_code(self.server.db_path, code)
+        if join is None:
+            self.send_json(
+                {"error": "sync space code expired or not found", "code": "space_code_expired"},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        if join["status"] != "pending":
+            self.send_json({"error": "sync space code already used", "code": "space_code_used"}, status=HTTPStatus.CONFLICT)
+            return
+        if share_token and not share_token_matches(join["share_token"], share_token):
+            self.send_json({"error": "invalid sync space QR token", "code": "space_share_token_invalid"}, status=HTTPStatus.FORBIDDEN)
+            return
+
+        client_token = secrets.token_urlsafe(32)
+        client_id = "app_" + secrets.token_urlsafe(12).replace("-", "_")
+        client_name = str(payload.get("clientName") or "Haoleme App")[:80]
+        joined_at = iso_now()
+        if not consume_space_join_code(self.server.db_path, code, joined_at):
+            self.send_json({"error": "sync space code already used", "code": "space_code_used"}, status=HTTPStatus.CONFLICT)
+            return
+        store_app_token(
+            self.server.db_path,
+            join["account_key"],
+            client_id,
+            client_name,
+            platform,
+            client_token,
+            joined_at,
+        )
+        self.send_json({
+            "ok": True,
+            "account": "sync-space",
+            "token": client_token,
+            "clientId": client_id,
+            "clientName": client_name,
+            "spaceId": sync_space_id(join["account_key"]),
+            "joinedAt": joined_at,
+            "serverTime": iso_now(),
+            "encryptionKey": join["encryption_key"] or "",
+        })
+
+    def allow_pair_confirm_attempt(self) -> bool:
+        now = time.time()
+        remote = self.client_address[0] if self.client_address else "unknown"
+        cutoff = now - PAIR_CONFIRM_RATE_WINDOW_SECONDS
+        with self.server.pair_confirm_attempts_lock:
+            attempts = [value for value in self.server.pair_confirm_attempts.get(remote, []) if value >= cutoff]
+            if len(attempts) >= PAIR_CONFIRM_RATE_LIMIT:
+                self.server.pair_confirm_attempts[remote] = attempts
+                return False
+            attempts.append(now)
+            self.server.pair_confirm_attempts[remote] = attempts
+            return True
+
+    def allow_pair_start_attempt(self) -> bool:
+        remote = self.client_address[0] if self.client_address else "unknown"
+        return allow_rate(
+            self.server.pair_start_attempts,
+            self.server.pair_start_attempts_lock,
+            remote,
+            PAIR_START_RATE_LIMIT,
+            PAIR_CONFIRM_RATE_WINDOW_SECONDS,
+        )
+
+    def allow_app_register_attempt(self) -> bool:
+        remote = self.client_address[0] if self.client_address else "unknown"
+        return allow_rate(
+            self.server.app_register_attempts,
+            self.server.app_register_attempts_lock,
+            remote,
+            APP_REGISTER_RATE_LIMIT,
+            PAIR_CONFIRM_RATE_WINDOW_SECONDS,
+        )
+
+    def allow_read_attempt(self, auth: AuthContext) -> bool:
+        remote = self.client_address[0] if self.client_address else "unknown"
+        key = f"{auth.token_hash}:{remote}"
+        return allow_rate(self.server.read_attempts, self.server.read_attempts_lock, key, READ_RATE_LIMIT, READ_RATE_WINDOW_SECONDS)
+
+    def allow_write_attempt(self, auth: AuthContext) -> bool:
+        remote = self.client_address[0] if self.client_address else "unknown"
+        key = f"{auth.token_hash}:{remote}"
+        return allow_rate(self.server.write_attempts, self.server.write_attempts_lock, key, WRITE_RATE_LIMIT, READ_RATE_WINDOW_SECONDS)
+
+    def send_unauthorized(self) -> None:
+        remote = self.client_address[0] if self.client_address else "unknown"
+        allowed = allow_rate(
+            self.server.auth_failure_attempts,
+            self.server.auth_failure_attempts_lock,
+            remote,
+            AUTH_FAILURE_RATE_LIMIT,
+            READ_RATE_WINDOW_SECONDS,
+        )
+        if not allowed:
+            self.send_json({"error": "too many authentication failures", "code": "auth_rate_limited"}, status=HTTPStatus.TOO_MANY_REQUESTS)
+            return
+        self.send_json({"error": "unauthorized", "code": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+
+    def authenticated_context(self, allow_legacy: bool = True) -> AuthContext | None:
+        token = self.bearer_token()
+        if not token or len(token) < 16:
+            return None
+        token_hash_value = token_hash(token)
+        app_token = find_app_token(self.server.db_path, token_hash_value)
+        if app_token is not None:
+            if app_token["revoked_at"]:
+                return None
+            return AuthContext(
+                account_key=app_token["account_key"],
+                token_hash=token_hash_value,
+                scope="admin",
+                device_id=app_token["client_id"],
+                device_name=app_token["client_name"],
+            )
+        stored = find_device_token(self.server.db_path, token_hash_value)
+        if stored is not None:
+            if stored["revoked_at"]:
+                return None
+            return AuthContext(
+                account_key=stored["account_key"],
+                token_hash=token_hash_value,
+                scope=stored["scope"],
+                device_id=stored["device_id"],
+                device_name=stored["device_name"],
+            )
+        if allow_legacy and legacy_admin_token_allowed(self.server.db_path, token_hash_value):
+            store_app_token(
+                self.server.db_path,
+                token_hash_value,
+                "app_legacy_" + token_hash_value[:16],
+                "Migrated App",
+                "legacy",
+                token,
+                iso_now(),
+            )
+            return AuthContext(account_key=token_hash_value, token_hash=token_hash_value, scope="admin")
+        return None
+
+    def bearer_token(self) -> str:
+        auth = self.headers.get("Authorization", "")
+        return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+
+    def read_json(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length") or "0")
+        if length <= 0:
+            return {}
+        if length > MAX_JSON_BODY_BYTES:
+            raise RequestBodyTooLarge("request body too large")
+        raw = self.rfile.read(length).decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw)
+            return payload if isinstance(payload, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    def send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_cors_headers()
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
+    def send_download(self, raw_name: str, head_only: bool = False) -> None:
+        name = unquote(raw_name).strip("/")
+        if not name or "/" in name or "\\" in name or name.startswith("."):
+            self.send_json({"error": "download not found", "code": "download_not_found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        path = self.server.db_path.parent / DOWNLOADS_DIR_NAME / name
+        if not path.is_file():
+            self.send_json({"error": "download not found", "code": "download_not_found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        file_size = path.stat().st_size
+        range_header = self.headers.get("Range", "").strip()
+        start = 0
+        end = file_size - 1
+        partial = False
+        if range_header.startswith("bytes="):
+            requested = range_header.removeprefix("bytes=").split(",", 1)[0].strip()
+            if "-" in requested:
+                raw_start, raw_end = requested.split("-", 1)
+                try:
+                    if raw_start:
+                        start = int(raw_start)
+                        end = int(raw_end) if raw_end else file_size - 1
+                    elif raw_end:
+                        suffix_length = int(raw_end)
+                        start = max(file_size - suffix_length, 0)
+                        end = file_size - 1
+                    if start < 0 or end < start or start >= file_size:
+                        self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                        self.send_header("Content-Range", f"bytes */{file_size}")
+                        self.send_header("Accept-Ranges", "bytes")
+                        self.end_headers()
+                        return
+                    end = min(end, file_size - 1)
+                    partial = True
+                except ValueError:
+                    start = 0
+                    end = file_size - 1
+                    partial = False
+        content_type = "application/vnd.android.package-archive" if name.endswith(".apk") else "application/octet-stream"
+        content_length = end - start + 1
+        self.send_response(HTTPStatus.PARTIAL_CONTENT if partial else HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(content_length))
+        self.send_header("Accept-Ranges", "bytes")
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_cors_headers()
+        self.end_headers()
+        if head_only:
+            return
+        with path.open("rb") as file:
+            file.seek(start)
+            remaining = content_length
+            while True:
+                if remaining <= 0:
+                    break
+                chunk = file.read(min(1024 * 256, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+
+    def send_cors_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Haoleme-Account")
+
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        path = getattr(self, "path", "")
+        if "?" in path:
+            path = path.split("?", 1)[0]
+        cloud_log({
+            "ts": iso_now(),
+            "event": "request",
+            "remote": self.client_address[0] if self.client_address else "",
+            "method": self.command,
+            "path": path,
+            "status": int(code) if str(code).isdigit() else code,
+            "size": int(size) if str(size).isdigit() else size,
+            "durationMs": int((time.time() - getattr(self, "request_started_at", time.time())) * 1000),
+        })
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        cloud_log({
+            "ts": iso_now(),
+            "event": "server",
+            "remote": self.client_address[0] if self.client_address else "",
+            "message": fmt % args,
+        })
+
+
+def init_db(db_path: Path) -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with connect(db_path) as db:
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pairs (
+                code TEXT PRIMARY KEY,
+                pair_token TEXT NOT NULL,
+                device_id TEXT NOT NULL DEFAULT '',
+                device_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                account TEXT,
+                token TEXT,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                confirmed_at TEXT,
+                app_version_code INTEGER,
+                app_version_name TEXT,
+                platform TEXT,
+                public_key TEXT NOT NULL DEFAULT '',
+                encrypted_account_key TEXT NOT NULL DEFAULT '',
+                encrypted_account_key_algorithm TEXT NOT NULL DEFAULT '',
+                e2ee_version INTEGER
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runs (
+                account_key TEXT NOT NULL,
+                id TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT '',
+                device_id TEXT NOT NULL DEFAULT '',
+                device_name TEXT NOT NULL DEFAULT '',
+                project TEXT NOT NULL DEFAULT '',
+                payload TEXT NOT NULL,
+                PRIMARY KEY (account_key, id)
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS devices (
+                account_key TEXT NOT NULL,
+                id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                manual_name INTEGER NOT NULL DEFAULT 0,
+                revoked_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (account_key, id)
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS device_tokens (
+                token_hash TEXT PRIMARY KEY,
+                account_key TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                device_name TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT NOT NULL,
+                revoked_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_tokens (
+                token_hash TEXT PRIMARY KEY,
+                account_key TEXT NOT NULL,
+                client_id TEXT NOT NULL,
+                client_name TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT NOT NULL,
+                revoked_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS space_join_codes (
+                code TEXT PRIMARY KEY,
+                share_token TEXT NOT NULL,
+                account_key TEXT NOT NULL,
+                created_by_token_hash TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                confirmed_at TEXT NOT NULL DEFAULT '',
+                encryption_key TEXT NOT NULL DEFAULT '',
+                client_name TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        ensure_column(db, "pairs", "device_id", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "pairs", "public_key", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "pairs", "encrypted_account_key", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "pairs", "encrypted_account_key_algorithm", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "pairs", "e2ee_version", "INTEGER")
+        ensure_column(db, "runs", "status", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "runs", "device_id", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "runs", "device_name", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "runs", "project", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "devices", "manual_name", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(db, "devices", "revoked_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "app_tokens", "revoked_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "space_join_codes", "encryption_key", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "space_join_codes", "client_name", "TEXT NOT NULL DEFAULT ''")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_runs_account_updated ON runs(account_key, updated_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_runs_account_status_updated ON runs(account_key, status, updated_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_runs_account_device_updated ON runs(account_key, device_id, updated_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_runs_account_project_updated ON runs(account_key, project, updated_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_devices_account_seen ON devices(account_key, revoked_at, last_seen_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_device_tokens_device ON device_tokens(account_key, device_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_app_tokens_account ON app_tokens(account_key, revoked_at, last_used_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_space_join_codes_account ON space_join_codes(account_key, status, expires_at)")
+
+
+def connect(db_path: Path) -> sqlite3.Connection:
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    return db
+
+
+def ensure_column(db: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+    columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
+def health_payload(db_path: Path, min_android_version_code: int, detailed: bool = True) -> dict[str, Any]:
+    db_ok = False
+    db_error = ""
+    stats: dict[str, int] = {}
+    try:
+        init_db(db_path)
+        with connect(db_path) as db:
+            db.execute("PRAGMA quick_check").fetchone()
+            for table in ("runs", "devices", "device_tokens", "app_tokens", "pairs", "space_join_codes"):
+                row = db.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                stats[table] = int(row["count"]) if row is not None else 0
+        db_ok = True
+    except Exception as exc:
+        db_error = str(exc)
+
+    data_dir = db_path.parent
+    disk_ok = False
+    disk_error = ""
+    free_bytes = 0
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(data_dir)
+        free_bytes = int(usage.free)
+        disk_ok = free_bytes > 64 * 1024 * 1024
+    except Exception as exc:
+        disk_error = str(exc)
+
+    ok = db_ok and disk_ok
+    payload: dict[str, Any] = {
+        "ok": ok,
+        "service": "haoleme-cloud",
+        "version": __version__,
+        "time": iso_now(),
+        "pairing": {
+            "minAndroidVersionCode": min_android_version_code,
+            "pairCodeDigits": 6,
+            "expiresIn": PAIR_TTL_SECONDS,
+        },
+        "security": {
+            "e2eeRequired": server_requires_e2ee(),
+            "legacyAdminTokens": server_allows_legacy_admin_tokens(),
+            "legacyExistingAccounts": server_allows_existing_legacy_accounts(),
+        },
+    }
+    if detailed:
+        payload["storage"] = {
+            "engine": "sqlite",
+            "ok": db_ok,
+            "path": str(db_path),
+            "error": db_error,
+            "stats": stats,
+        }
+        payload["disk"] = {
+            "ok": disk_ok,
+            "freeBytes": free_bytes,
+            "error": disk_error,
+        }
+    return payload
+
+
+def backup_database(db_path: Path, backup_dir: Path, keep: int = DEFAULT_BACKUP_KEEP) -> Path:
+    init_db(db_path)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = backup_dir / f"haoleme-cloud-{stamp}.db"
+    with connect(db_path) as source:
+        with sqlite3.connect(backup_path) as target:
+            source.backup(target)
+    backup_path.chmod(0o600)
+    verified = verify_sqlite_database(backup_path)
+    if not verified["ok"]:
+        backup_path.unlink(missing_ok=True)
+        raise RuntimeError(f"backup verification failed: {verified.get('error') or verified.get('quickCheck')}")
+    write_backup_checksum(backup_path)
+    prune_backups(backup_dir, keep)
+    return backup_path
+
+
+def prune_backups(backup_dir: Path, keep: int) -> None:
+    if keep <= 0:
+        return
+    backups = sorted(backup_dir.glob("haoleme-cloud-*.db"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for old in backups[keep:]:
+        old.with_suffix(old.suffix + ".sha256").unlink(missing_ok=True)
+        old.unlink(missing_ok=True)
+
+
+def verify_sqlite_database(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"ok": False, "path": str(path), "error": "file not found", "sizeBytes": 0}
+    size = path.stat().st_size
+    try:
+        with sqlite3.connect(path) as db:
+            row = db.execute("PRAGMA quick_check").fetchone()
+            quick_check = str(row[0] if row else "")
+        return {
+            "ok": quick_check.lower() == "ok",
+            "path": str(path),
+            "sizeBytes": size,
+            "quickCheck": quick_check,
+            "error": "" if quick_check.lower() == "ok" else quick_check,
+        }
+    except Exception as exc:
+        return {"ok": False, "path": str(path), "sizeBytes": size, "quickCheck": "", "error": str(exc)}
+
+
+def write_backup_checksum(path: Path) -> Path:
+    checksum = sha256_file(path)
+    checksum_path = path.with_suffix(path.suffix + ".sha256")
+    checksum_path.write_text(f"{checksum}  {path.name}\n", encoding="utf-8")
+    checksum_path.chmod(0o600)
+    return checksum_path
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        while True:
+            chunk = file.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def latest_backup_status(backup_dir: Path, max_age_hours: int = DEFAULT_MONITOR_MAX_BACKUP_AGE_HOURS) -> dict[str, Any]:
+    backups = sorted(backup_dir.glob("haoleme-cloud-*.db"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not backups:
+        return {"ok": False, "path": "", "ageSeconds": None, "checksumOk": False, "error": "no backups found"}
+    latest = backups[0]
+    age_seconds = max(0, int(time.time() - latest.stat().st_mtime))
+    verify = verify_sqlite_database(latest)
+    checksum_path = latest.with_suffix(latest.suffix + ".sha256")
+    checksum_ok = False
+    checksum_error = ""
+    if checksum_path.is_file():
+        expected = checksum_path.read_text(encoding="utf-8", errors="replace").split()[0].strip()
+        checksum_ok = bool(expected) and secrets.compare_digest(expected, sha256_file(latest))
+        if not checksum_ok:
+            checksum_error = "checksum mismatch"
+    else:
+        checksum_error = "checksum file missing"
+    age_ok = age_seconds <= max_age_hours * 3600
+    ok = bool(verify["ok"] and checksum_ok and age_ok)
+    error = ""
+    if not verify["ok"]:
+        error = str(verify.get("error") or verify.get("quickCheck") or "backup verification failed")
+    elif not checksum_ok:
+        error = checksum_error
+    elif not age_ok:
+        error = f"latest backup is older than {max_age_hours}h"
+    return {
+        "ok": ok,
+        "path": str(latest),
+        "ageSeconds": age_seconds,
+        "maxAgeHours": max_age_hours,
+        "sizeBytes": latest.stat().st_size,
+        "quickCheck": verify.get("quickCheck", ""),
+        "checksumPath": str(checksum_path),
+        "checksumOk": checksum_ok,
+        "error": error,
+    }
+
+
+def monitor_payload(
+    db_path: Path,
+    backup_dir: Path,
+    min_android_version_code: int,
+    min_free_bytes: int = DEFAULT_MONITOR_MIN_FREE_BYTES,
+    max_backup_age_hours: int = DEFAULT_MONITOR_MAX_BACKUP_AGE_HOURS,
+) -> dict[str, Any]:
+    health = health_payload(db_path, min_android_version_code, detailed=True)
+    disk = health.get("disk") if isinstance(health.get("disk"), dict) else {}
+    free_bytes = int(disk.get("freeBytes") or 0)
+    disk["minFreeBytes"] = min_free_bytes
+    disk["ok"] = bool(disk.get("ok")) and free_bytes >= min_free_bytes
+    if free_bytes and free_bytes < min_free_bytes:
+        disk["error"] = f"free disk below {min_free_bytes} bytes"
+    audit = permission_audit(db_path)
+    backup = latest_backup_status(backup_dir, max_backup_age_hours)
+    checks = {
+        "health": bool(health.get("ok")) and bool(disk.get("ok")),
+        "permissions": bool(audit.get("ok")),
+        "backup": bool(backup.get("ok")),
+    }
+    ok = all(checks.values())
+    return {
+        "ok": ok,
+        "service": "haoleme-cloud",
+        "version": __version__,
+        "time": iso_now(),
+        "checks": checks,
+        "health": health,
+        "permissions": audit,
+        "backup": backup,
+    }
+
+
+def send_monitor_alert(payload: dict[str, Any], webhook_url: str, timeout: float = 5.0) -> dict[str, Any]:
+    webhook_url = webhook_url.strip()
+    if not webhook_url:
+        return {"sent": False, "error": "no webhook configured"}
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        webhook_url,
+        data=body,
+        headers={"Content-Type": "application/json; charset=utf-8", "User-Agent": f"haoleme-cloud/{__version__}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return {"sent": 200 <= response.status < 300, "status": response.status, "error": ""}
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {"sent": False, "error": str(exc)}
+
+
+def permission_audit(db_path: Path) -> dict[str, Any]:
+    init_db(db_path)
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: str = "") -> None:
+        checks.append({"name": name, "ok": ok, "detail": detail})
+
+    with connect(db_path) as db:
+        add("runs primary key is account scoped", primary_key_columns(db, "runs") == ["account_key", "id"])
+        add("devices primary key is account scoped", primary_key_columns(db, "devices") == ["account_key", "id"])
+        add("device tokens are hashed", "token_hash" in table_columns(db, "device_tokens"))
+        add("app tokens are hashed", "token_hash" in table_columns(db, "app_tokens"))
+        row = db.execute("SELECT COUNT(*) AS count FROM device_tokens WHERE scope != 'write'").fetchone()
+        non_write = int(row["count"]) if row is not None else 0
+        add("device tokens are write scoped", non_write == 0, f"{non_write} non-write token(s)")
+        row = db.execute("SELECT COUNT(*) AS count FROM app_tokens WHERE account_key = '' OR token_hash = ''").fetchone()
+        bad_app_tokens = int(row["count"]) if row is not None else 0
+        add("app tokens have account and token hash", bad_app_tokens == 0, f"{bad_app_tokens} bad app token row(s)")
+        row = db.execute("SELECT COUNT(*) AS count FROM devices WHERE account_key = '' OR id = ''").fetchone()
+        bad_devices = int(row["count"]) if row is not None else 0
+        add("devices have account and id", bad_devices == 0, f"{bad_devices} bad device row(s)")
+        row = db.execute("SELECT COUNT(*) AS count FROM runs WHERE account_key = '' OR id = ''").fetchone()
+        bad_runs = int(row["count"]) if row is not None else 0
+        add("runs have account and id", bad_runs == 0, f"{bad_runs} bad run row(s)")
+
+    ok = all(check["ok"] for check in checks)
+    return {"ok": ok, "checks": checks}
+
+
+def table_columns(db: sqlite3.Connection, table: str) -> list[str]:
+    return [row["name"] for row in db.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
+def primary_key_columns(db: sqlite3.Connection, table: str) -> list[str]:
+    rows = db.execute(f"PRAGMA table_info({table})").fetchall()
+    return [row["name"] for row in sorted((row for row in rows if row["pk"]), key=lambda row: row["pk"])]
+
+
+def cloud_log(payload: dict[str, Any]) -> None:
+    line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    log_path = (os.environ.get("HAOLEME_CLOUD_LOG") or os.environ.get("REMINDER_CLOUD_LOG", "")).strip()
+    if log_path:
+        path = Path(log_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(line + "\n")
+        return
+    print(line, file=sys.stderr, flush=True)
+
+
+def create_pair(
+    db_path: Path,
+    code: str,
+    pair_token: str,
+    device_id: str,
+    device_name: str,
+    now: float,
+    public_key: str = "",
+) -> bool:
+    try:
+        with connect(db_path) as db:
+            db.execute(
+                """
+                INSERT INTO pairs(code, pair_token, device_id, device_name, status, account, created_at, expires_at, public_key)
+                VALUES (?, ?, ?, ?, 'pending', 'default', ?, ?, ?)
+                """,
+                (code, token_hash(pair_token), device_id, device_name, now, now + PAIR_TTL_SECONDS, public_key[:4096]),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_pair(db_path: Path, code: str) -> sqlite3.Row | None:
+    if not code:
+        return None
+    with connect(db_path) as db:
+        return db.execute("SELECT * FROM pairs WHERE code = ?", (code,)).fetchone()
+
+
+def delete_pair(db_path: Path, code: str) -> None:
+    if not code:
+        return
+    with connect(db_path) as db:
+        db.execute("DELETE FROM pairs WHERE code = ?", (code,))
+
+
+def confirm_pair(
+    db_path: Path,
+    code: str,
+    token: str,
+    device_id: str,
+    device_name: str,
+    app_version_code: int | None,
+    app_version_name: str,
+    platform: str,
+    confirmed_at: str,
+    encrypted_account_key: str = "",
+    encrypted_account_key_algorithm: str = "",
+    e2ee_version: int | None = None,
+) -> None:
+    with connect(db_path) as db:
+        db.execute(
+            """
+            UPDATE pairs
+            SET status = 'confirmed',
+                account = 'default',
+                token = ?,
+                device_id = ?,
+                device_name = ?,
+                confirmed_at = ?,
+                app_version_code = ?,
+                app_version_name = ?,
+                platform = ?,
+                encrypted_account_key = ?,
+                encrypted_account_key_algorithm = ?,
+                e2ee_version = ?
+            WHERE code = ?
+            """,
+            (
+                token,
+                device_id,
+                device_name,
+                confirmed_at,
+                app_version_code,
+                app_version_name,
+                platform,
+                encrypted_account_key[:4096],
+                encrypted_account_key_algorithm[:40],
+                e2ee_version,
+                code,
+            ),
+        )
+
+
+def cancel_pair(db_path: Path, code: str, pair_token: str, cancelled_at: str) -> bool:
+    if not code or not pair_token:
+        return False
+    with connect(db_path) as db:
+        pair = db.execute("SELECT pair_token FROM pairs WHERE code = ? AND status = 'pending'", (code,)).fetchone()
+        if pair is None or not pair_token_matches(pair["pair_token"], pair_token):
+            return False
+        cursor = db.execute(
+            """
+            UPDATE pairs
+            SET status = 'cancelled',
+                confirmed_at = ?
+            WHERE code = ? AND status = 'pending'
+            """,
+            (cancelled_at, code),
+        )
+        return cursor.rowcount > 0
+
+
+def cleanup_expired_pairs(db_path: Path) -> None:
+    with connect(db_path) as db:
+        db.execute("DELETE FROM pairs WHERE expires_at < ?", (time.time(),))
+
+
+def create_space_join_code(
+    db_path: Path,
+    code: str,
+    share_token: str,
+    account_key: str,
+    created_by_token_hash: str,
+    now: float,
+    encryption_key: str = "",
+    client_name: str = "",
+) -> bool:
+    if not code or not share_token or not account_key:
+        return False
+    try:
+        with connect(db_path) as db:
+            db.execute(
+                """
+                INSERT INTO space_join_codes(
+                    code, share_token, account_key, created_by_token_hash, status,
+                    created_at, expires_at, encryption_key, client_name
+                )
+                VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                """,
+                (
+                    code,
+                    token_hash(share_token),
+                    account_key,
+                    created_by_token_hash,
+                    now,
+                    now + SPACE_JOIN_CODE_TTL_SECONDS,
+                    encryption_key[:256],
+                    client_name,
+                ),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_space_join_code(db_path: Path, code: str) -> sqlite3.Row | None:
+    if not code:
+        return None
+    with connect(db_path) as db:
+        return db.execute("SELECT * FROM space_join_codes WHERE code = ?", (code,)).fetchone()
+
+
+def consume_space_join_code(db_path: Path, code: str, confirmed_at: str) -> bool:
+    if not code:
+        return False
+    with connect(db_path) as db:
+        cursor = db.execute(
+            """
+            UPDATE space_join_codes
+            SET status = 'confirmed',
+                confirmed_at = ?
+            WHERE code = ? AND status = 'pending'
+            """,
+            (confirmed_at, code),
+        )
+        return cursor.rowcount > 0
+
+
+def cleanup_expired_space_join_codes(db_path: Path) -> None:
+    with connect(db_path) as db:
+        db.execute("DELETE FROM space_join_codes WHERE expires_at < ?", (time.time(),))
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def pair_token_matches(stored: str, candidate: str) -> bool:
+    if not stored or not candidate:
+        return False
+    hashed = token_hash(candidate)
+    return secrets.compare_digest(stored, hashed) or secrets.compare_digest(stored, candidate)
+
+
+def share_token_matches(stored: str, candidate: str) -> bool:
+    return pair_token_matches(stored, candidate)
+
+
+def sync_space_id(account_key: str) -> str:
+    digest = hashlib.sha256(("haoleme-space:" + account_key).encode("utf-8")).hexdigest()
+    return "sp_" + digest[:16]
+
+
+def store_device_token(
+    db_path: Path,
+    account_key: str,
+    device_id: str,
+    device_name: str,
+    token: str,
+    created_at: str,
+) -> None:
+    if not account_key or not device_id or not token:
+        return
+    with connect(db_path) as db:
+        db.execute(
+            """
+            INSERT INTO device_tokens(token_hash, account_key, device_id, device_name, scope, created_at, last_used_at, revoked_at)
+            VALUES (?, ?, ?, ?, 'write', ?, ?, '')
+            ON CONFLICT(token_hash) DO UPDATE SET
+                account_key = excluded.account_key,
+                device_id = excluded.device_id,
+                device_name = excluded.device_name,
+                scope = excluded.scope,
+                last_used_at = excluded.last_used_at,
+                revoked_at = ''
+            """,
+            (token_hash(token), account_key, device_id, device_name, created_at, created_at),
+        )
+
+
+def store_app_token(
+    db_path: Path,
+    account_key: str,
+    client_id: str,
+    client_name: str,
+    platform: str,
+    token: str,
+    created_at: str,
+) -> None:
+    if not account_key or not client_id or not token:
+        return
+    with connect(db_path) as db:
+        db.execute(
+            """
+            INSERT INTO app_tokens(token_hash, account_key, client_id, client_name, platform, created_at, last_used_at, revoked_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, '')
+            ON CONFLICT(token_hash) DO UPDATE SET
+                account_key = excluded.account_key,
+                client_id = excluded.client_id,
+                client_name = excluded.client_name,
+                platform = excluded.platform,
+                last_used_at = excluded.last_used_at,
+                revoked_at = ''
+            """,
+            (token_hash(token), account_key, client_id, client_name, platform[:24], created_at, created_at),
+        )
+
+
+def find_app_token(db_path: Path, token_hash_value: str) -> sqlite3.Row | None:
+    if not token_hash_value:
+        return None
+    with connect(db_path) as db:
+        return db.execute(
+            """
+            SELECT token_hash, account_key, client_id, client_name, platform, revoked_at
+            FROM app_tokens
+            WHERE token_hash = ?
+            """,
+            (token_hash_value,),
+        ).fetchone()
+
+
+def account_has_cloud_data(db_path: Path, account_key: str) -> bool:
+    if not account_key:
+        return False
+    with connect(db_path) as db:
+        for table in ("runs", "devices", "device_tokens", "space_join_codes"):
+            row = db.execute(f"SELECT 1 FROM {table} WHERE account_key = ? LIMIT 1", (account_key,)).fetchone()
+            if row is not None:
+                return True
+    return False
+
+
+def authenticate_device_token(db_path: Path, token_hash_value: str) -> sqlite3.Row | None:
+    row = find_device_token(db_path, token_hash_value)
+    if row is None or row["revoked_at"]:
+        return None
+    return row
+
+
+def find_device_token(db_path: Path, token_hash_value: str) -> sqlite3.Row | None:
+    if not token_hash_value:
+        return None
+    with connect(db_path) as db:
+        return db.execute(
+            """
+            SELECT token_hash, account_key, device_id, device_name, scope, revoked_at
+            FROM device_tokens
+            WHERE token_hash = ?
+            """,
+            (token_hash_value,),
+        ).fetchone()
+
+
+def touch_token(db_path: Path, token_hash_value: str, used_at: str) -> None:
+    if not token_hash_value:
+        return
+    with connect(db_path) as db:
+        db.execute(
+            "UPDATE device_tokens SET last_used_at = ? WHERE token_hash = ? AND revoked_at = ''",
+            (used_at, token_hash_value),
+        )
+        db.execute(
+            "UPDATE app_tokens SET last_used_at = ? WHERE token_hash = ? AND revoked_at = ''",
+            (used_at, token_hash_value),
+        )
+
+
+def upsert_run(db_path: Path, account_key: str, run: dict[str, Any]) -> None:
+    with connect(db_path) as db:
+        db.execute(
+            """
+            INSERT INTO runs(account_key, id, updated_at, status, device_id, device_name, project, payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_key, id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                status = excluded.status,
+                device_id = excluded.device_id,
+                device_name = excluded.device_name,
+                project = excluded.project,
+                payload = excluded.payload
+            """,
+            (
+                account_key,
+                run["id"],
+                run["updatedAt"],
+                run.get("status", ""),
+                run.get("deviceId", ""),
+                run.get("deviceName", ""),
+                normalize_project_name(run.get("project")),
+                json.dumps(run, ensure_ascii=False),
+            ),
+        )
+
+
+def list_runs(
+    db_path: Path,
+    account_key: str,
+    limit: int,
+    device_id: str = "",
+    status_filter: str = "",
+    project_filter: str = "",
+) -> list[dict[str, Any]]:
+    status_filter = normalize_status_filter(status_filter)
+    project_filter = normalize_project_filter(project_filter)
+    with connect(db_path) as db:
+        expire_stale_running_runs(db, account_key)
+        where = ["account_key = ?"]
+        values: list[Any] = [account_key]
+        if device_id:
+            where.append("device_id = ?")
+            values.append(device_id)
+        if status_filter:
+            if status_filter == "running":
+                where.append("status IN ('created', 'running')")
+            else:
+                where.append("status = ?")
+                values.append(status_filter)
+        if project_filter == "__none__":
+            where.append("project = ''")
+        elif project_filter:
+            where.append("project = ?")
+            values.append(project_filter)
+        values.append(limit)
+        rows = db.execute(
+            f"""
+            SELECT payload FROM runs
+            WHERE {" AND ".join(where)}
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            values,
+        ).fetchall()
+        names = device_names(db, account_key)
+    return [decode_run(row["payload"], names) for row in rows]
+
+
+def list_events(db_path: Path, account_key: str, since: str | None, limit: int) -> list[dict[str, Any]]:
+    with connect(db_path) as db:
+        expire_stale_running_runs(db, account_key)
+        if since:
+            rows = db.execute(
+                """
+                SELECT payload FROM runs
+                WHERE account_key = ? AND updated_at > ?
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (account_key, since, limit),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                """
+                SELECT payload FROM runs
+                WHERE account_key = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (account_key, limit),
+            ).fetchall()
+        names = device_names(db, account_key)
+    return [decode_run(row["payload"], names) for row in rows]
+
+
+def get_run(db_path: Path, account_key: str, run_id: str) -> dict[str, Any] | None:
+    with connect(db_path) as db:
+        expire_stale_running_runs(db, account_key)
+        row = db.execute(
+            "SELECT payload FROM runs WHERE account_key = ? AND id = ?",
+            (account_key, run_id),
+        ).fetchone()
+        names = device_names(db, account_key)
+    return None if row is None else decode_run(row["payload"], names)
+
+
+def delete_run(db_path: Path, account_key: str, run_id: str) -> bool:
+    with connect(db_path) as db:
+        cursor = db.execute("DELETE FROM runs WHERE account_key = ? AND id = ?", (account_key, run_id))
+        return cursor.rowcount > 0
+
+
+def delete_all_runs(db_path: Path, account_key: str) -> int:
+    with connect(db_path) as db:
+        cursor = db.execute("DELETE FROM runs WHERE account_key = ?", (account_key,))
+        return cursor.rowcount
+
+
+def delete_runs_for_device(db_path: Path, account_key: str, device_id: str) -> int:
+    if not device_id:
+        return 0
+    with connect(db_path) as db:
+        cursor = db.execute(
+            "DELETE FROM runs WHERE account_key = ? AND device_id = ?",
+            (account_key, device_id),
+        )
+        return cursor.rowcount
+
+
+def delete_account(db_path: Path, account_key: str) -> int:
+    if not account_key:
+        return 0
+    deleted = 0
+    with connect(db_path) as db:
+        for table in ("runs", "devices", "device_tokens", "app_tokens", "space_join_codes"):
+            cursor = db.execute(f"DELETE FROM {table} WHERE account_key = ?", (account_key,))
+            deleted += cursor.rowcount
+    return deleted
+
+
+def upsert_device(db_path: Path, account_key: str, device_id: str, name: str, seen_at: str) -> None:
+    if not device_id:
+        return
+    with connect(db_path) as db:
+        db.execute(
+            """
+            INSERT INTO devices(account_key, id, name, created_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(account_key, id) DO UPDATE SET
+                name = CASE
+                    WHEN devices.manual_name = 1 THEN devices.name
+                    ELSE excluded.name
+                END,
+                last_seen_at = excluded.last_seen_at,
+                revoked_at = ''
+            """,
+            (account_key, device_id, name or "好了么 CLI", seen_at, seen_at),
+        )
+
+
+def record_device_heartbeat(db_path: Path, account_key: str, device_id: str, name: str, seen_at: str) -> dict[str, Any] | None:
+    upsert_device(db_path, account_key, device_id, name, seen_at)
+    return get_device(db_path, account_key, device_id)
+
+
+def rename_device(db_path: Path, account_key: str, device_id: str, name: str) -> dict[str, Any] | None:
+    if not device_id or not name:
+        return None
+    seen_at = iso_now()
+    with connect(db_path) as db:
+        cursor = db.execute(
+            """
+            UPDATE devices
+            SET name = ?, manual_name = 1, last_seen_at = ?
+            WHERE account_key = ? AND id = ?
+            """,
+            (name, seen_at, account_key, device_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        db.execute(
+            "UPDATE runs SET device_name = ? WHERE account_key = ? AND device_id = ?",
+            (name, account_key, device_id),
+        )
+        row = db.execute(
+            """
+            SELECT id, name, created_at, last_seen_at FROM devices
+            WHERE account_key = ? AND id = ?
+            """,
+            (account_key, device_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return format_device(row)
+
+
+def get_device(db_path: Path, account_key: str, device_id: str) -> dict[str, Any] | None:
+    if not account_key or not device_id:
+        return None
+    with connect(db_path) as db:
+        row = db.execute(
+            """
+            SELECT id, name, created_at, last_seen_at, revoked_at
+            FROM devices
+            WHERE account_key = ? AND id = ? AND revoked_at = ''
+            """,
+            (account_key, device_id),
+        ).fetchone()
+    return None if row is None else format_device(row)
+
+
+def list_devices(db_path: Path, account_key: str) -> list[dict[str, Any]]:
+    with connect(db_path) as db:
+        rows = db.execute(
+            """
+            SELECT d.id,
+                   d.name,
+                   d.created_at,
+                   d.last_seen_at,
+                   d.revoked_at,
+                   MAX(t.last_used_at) AS token_last_used_at
+            FROM devices d
+            LEFT JOIN device_tokens t
+                ON t.account_key = d.account_key
+               AND t.device_id = d.id
+               AND t.revoked_at = ''
+            WHERE d.account_key = ? AND d.revoked_at = ''
+            GROUP BY d.id, d.name, d.created_at, d.last_seen_at, d.revoked_at
+            ORDER BY last_seen_at DESC
+            """,
+            (account_key,),
+        ).fetchall()
+    return [format_device(row) for row in rows]
+
+
+def format_device(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "createdAt": row["created_at"],
+        "lastSeenAt": row["last_seen_at"],
+        "tokenLastUsedAt": safe_row_get(row, "token_last_used_at") or "",
+        "revokedAt": safe_row_get(row, "revoked_at") or "",
+        "online": is_recent_timestamp(row["last_seen_at"], DEVICE_ONLINE_WINDOW_SECONDS),
+        "onlineWindowSeconds": DEVICE_ONLINE_WINDOW_SECONDS,
+    }
+
+
+def revoke_device(db_path: Path, account_key: str, device_id: str) -> bool:
+    if not device_id:
+        return False
+    revoked_at = iso_now()
+    with connect(db_path) as db:
+        cursor = db.execute(
+            """
+            UPDATE devices
+            SET revoked_at = ?, last_seen_at = ?
+            WHERE account_key = ? AND id = ? AND revoked_at = ''
+            """,
+            (revoked_at, revoked_at, account_key, device_id),
+        )
+        db.execute(
+            """
+            UPDATE device_tokens
+            SET revoked_at = ?, last_used_at = ?
+            WHERE account_key = ? AND device_id = ? AND revoked_at = ''
+            """,
+            (revoked_at, revoked_at, account_key, device_id),
+        )
+        return cursor.rowcount > 0
+
+
+def safe_row_get(row: sqlite3.Row, name: str) -> Any:
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return None
+
+
+def device_names(db: sqlite3.Connection, account_key: str) -> dict[str, str]:
+    rows = db.execute("SELECT id, name FROM devices WHERE account_key = ?", (account_key,)).fetchall()
+    return {row["id"]: row["name"] for row in rows}
+
+
+def expire_stale_running_runs(db: sqlite3.Connection, account_key: str, now: str | None = None) -> int:
+    now_value = now or iso_now()
+    rows = db.execute(
+        """
+        SELECT r.id, r.updated_at, r.device_id, r.payload, d.last_seen_at
+        FROM runs r
+        LEFT JOIN devices d
+            ON d.account_key = r.account_key
+           AND d.id = r.device_id
+           AND d.revoked_at = ''
+        WHERE r.account_key = ? AND r.status IN ('created', 'running')
+        """,
+        (account_key,),
+    ).fetchall()
+    expired = 0
+    for row in rows:
+        device_id = str(row["device_id"] or "")
+        if not device_id:
+            continue
+        if not row["last_seen_at"]:
+            continue
+        if is_recent_timestamp_at(row["last_seen_at"], STALE_RUNNING_SECONDS, now_value):
+            continue
+        if is_recent_timestamp_at(row["updated_at"], STALE_RUNNING_SECONDS, now_value):
+            continue
+
+        run = normalize_run(json.loads(row["payload"]))
+        run["status"] = "cancelled"
+        run["exitCode"] = -1
+        run["endedAt"] = now_value
+        run["updatedAt"] = now_value
+        note = "\n[好了么] Device went offline before this run reported an exit code. Marked as cancelled.\n"
+        run["stderrTail"] = (str(run.get("stderrTail") or "") + note)[-MAX_OUTPUT_TAIL:]
+        run["outputTail"] = (str(run.get("outputTail") or "") + note)[-MAX_OUTPUT_TAIL:]
+        db.execute(
+            """
+            UPDATE runs
+            SET updated_at = ?, status = ?, payload = ?
+            WHERE account_key = ? AND id = ?
+            """,
+            (now_value, "cancelled", json.dumps(run, ensure_ascii=False), account_key, row["id"]),
+        )
+        expired += 1
+    return expired
+
+
+def decode_run(payload_json: str, names: dict[str, str]) -> dict[str, Any]:
+    run = json.loads(payload_json)
+    device_id = str(run.get("deviceId") or "")
+    if device_id in names:
+        run["deviceName"] = names[device_id]
+    return run
+
+
+def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
+    output_tail = str(run.get("outputTail") or "")[-MAX_OUTPUT_TAIL:]
+    stdout_tail = str(run.get("stdoutTail") or "")[-MAX_OUTPUT_TAIL:]
+    stderr_tail = str(run.get("stderrTail") or "")[-MAX_OUTPUT_TAIL:]
+    command = run.get("command")
+    normalized = {
+        "id": str(run.get("id") or ""),
+        "command": [str(item) for item in command] if isinstance(command, list) else [],
+        "commandText": str(run.get("commandText") or ""),
+        "cwd": str(run.get("cwd") or ""),
+        "status": str(run.get("status") or "unknown"),
+        "pid": run.get("pid"),
+        "exitCode": run.get("exitCode"),
+        "startedAt": str(run.get("startedAt") or ""),
+        "endedAt": run.get("endedAt"),
+        "updatedAt": str(run.get("updatedAt") or iso_now()),
+        "deviceId": str(run.get("deviceId") or ""),
+        "deviceName": str(run.get("deviceName") or ""),
+        "project": normalize_project_name(run.get("project")),
+        "stdoutTail": stdout_tail,
+        "stderrTail": stderr_tail,
+        "outputTail": output_tail,
+    }
+    e2ee = run.get("e2ee")
+    if isinstance(e2ee, dict):
+        normalized["e2ee"] = {
+            "v": int_or_none(e2ee.get("v")) or 0,
+            "alg": str(e2ee.get("alg") or "")[:40],
+            "nonce": str(e2ee.get("nonce") or "")[:128],
+            "ciphertext": str(e2ee.get("ciphertext") or ""),
+        }
+    return normalized
+
+
+def normalize_pair_code(value: object) -> str:
+    code = "".join(ch for ch in str(value or "") if ch.isdigit())
+    return code if len(code) == 6 else ""
+
+
+def parse_limit(raw: str) -> int:
+    try:
+        return max(1, min(int(raw), 500))
+    except ValueError:
+        return 100
+
+
+def normalize_status_filter(value: str) -> str:
+    value = (value or "").strip().lower()
+    return value if value in {"running", "failed", "succeeded"} else ""
+
+
+def normalize_project_name(value: object) -> str:
+    return str(value or "").strip()[:80]
+
+
+def normalize_project_filter(value: str) -> str:
+    value = (value or "").strip()
+    if value == "__none__":
+        return value
+    return normalize_project_name(value)
+
+
+def is_e2ee_run(run: dict[str, Any]) -> bool:
+    e2ee = run.get("e2ee")
+    if not isinstance(e2ee, dict):
+        return False
+    return (
+        int_or_none(e2ee.get("v")) == 1
+        and str(e2ee.get("alg") or "") == "AES-256-GCM"
+        and bool(str(e2ee.get("nonce") or ""))
+        and bool(str(e2ee.get("ciphertext") or ""))
+    )
+
+
+def is_valid_device_id(value: str) -> bool:
+    return value.startswith("dev_") and 8 <= len(value) <= 80 and all(ch.isalnum() or ch == "_" for ch in value)
+
+
+def first_query_value(query: dict[str, list[str]], name: str) -> str:
+    values = query.get(name, [])
+    return values[0].strip() if values else ""
+
+
+def int_or_none(value: object) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def is_app_version_too_old(platform: str, app_version_code: int | None, min_android_version_code: int) -> bool:
+    return platform.lower() == "android" and app_version_code is not None and app_version_code < min_android_version_code
+
+
+def allow_rate(
+    attempts_by_key: dict[str, list[float]],
+    lock: threading.Lock,
+    key: str,
+    limit: int,
+    window_seconds: int,
+) -> bool:
+    now = time.time()
+    cutoff = now - window_seconds
+    with lock:
+        attempts = [value for value in attempts_by_key.get(key, []) if value >= cutoff]
+        if len(attempts) >= limit:
+            attempts_by_key[key] = attempts
+            return False
+        attempts.append(now)
+        attempts_by_key[key] = attempts
+        return True
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name, "")
+    if not value:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def server_requires_e2ee() -> bool:
+    return env_flag("HAOLEME_REQUIRE_E2EE", env_flag("REMINDER_REQUIRE_E2EE", False))
+
+
+def server_allows_legacy_admin_tokens() -> bool:
+    return env_flag("HAOLEME_ALLOW_LEGACY_ADMIN_TOKENS", env_flag("REMINDER_ALLOW_LEGACY_ADMIN_TOKENS", False))
+
+
+def server_allows_existing_legacy_accounts() -> bool:
+    return env_flag("HAOLEME_ALLOW_EXISTING_LEGACY_ACCOUNTS", True)
+
+
+def legacy_admin_token_allowed(db_path: Path, account_key: str) -> bool:
+    if server_allows_legacy_admin_tokens():
+        return True
+    return server_allows_existing_legacy_accounts() and account_has_cloud_data(db_path, account_key)
+
+
+def iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def iso_from_epoch(value: float) -> str:
+    return datetime.fromtimestamp(float(value), timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def is_recent_timestamp(value: str, window_seconds: int) -> bool:
+    return is_recent_timestamp_at(value, window_seconds, iso_now())
+
+
+def is_recent_timestamp_at(value: str, window_seconds: int, now: str) -> bool:
+    try:
+        timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        now_timestamp = datetime.fromisoformat(str(now).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return False
+    return (now_timestamp - timestamp) <= window_seconds
+
+
+def serve(host: str, port: int, db_path: Path, min_android_version_code: int) -> None:
+    server = HaolemeCloudServer((host, port), db_path, min_android_version_code)
+    cloud_log({"ts": iso_now(), "event": "startup", "listen": f"http://{host}:{port}", "db": str(db_path), "version": __version__})
+    server.serve_forever()
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "serve":
+        args = args[1:]
+    if args and args[0] == "backup":
+        return backup_command(args[1:])
+    if args and args[0] == "health":
+        return health_command(args[1:])
+    if args and args[0] == "audit-permissions":
+        return audit_permissions_command(args[1:])
+    if args and args[0] == "monitor":
+        return monitor_command(args[1:])
+
+    parser = argparse.ArgumentParser(prog="haoleme-cloud")
+    parser.add_argument("--host", default=os.environ.get("HAOLEME_CLOUD_HOST") or os.environ.get("REMINDER_CLOUD_HOST", "0.0.0.0"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("HAOLEME_CLOUD_PORT") or os.environ.get("REMINDER_CLOUD_PORT", "8000")))
+    parser.add_argument("--db", default=os.environ.get("HAOLEME_CLOUD_DB") or os.environ.get("REMINDER_CLOUD_DB", "/data/haoleme-cloud.db"))
+    parser.add_argument(
+        "--min-android-version-code",
+        type=int,
+        default=int(os.environ.get("MIN_ANDROID_VERSION_CODE", str(DEFAULT_MIN_ANDROID_VERSION_CODE))),
+    )
+    ns = parser.parse_args(args)
+    serve(ns.host, ns.port, Path(ns.db), ns.min_android_version_code)
+    return 0
+
+
+def backup_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="haoleme-cloud backup")
+    parser.add_argument("--db", default=os.environ.get("HAOLEME_CLOUD_DB") or os.environ.get("REMINDER_CLOUD_DB", "/data/haoleme-cloud.db"))
+    parser.add_argument("--dir", default=os.environ.get("HAOLEME_CLOUD_BACKUP_DIR") or os.environ.get("REMINDER_CLOUD_BACKUP_DIR", "/data/backups"))
+    parser.add_argument("--keep", type=int, default=int(os.environ.get("HAOLEME_CLOUD_BACKUP_KEEP") or os.environ.get("REMINDER_CLOUD_BACKUP_KEEP", str(DEFAULT_BACKUP_KEEP))))
+    ns = parser.parse_args(argv)
+    path = backup_database(Path(ns.db), Path(ns.dir), ns.keep)
+    print(path)
+    return 0
+
+
+def health_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="haoleme-cloud health")
+    parser.add_argument("--db", default=os.environ.get("HAOLEME_CLOUD_DB") or os.environ.get("REMINDER_CLOUD_DB", "/data/haoleme-cloud.db"))
+    parser.add_argument(
+        "--min-android-version-code",
+        type=int,
+        default=int(os.environ.get("MIN_ANDROID_VERSION_CODE", str(DEFAULT_MIN_ANDROID_VERSION_CODE))),
+    )
+    ns = parser.parse_args(argv)
+    payload = health_payload(Path(ns.db), ns.min_android_version_code)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload.get("ok") else 1
+
+
+def audit_permissions_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="haoleme-cloud audit-permissions")
+    parser.add_argument("--db", default=os.environ.get("HAOLEME_CLOUD_DB") or os.environ.get("REMINDER_CLOUD_DB", "/data/haoleme-cloud.db"))
+    ns = parser.parse_args(argv)
+    payload = permission_audit(Path(ns.db))
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload.get("ok") else 1
+
+
+def monitor_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="haoleme-cloud monitor")
+    parser.add_argument("--db", default=os.environ.get("HAOLEME_CLOUD_DB") or os.environ.get("REMINDER_CLOUD_DB", "/data/haoleme-cloud.db"))
+    parser.add_argument("--backup-dir", default=os.environ.get("HAOLEME_CLOUD_BACKUP_DIR") or os.environ.get("REMINDER_CLOUD_BACKUP_DIR", "/data/backups"))
+    parser.add_argument(
+        "--min-android-version-code",
+        type=int,
+        default=int(os.environ.get("MIN_ANDROID_VERSION_CODE", str(DEFAULT_MIN_ANDROID_VERSION_CODE))),
+    )
+    parser.add_argument(
+        "--min-free-mb",
+        type=int,
+        default=int(os.environ.get("HAOLEME_MONITOR_MIN_FREE_MB", str(DEFAULT_MONITOR_MIN_FREE_BYTES // (1024 * 1024)))),
+    )
+    parser.add_argument(
+        "--max-backup-age-hours",
+        type=int,
+        default=int(os.environ.get("HAOLEME_MONITOR_MAX_BACKUP_AGE_HOURS", str(DEFAULT_MONITOR_MAX_BACKUP_AGE_HOURS))),
+    )
+    parser.add_argument("--alert-webhook", default=os.environ.get("HAOLEME_ALERT_WEBHOOK_URL", ""))
+    ns = parser.parse_args(argv)
+    payload = monitor_payload(
+        Path(ns.db),
+        Path(ns.backup_dir),
+        ns.min_android_version_code,
+        min_free_bytes=max(1, ns.min_free_mb) * 1024 * 1024,
+        max_backup_age_hours=max(1, ns.max_backup_age_hours),
+    )
+    if not payload.get("ok") and ns.alert_webhook.strip():
+        payload["alert"] = send_monitor_alert(payload, ns.alert_webhook)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

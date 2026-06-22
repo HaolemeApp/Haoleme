@@ -1,0 +1,8 @@
+name = "haoleme-cloud"
+main = "worker.js"
+compatibility_date = "2026-06-16"
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "RUNS"
+id = "replace-with-your-kv-namespace-id"

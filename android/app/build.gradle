@@ -1,0 +1,77 @@
+plugins {
+    id "com.android.application"
+}
+
+def releaseStorePath = System.getenv("HAOLEME_ANDROID_KEYSTORE") ?: ""
+def releaseStorePassword = System.getenv("HAOLEME_ANDROID_KEYSTORE_PASSWORD") ?: ""
+def releaseKeyAlias = System.getenv("HAOLEME_ANDROID_KEY_ALIAS") ?: ""
+def releaseKeyPassword = System.getenv("HAOLEME_ANDROID_KEY_PASSWORD") ?: ""
+def defaultServerUrl = (project.findProperty("HAOLEME_DEFAULT_SERVER_URL") ?: System.getenv("HAOLEME_DEFAULT_SERVER_URL") ?: "https://api.example.com").toString()
+def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "https://github.com/HaolemeApp/Haoleme/releases/latest/download/update.json").toString()
+def legacyCompatStorePath = "build/manual/debug.keystore"
+def hasReleaseSigning = releaseStorePath
+        && releaseStorePassword
+        && releaseKeyAlias
+        && releaseKeyPassword
+        && file(releaseStorePath).isFile()
+def hasLegacyCompatSigning = file(legacyCompatStorePath).isFile()
+
+android {
+    namespace "com.haoleme.app"
+    compileSdk 35
+    buildToolsVersion "35.0.0"
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    signingConfigs {
+        haoleme {
+            if (hasReleaseSigning) {
+                storeFile file(releaseStorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            } else if (hasLegacyCompatSigning) {
+                storeFile file(legacyCompatStorePath)
+                storePassword "android"
+                keyAlias "androiddebugkey"
+                keyPassword "android"
+            } else {
+                initWith signingConfigs.debug
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId "com.haoleme.app"
+        minSdk 23
+        targetSdk 35
+        versionCode 76
+        versionName "0.6.65"
+        buildConfigField "String", "HAOLEME_DEFAULT_SERVER_URL", "\"${defaultServerUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+        buildConfigField "String", "HAOLEME_UPDATE_URLS", "\"${defaultUpdateUrls.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")}\""
+
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            signingConfig signingConfigs.haoleme
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt")
+        }
+    }
+}
+
+dependencies {
+    def camerax_version = "1.5.1"
+    implementation files("libs/core-3.5.3.jar")
+    implementation "androidx.camera:camera-camera2:$camerax_version"
+    implementation "androidx.camera:camera-lifecycle:$camerax_version"
+    implementation "androidx.camera:camera-view:$camerax_version"
+    implementation "com.google.mlkit:barcode-scanning:17.3.0"
+}

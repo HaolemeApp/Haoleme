@@ -1,0 +1,19 @@
+[Unit]
+Description=Monitor Haoleme Cloud health, disk, permissions, and backups
+
+[Service]
+Type=oneshot
+User=haoleme
+Group=haoleme
+Environment=HAOLEME_CLOUD_DB=/opt/haoleme-cloud-data/haoleme-cloud.db
+Environment=HAOLEME_CLOUD_BACKUP_DIR=/opt/haoleme-cloud-data/backups
+Environment=HAOLEME_MONITOR_MIN_FREE_MB=512
+Environment=HAOLEME_MONITOR_MAX_BACKUP_AGE_HOURS=30
+Environment=HAOLEME_REQUIRE_E2EE=1
+Environment=HAOLEME_ALLOW_LEGACY_ADMIN_TOKENS=0
+ExecStart=/usr/local/bin/haoleme-cloud monitor
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/haoleme-cloud-data
