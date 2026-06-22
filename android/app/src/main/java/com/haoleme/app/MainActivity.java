@@ -1578,7 +1578,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             case "cancelled": return en ? "Cancelled" : "已取消";
             case "unknown": return en ? "Unknown" : "未知";
             case "pair_this_phone": return en ? "Pair this phone" : "配对这台手机";
-            case "pair_onboarding_subtitle": return en ? "Run hao login, then scan QR or enter the 6-digit code." : "运行 hao login，然后扫码或输入 6 位配对码。";
+            case "pair_onboarding_subtitle": return en ? "Install: pip install -U haoleme\nThen run: hao login" : "安装：pip install -U haoleme\n然后运行：hao login";
             case "scan_pair_qr": return en ? "Scan Pair QR" : "扫码配对";
             case "enter_code": return en ? "Enter 6-digit Code" : "输入 6 位配对码";
             case "pair_device": return en ? "Pair Device" : "配对设备";
@@ -3083,7 +3083,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         }
         if (visibleRuns.length() == 0) {
-            runsContainer.addView(emptyState(isEnglish() ? "No runs yet" : "还没有运行记录", isEnglish() ? "Try: hao python script.py" : "试试：hao python script.py", "▶"), matchWrap());
+            runsContainer.addView(emptyState(
+                    isEnglish() ? "No runs yet" : "还没有运行记录",
+                    isEnglish() ? "Try: hao echo hello" : "试试：hao echo hello",
+                    "▶"
+            ), matchWrap());
         }
         if (!fromCache) {
             firstLoad = false;

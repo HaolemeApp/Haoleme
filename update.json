@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 81,
-    "versionName": "0.6.70",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.70.apk",
+    "versionCode": 82,
+    "versionName": "0.6.71",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.71.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.70.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.70.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.71.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.71.apk"
     ],
-    "sha256": "8ac3a9862cdc254546f01c0eb9fb950a10e3814f3f692adb61f00d763aba27ac",
+    "sha256": "fd0caac5cb695c1524ec9be187975f322ef93c321d18664cfbb86cfa9827309b",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Clears old server tokens during temporary server migration and asks users to pair again."
+    "notes": "Improves first-run guidance and uses a simpler empty-runs test command."
   },
   "python": {
     "version": "0.3.4",
