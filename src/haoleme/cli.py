@@ -387,7 +387,7 @@ def status_command(argv: Sequence[str]) -> int:
 
 def cloud_login_command(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="hao cloud-login")
-    parser.add_argument("--api-url", default=os.environ.get("HAOLEME_CLOUD_URL", ""))
+    parser.add_argument("--api-url", default=os.environ.get("HAOLEME_CLOUD_URL", DEFAULT_CLOUD_URL))
     parser.add_argument("--account", default=os.environ.get("HAOLEME_ACCOUNT", "default"))
     parser.add_argument("--token", default=os.environ.get("HAOLEME_ACCOUNT_TOKEN", ""))
     parser.add_argument("--skip-check", action="store_true")
@@ -397,7 +397,7 @@ def cloud_login_command(argv: Sequence[str]) -> int:
     if not api_url:
         print(
             "hao: missing --api-url.\n"
-            "Example: hao cloud-login --api-url https://api.haoleme.cloud --account alice",
+            "Example: hao cloud-login --api-url http://39.96.50.42 --account alice",
             file=sys.stderr,
         )
         return 2
@@ -438,8 +438,8 @@ def cloud_login_command(argv: Sequence[str]) -> int:
 
 def pairing_login_command(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="hao login")
-    parser.add_argument("--api-url", default=os.environ.get("HAOLEME_CLOUD_URL", os.environ.get("HAOLEME_CLOUD_URL", DEFAULT_CLOUD_URL)))
-    parser.add_argument("--device", default=os.environ.get("HAOLEME_DEVICE_NAME", os.environ.get("HAOLEME_DEVICE_NAME", gethostname() or "好了么 CLI")))
+    parser.add_argument("--api-url", default=os.environ.get("HAOLEME_CLOUD_URL", DEFAULT_CLOUD_URL))
+    parser.add_argument("--device", default=os.environ.get("HAOLEME_DEVICE_NAME", gethostname() or "好了么 CLI"))
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--new-device", action="store_true", help="Ignore the saved device id and pair this machine as a new device.")
     parser.add_argument("--reuse-saved-device", action="store_true", help="Trust and reuse the saved device id, then bind it to this machine.")
@@ -458,7 +458,7 @@ def pairing_login_command(argv: Sequence[str]) -> int:
         started = client.start(ns.device, existing_device_id, public_key)
     except Exception as exc:
         print(f"hao: could not start login: {exc}", file=sys.stderr)
-        print("If your 好了么 Cloud URL is different, use: hao login --api-url https://your-worker.workers.dev", file=sys.stderr)
+        print("If your 好了么 Cloud URL is different, use: hao login --api-url https://your-server.example.com", file=sys.stderr)
         return 1
 
     code = str(started.get("code", ""))

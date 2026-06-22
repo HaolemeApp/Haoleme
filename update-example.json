@@ -13,7 +13,7 @@
     "notes": "Clears old server tokens during temporary server migration and asks users to pair again."
   },
   "python": {
-    "version": "0.3.3",
+    "version": "0.3.4",
     "packageUrl": "https://pypi.org/project/haoleme/"
   }
 }

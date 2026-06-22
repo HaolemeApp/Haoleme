@@ -17,7 +17,7 @@ from . import __version__
 from .crypto import encrypt_run_payload, is_valid_account_key
 
 
-DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "https://api.haoleme.cloud").rstrip("/")
+DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "http://39.96.50.42").rstrip("/")
 USER_AGENT = f"haoleme/{__version__}"
 RUNNING_SYNC_MIN_INTERVAL_SECONDS = 10.0
 SYNC_COALESCE_SECONDS = 0.35

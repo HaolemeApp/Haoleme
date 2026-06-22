@@ -14,6 +14,7 @@ from haoleme.cli import (
     heartbeat_initial_delay,
     heartbeat_state_path,
     main,
+    pairing_login_command,
     read_heartbeat_state,
     reconcile_orphaned_running_runs,
     reusable_login_device_id,
@@ -22,7 +23,7 @@ from haoleme.cli import (
     stream_output,
     write_heartbeat_state,
 )
-from haoleme.cloud import CloudConfig
+from haoleme.cloud import CloudConfig, DEFAULT_CLOUD_URL
 from haoleme.store import RunStore
 
 
@@ -61,6 +62,18 @@ class CliPairingTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         mocked.assert_called_once_with(["python", "train.py"], project_override="demo")
+
+    def test_pairing_login_uses_default_cloud_url(self):
+        with patch("haoleme.cli.PairingClient") as client_cls, \
+                patch("haoleme.cli.CloudConfig.load", return_value=None), \
+                patch("haoleme.cli.get_or_create_machine_id", return_value="machine_test"), \
+                patch("haoleme.cli.generate_pair_keypair", return_value=("public", "private")):
+            client_cls.return_value.start.side_effect = RuntimeError("stop")
+
+            exit_code = pairing_login_command([])
+
+        self.assertEqual(exit_code, 1)
+        client_cls.assert_called_once_with(DEFAULT_CLOUD_URL)
 
     def test_old_config_without_machine_id_is_not_reused(self):
         config = CloudConfig(
