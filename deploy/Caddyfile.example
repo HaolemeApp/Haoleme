@@ -1,6 +1,6 @@
-# Replace api.example.com with your own domain after DNS points to the server.
+# Replace api.haoleme.cloud with your own domain after DNS points to the server.
 # Caddy will automatically request and renew HTTPS certificates.
-api.example.com {
+api.haoleme.cloud {
     encode zstd gzip
     reverse_proxy 127.0.0.1:8000
 }

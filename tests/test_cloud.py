@@ -51,7 +51,7 @@ class CloudConfigTest(unittest.TestCase):
                 json.dumps({
                     "cloud": {
                         "enabled": True,
-                        "api_url": "https://api.example.com/",
+                        "api_url": "https://api.haoleme.cloud/",
                         "account": "default",
                         "token": "x" * 32,
                     }
@@ -62,7 +62,7 @@ class CloudConfigTest(unittest.TestCase):
             loaded = CloudConfig.load(path)
 
             self.assertIsNotNone(loaded)
-            self.assertEqual(loaded.api_url, "https://api.example.com")
+            self.assertEqual(loaded.api_url, "https://api.haoleme.cloud")
 
     def test_disabled_cloud_config_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:

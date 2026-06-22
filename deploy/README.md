@@ -4,7 +4,7 @@ This folder contains production-oriented templates for a small VPS.
 
 ## HTTPS
 
-You need a domain for a normal public HTTPS certificate. Point an A record to the server, install Caddy, then copy `Caddyfile.example` to `/etc/caddy/Caddyfile` and replace `api.example.com`.
+You need a domain for a normal public HTTPS certificate. Point an A record to the server, install Caddy, then copy `Caddyfile.example` to `/etc/caddy/Caddyfile` and replace `api.haoleme.cloud`.
 
 The cloud server should listen on `127.0.0.1:8000`; Caddy exposes HTTPS on 443.
 

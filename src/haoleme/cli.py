@@ -397,7 +397,7 @@ def cloud_login_command(argv: Sequence[str]) -> int:
     if not api_url:
         print(
             "hao: missing --api-url.\n"
-            "Example: hao cloud-login --api-url https://api.example.com --account alice",
+            "Example: hao cloud-login --api-url https://api.haoleme.cloud --account alice",
             file=sys.stderr,
         )
         return 2

@@ -17,7 +17,7 @@ from . import __version__
 from .crypto import encrypt_run_payload, is_valid_account_key
 
 
-DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "https://api.example.com").rstrip("/")
+DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "https://api.haoleme.cloud").rstrip("/")
 USER_AGENT = f"haoleme/{__version__}"
 
 
