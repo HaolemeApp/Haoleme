@@ -37,6 +37,11 @@ public class HaolemeForegroundService extends Service {
     private static final String RUN_CHANNEL_ID = "runs";
     private static final String MONITOR_CHANNEL_ID = "monitor";
     private static final String DEFAULT_SERVER_URL = BuildConfig.HAOLEME_DEFAULT_SERVER_URL;
+    private static final String[] LEGACY_SERVER_URLS = new String[]{
+            "http://106.14.246.204",
+            "https://106.14.246.204",
+            "http://api.haoleme.cloud"
+    };
     private static final long POLL_MS = 7000L;
     private static final int HTTP_TIMEOUT_MS = 12000;
     private static final int FOREGROUND_ID = 7001;
@@ -375,10 +380,30 @@ public class HaolemeForegroundService extends Service {
         if (raw.endsWith("/")) {
             raw = raw.substring(0, raw.length() - 1);
         }
+        if (isLegacyServerUrl(raw)) {
+            raw = DEFAULT_SERVER_URL;
+            prefs.edit().putString("server_url", raw).apply();
+        }
         if (raw.isEmpty()) {
             raw = DEFAULT_SERVER_URL;
         }
         return raw;
+    }
+
+    private boolean isLegacyServerUrl(String raw) {
+        if (raw == null) {
+            return false;
+        }
+        String value = raw.trim();
+        while (value.endsWith("/")) {
+            value = value.substring(0, value.length() - 1);
+        }
+        for (String legacy : LEGACY_SERVER_URLS) {
+            if (legacy.equalsIgnoreCase(value)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String normalizedToken() {

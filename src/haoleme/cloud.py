@@ -19,6 +19,11 @@ from .crypto import encrypt_run_payload, is_valid_account_key
 
 DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "https://api.haoleme.cloud").rstrip("/")
 USER_AGENT = f"haoleme/{__version__}"
+LEGACY_CLOUD_URLS = {
+    "http://106.14.246.204",
+    "https://106.14.246.204",
+    "http://api.haoleme.cloud",
+}
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -120,7 +125,8 @@ class CloudConfig:
         if not isinstance(cloud, dict) or not cloud.get("enabled", True):
             return None
 
-        api_url = str(cloud.get("api_url", "")).strip().rstrip("/")
+        raw_api_url = str(cloud.get("api_url", "")).strip()
+        api_url = normalize_cloud_url(raw_api_url)
         account = str(cloud.get("account", "")).strip()
         token = str(cloud.get("token", "")).strip()
         device_id = str(cloud.get("device_id", "")).strip()
@@ -129,6 +135,13 @@ class CloudConfig:
         encryption_key = str(cloud.get("encryption_key", "")).strip()
         if not api_url or not token:
             return None
+        if api_url != raw_api_url.rstrip("/"):
+            try:
+                cloud["api_url"] = api_url
+                config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                config_path.chmod(0o600)
+            except OSError:
+                pass
         return cls(
             api_url=api_url,
             account=account,
@@ -165,6 +178,13 @@ class CloudConfig:
             config_path.chmod(0o600)
         except OSError:
             pass
+
+
+def normalize_cloud_url(raw: str) -> str:
+    api_url = (raw or "").strip().rstrip("/")
+    if api_url in LEGACY_CLOUD_URLS:
+        return DEFAULT_CLOUD_URL
+    return api_url
 
 
 def generate_account_token() -> str:

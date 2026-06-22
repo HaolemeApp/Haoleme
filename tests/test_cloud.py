@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from haoleme.cloud import CloudClient, CloudConfig, generate_account_token, get_or_create_machine_id
+from haoleme.cloud import CloudClient, CloudConfig, DEFAULT_CLOUD_URL, generate_account_token, get_or_create_machine_id, normalize_cloud_url
 from haoleme.crypto import generate_account_key
 from haoleme.store import RunRecord
 
@@ -63,6 +63,38 @@ class CloudConfigTest(unittest.TestCase):
 
             self.assertIsNotNone(loaded)
             self.assertEqual(loaded.api_url, "https://api.haoleme.cloud")
+
+    def test_legacy_cloud_urls_migrate_to_https_domain(self):
+        legacy_urls = [
+            "http://106.14.246.204",
+            "https://106.14.246.204/",
+            "http://api.haoleme.cloud",
+        ]
+        for legacy in legacy_urls:
+            with self.subTest(legacy=legacy):
+                self.assertEqual(normalize_cloud_url(legacy), DEFAULT_CLOUD_URL)
+
+    def test_legacy_cloud_url_is_saved_after_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(
+                json.dumps({
+                    "cloud": {
+                        "enabled": True,
+                        "api_url": "http://106.14.246.204",
+                        "account": "default",
+                        "token": "x" * 32,
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            loaded = CloudConfig.load(path)
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.api_url, DEFAULT_CLOUD_URL)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["cloud"]["api_url"], DEFAULT_CLOUD_URL)
 
     def test_disabled_cloud_config_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:

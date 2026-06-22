@@ -151,6 +151,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String LANG_EN = "en";
     private static final String DEFAULT_SERVER_URL = BuildConfig.HAOLEME_DEFAULT_SERVER_URL;
     private static final String DEFAULT_UPDATE_URLS = BuildConfig.HAOLEME_UPDATE_URLS;
+    private static final String[] LEGACY_SERVER_URLS = new String[]{
+            "http://106.14.246.204",
+            "https://106.14.246.204",
+            "http://api.haoleme.cloud"
+    };
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -397,10 +402,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
         root.addView(statusText, matchWrap());
 
         accountToken();
-        String savedServerUrl = prefs.getString("server_url", "").trim();
-        if (savedServerUrl.isEmpty()) {
+        String rawSavedServerUrl = prefs.getString("server_url", "").trim();
+        String savedServerUrl = normalizeServerUrl(rawSavedServerUrl);
+        if (rawSavedServerUrl.isEmpty() || isLegacyServerUrl(rawSavedServerUrl) || !savedServerUrl.equals(trimTrailingSlash(rawSavedServerUrl))) {
             prefs.edit()
-                    .putString("server_url", DEFAULT_SERVER_URL)
+                    .putString("server_url", savedServerUrl)
                     .putBoolean("inputs_locked", true)
                     .apply();
         }
@@ -5064,10 +5070,35 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (raw.endsWith("/")) {
             raw = raw.substring(0, raw.length() - 1);
         }
+        if (isLegacyServerUrl(raw)) {
+            raw = DEFAULT_SERVER_URL;
+        }
         if (raw.isEmpty()) {
             raw = DEFAULT_SERVER_URL;
         }
         return raw;
+    }
+
+    private boolean isLegacyServerUrl(String raw) {
+        if (raw == null) {
+            return false;
+        }
+        String value = raw.trim();
+        value = trimTrailingSlash(value);
+        for (String legacy : LEGACY_SERVER_URLS) {
+            if (legacy.equalsIgnoreCase(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String trimTrailingSlash(String value) {
+        value = value == null ? "" : value.trim();
+        while (value.endsWith("/")) {
+            value = value.substring(0, value.length() - 1);
+        }
+        return value;
     }
 
     private String normalizedToken() {
