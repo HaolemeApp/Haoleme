@@ -60,6 +60,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
 import androidx.annotation.OptIn;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 import androidx.lifecycle.Lifecycle;
 import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.LifecycleRegistry;
@@ -78,9 +79,12 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.net.ConnectException;
@@ -202,6 +206,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private final List<String> latestDownloadUrls = new ArrayList<>();
     private long updateDownloadId = -1L;
     private boolean updateDownloading = false;
+    private String lastUpdateDownloadError = "";
     private LifecycleRegistry lifecycleRegistry;
     private ProcessCameraProvider cameraProvider;
     private PreviewView scannerPreviewView;
@@ -4761,31 +4766,108 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         statusText.setText(isEnglish() ? "Downloading update 0%..." : "正在下载更新 0%...");
         executor.submit(() -> {
+            Exception lastError = null;
             try {
-                DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-                if (manager == null) {
-                    throw new IllegalStateException("download service unavailable");
+                if (latestDownloadUrls.isEmpty()) {
+                    latestDownloadUrls.add(latestDownloadUrl);
                 }
                 String version = latestVersionName == null || latestVersionName.trim().isEmpty()
                         ? "latest"
                         : latestVersionName.trim();
-                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(latestDownloadUrl));
-                request.setTitle(appDisplayName() + " " + version);
-                request.setDescription(isEnglish() ? "Downloading update" : "正在下载更新");
-                request.setMimeType("application/vnd.android.package-archive");
-                boolean wifiOnly = wifiOnlyUpdatesEnabled();
-                request.setAllowedOverMetered(!wifiOnly);
-                request.setAllowedOverRoaming(!wifiOnly);
-                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE);
-                request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, "Haoleme-" + version + ".apk");
-                updateDownloadId = manager.enqueue(request);
-                handler.post(() -> pollUpdateDownload(manager, updateDownloadId));
+                List<String> candidates = new ArrayList<>(latestDownloadUrls);
+                for (int i = 0; i < candidates.size(); i++) {
+                    String candidate = candidates.get(i);
+                    if (candidate == null || candidate.trim().isEmpty()) {
+                        continue;
+                    }
+                    latestDownloadUrl = candidate.trim();
+                    final int sourceIndex = i + 1;
+                    final int sourceCount = candidates.size();
+                    handler.post(() -> statusText.setText(isEnglish()
+                            ? "Downloading update 0% (" + sourceIndex + "/" + sourceCount + ")..."
+                            : "正在下载更新 0%（" + sourceIndex + "/" + sourceCount + "）..."));
+                    try {
+                        File apkFile = downloadApkInApp(latestDownloadUrl, version, sourceIndex, sourceCount);
+                        String expectedSha = expectedApkSha256();
+                        if (!isValidSha256(expectedSha)) {
+                            throw new SecurityException("missing APK checksum");
+                        }
+                        String actualSha = sha256ForFile(apkFile);
+                        if (!expectedSha.equalsIgnoreCase(actualSha)) {
+                            throw new SecurityException("APK checksum mismatch");
+                        }
+                        Uri apkUri = FileProvider.getUriForFile(
+                                this,
+                                BuildConfig.APPLICATION_ID + ".fileprovider",
+                                apkFile
+                        );
+                        handler.post(() -> {
+                            updateDownloading = false;
+                            statusText.setText(isEnglish() ? "Download complete. Opening installer..." : "下载完成，正在打开安装器...");
+                            openDownloadedApk(apkUri);
+                        });
+                        return;
+                    } catch (Exception e) {
+                        lastError = e;
+                        latestDownloadUrls.remove(latestDownloadUrl);
+                    }
+                }
+                throw lastError == null ? new IOException("download failed") : lastError;
             } catch (Exception e) {
                 handler.post(() -> {
+                    lastUpdateDownloadError = friendlyDownloadError(e);
                     retryOrShowUpdateDownloadFailed(null);
                 });
             }
         });
+    }
+
+    private File downloadApkInApp(String downloadUrl, String version, int sourceIndex, int sourceCount) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(downloadUrl).openConnection();
+        connection.setInstanceFollowRedirects(true);
+        connection.setConnectTimeout(20000);
+        connection.setReadTimeout(30000);
+        connection.setRequestProperty("User-Agent", "Haoleme/" + currentVersionName() + " Android");
+        int code = connection.getResponseCode();
+        if (code < 200 || code >= 300) {
+            throw new IOException("HTTP " + code);
+        }
+        int total = connection.getContentLength();
+        File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (dir == null) {
+            dir = getCacheDir();
+        }
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new IOException("could not create download folder");
+        }
+        File apkFile = new File(dir, "Haoleme-" + version + ".apk");
+        byte[] buffer = new byte[64 * 1024];
+        int read;
+        long downloaded = 0L;
+        int lastPercent = -1;
+        try (InputStream input = connection.getInputStream();
+             OutputStream output = new FileOutputStream(apkFile, false)) {
+            while ((read = input.read(buffer)) != -1) {
+                output.write(buffer, 0, read);
+                downloaded += read;
+                if (total > 0) {
+                    int percent = Math.max(0, Math.min(100, (int) ((downloaded * 100L) / total)));
+                    if (percent != lastPercent) {
+                        lastPercent = percent;
+                        final int shownPercent = percent;
+                        handler.post(() -> statusText.setText(isEnglish()
+                                ? "Downloading update " + shownPercent + "% (" + sourceIndex + "/" + sourceCount + ")..."
+                                : "正在下载更新 " + shownPercent + "%（" + sourceIndex + "/" + sourceCount + "）..."));
+                    }
+                }
+            }
+        } finally {
+            connection.disconnect();
+        }
+        if (apkFile.length() <= 0L) {
+            throw new IOException("empty APK download");
+        }
+        return apkFile;
     }
 
     private void restoreUpdateBadgeFromPrefs() {
@@ -4944,6 +5026,21 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return hex(digest.digest());
     }
 
+    private String sha256ForFile(File file) throws Exception {
+        if (file == null || !file.exists()) {
+            throw new IOException("missing downloaded APK");
+        }
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (InputStream input = new java.io.FileInputStream(file)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+            }
+        }
+        return hex(digest.digest());
+    }
+
     private String hex(byte[] bytes) {
         StringBuilder builder = new StringBuilder(bytes.length * 2);
         for (byte value : bytes) {
@@ -5027,7 +5124,34 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (updateBadgeButton != null && failedUrl != null && !failedUrl.isEmpty()) {
             updateBadgeButton.setVisibility(View.VISIBLE);
         }
-        statusText.setText(isEnglish() ? "Update download failed. Current version is unchanged." : "更新下载失败，当前版本不受影响。");
+        String detail = lastUpdateDownloadError == null || lastUpdateDownloadError.trim().isEmpty()
+                ? ""
+                : (isEnglish() ? " " + lastUpdateDownloadError.trim() : " " + lastUpdateDownloadError.trim());
+        statusText.setText(isEnglish() ? "Update download failed." + detail + " Current version is unchanged." : "更新下载失败。" + detail + " 当前版本不受影响。");
+    }
+
+    private String friendlyDownloadError(Exception e) {
+        if (e == null) {
+            return "";
+        }
+        Throwable cause = e;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        if (cause instanceof UnknownHostException) {
+            return isEnglish() ? "DNS failed." : "DNS 解析失败。";
+        }
+        if (cause instanceof SocketTimeoutException) {
+            return isEnglish() ? "Network timed out." : "网络超时。";
+        }
+        if (cause instanceof ConnectException) {
+            return isEnglish() ? "Server unreachable." : "服务器不可达。";
+        }
+        String message = cause.getMessage();
+        if (message == null || message.trim().isEmpty()) {
+            return "";
+        }
+        return message.trim();
     }
 
     private void addNonEmpty(List<String> target, JSONArray values) {

@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 76,
-    "versionName": "0.6.65",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.6.65.apk",
+    "versionCode": 77,
+    "versionName": "0.6.66",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.66.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.6.65.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.65.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.66.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.6.66.apk"
     ],
-    "sha256": "91bf2a5cd0a212b5a6e59529e9ddb1d6cb66585e520f3b9eb07124103222e3e6",
+    "sha256": "0d6e2d09862fed1558b4d361041d7fa24a83d0bd01c58c96ffecfc5e128e589b",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Settings icon polish: quiet hours, theme, mask sensitive text, and diagnostics icons are now centered and sized consistently."
+    "notes": "Improves update downloads with an in-app APK downloader, clearer failure reasons, checksum verification, and mirror fallback."
   },
   "python": {
     "version": "0.3.2",
