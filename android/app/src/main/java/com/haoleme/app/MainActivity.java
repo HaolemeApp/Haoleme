@@ -157,6 +157,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String LANG_ZH = "zh";
     private static final String LANG_EN = "en";
     private static final String DEFAULT_SERVER_URL = BuildConfig.HAOLEME_DEFAULT_SERVER_URL;
+    private static final String CANONICAL_SERVER_URL = "https://api.haoleme.cloud";
     private static final String DEFAULT_UPDATE_URLS = BuildConfig.HAOLEME_UPDATE_URLS;
     private static final String[] LEGACY_SERVER_URLS = new String[]{
             "http://106.14.246.204",
@@ -412,7 +413,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         accountToken();
         String rawSavedServerUrl = prefs.getString("server_url", "").trim();
         String savedServerUrl = normalizeServerUrl(rawSavedServerUrl);
-        if (rawSavedServerUrl.isEmpty() || isLegacyServerUrl(rawSavedServerUrl) || !savedServerUrl.equals(trimTrailingSlash(rawSavedServerUrl))) {
+        if (shouldReplaceSavedServerUrl(rawSavedServerUrl, savedServerUrl)) {
             prefs.edit()
                     .putString("server_url", savedServerUrl)
                     .putBoolean("inputs_locked", true)
@@ -5271,10 +5272,26 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return normalizeServerUrl(prefs.getString("server_url", DEFAULT_SERVER_URL));
     }
 
+    private boolean shouldReplaceSavedServerUrl(String rawSavedServerUrl, String normalizedSavedServerUrl) {
+        String raw = trimTrailingSlash(rawSavedServerUrl == null ? "" : rawSavedServerUrl.trim());
+        if (raw.isEmpty() || isLegacyServerUrl(raw)) {
+            return true;
+        }
+        String bundledDefault = trimTrailingSlash(DEFAULT_SERVER_URL);
+        if (!CANONICAL_SERVER_URL.equalsIgnoreCase(bundledDefault) && CANONICAL_SERVER_URL.equalsIgnoreCase(raw)) {
+            return true;
+        }
+        return !normalizedSavedServerUrl.equals(raw);
+    }
+
     private String normalizeServerUrl(String raw) {
         raw = raw == null ? "" : raw.trim();
         if (raw.endsWith("/")) {
             raw = raw.substring(0, raw.length() - 1);
+        }
+        String bundledDefault = trimTrailingSlash(DEFAULT_SERVER_URL);
+        if (!CANONICAL_SERVER_URL.equalsIgnoreCase(bundledDefault) && CANONICAL_SERVER_URL.equalsIgnoreCase(raw)) {
+            return bundledDefault;
         }
         if (isLegacyServerUrl(raw)) {
             raw = DEFAULT_SERVER_URL;
