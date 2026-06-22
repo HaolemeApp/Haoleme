@@ -8,6 +8,20 @@ You need a domain for a normal public HTTPS certificate. Point an A record to th
 
 The cloud server should listen on `127.0.0.1:8000`; Caddy exposes HTTPS on 443.
 
+For public Android testing, prefer the included Caddy template as-is: it requests an RSA certificate and disables HTTP/3. This avoids TLS handshake resets seen on some vendor Android TLS stacks. After changing `/etc/caddy/Caddyfile`, run:
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+If Caddy keeps serving an old ECDSA certificate, remove only this domain's managed certificate cache and reload again:
+
+```bash
+sudo find /var/lib/caddy -path '*api.haoleme.cloud*' -type f -delete
+sudo systemctl reload caddy
+```
+
 ## Service
 
 ```bash

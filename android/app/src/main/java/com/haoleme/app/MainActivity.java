@@ -38,6 +38,7 @@ import android.text.TextWatcher;
 import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
 import android.util.Base64;
+import android.util.Log;
 import android.util.Size;
 import android.view.Gravity;
 import android.view.View;
@@ -89,6 +90,7 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.net.ConnectException;
 import java.net.HttpURLConnection;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.net.URL;
@@ -122,11 +124,12 @@ import javax.crypto.spec.SecretKeySpec;
 
 @OptIn(markerClass = ExperimentalGetImage.class)
 public class MainActivity extends Activity implements LifecycleOwner {
+    private static final String TAG = "Haoleme";
     private static final String PREFS = "haoleme";
     private static final String CHANNEL_ID = "runs";
     private static final int CAMERA_REQUEST = 4108;
     private static final long POLL_MS = 5000L;
-    private static final int HTTP_TIMEOUT_MS = 12000;
+    private static final int HTTP_TIMEOUT_MS = 20000;
     private static final String CACHE_RUNS = "cached_runs_json";
     private static final String CACHE_RUNS_AT = "cached_runs_at";
     private static final String CACHE_RUNS_PREFIX = "cached_runs_json_";
@@ -2444,6 +2447,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     renderRuns(runs, false);
                 });
             } catch (Exception e) {
+                Log.w(TAG, "refreshRuns failed for " + safeRequestLabel(requestUrl), e);
                 handler.post(() -> {
                     if (hasCachedRuns()) {
                         if ("devices".equals(currentTab)) {
@@ -2451,9 +2455,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                             loadCachedDevices();
                         }
                         loadCachedRuns();
-                        statusText.setText(isEnglish() ? "Network is slow. Showing local cache." : "网络较慢，正在显示本地缓存。");
+                        statusText.setText(cloudFailureMessage(e) + (isEnglish() ? " Showing local cache." : " 正在显示本地缓存。"));
                     } else {
-                        statusText.setText((isEnglish() ? "Cannot reach cloud: " : "无法连接云端：") + e.getMessage());
+                        statusText.setText(cloudFailureMessage(e));
                     }
                 });
             }
@@ -2468,11 +2472,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 prefs.edit().putString(CACHE_DEVICES, devices.toString()).apply();
                 handler.post(() -> renderDevices(devices));
             } catch (Exception ignored) {
+                Log.w(TAG, "refreshDevices failed for " + safeRequestLabel(normalizedServerUrl() + "/api/devices"), ignored);
                 handler.post(() -> {
                     mergeDevicesFromCachedRuns();
                     if ("devices".equals(currentTab)) {
                         loadCachedDevices();
-                        statusText.setText(isEnglish() ? "Showing saved devices. Device refresh failed." : "设备刷新失败，正在显示已保存设备。");
+                        statusText.setText(cloudFailureMessage(ignored) + (isEnglish() ? " Showing saved devices." : " 正在显示已保存设备。"));
                     }
                 });
             }
@@ -4057,41 +4062,74 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private String httpRequest(String target, String method, boolean includeToken, String bodyJson, boolean allowRegisterRetry) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(target).openConnection();
-        connection.setConnectTimeout(HTTP_TIMEOUT_MS);
-        connection.setReadTimeout(HTTP_TIMEOUT_MS);
-        connection.setRequestMethod(method);
-        if (bodyJson != null) {
-            connection.setDoOutput(true);
-            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-        }
-        String token = normalizedToken();
-        if (includeToken && !token.isEmpty()) {
-            connection.setRequestProperty("Authorization", "Bearer " + token);
-        }
-        if (bodyJson != null) {
-            byte[] body = bodyJson.getBytes(StandardCharsets.UTF_8);
-            connection.setFixedLengthStreamingMode(body.length);
-            connection.getOutputStream().write(body);
-        }
-        int code = connection.getResponseCode();
-        BufferedReader reader = new BufferedReader(new InputStreamReader(
-                code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream(),
-                StandardCharsets.UTF_8
-        ));
-        StringBuilder body = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) {
-            body.append(line);
-        }
-        reader.close();
-        if (code < 200 || code >= 300) {
-            if (code == 401 && includeToken && allowRegisterRetry && shouldRegisterBeforeRetry(target) && registerAppToken(serverBaseUrl(target))) {
-                return httpRequest(target, method, includeToken, bodyJson, false);
+        try {
+            return httpRequestOnce(target, method, includeToken, bodyJson, allowRegisterRetry);
+        } catch (SocketException e) {
+            if (isConnectionReset(e)) {
+                return httpRequestOnce(target, method, includeToken, bodyJson, allowRegisterRetry);
             }
-            throw new HaolemeHttpException(code, body.toString());
+            throw e;
         }
-        return body.toString();
+    }
+
+    private String httpRequestOnce(String target, String method, boolean includeToken, String bodyJson, boolean allowRegisterRetry) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(target).openConnection();
+        try {
+            connection.setConnectTimeout(HTTP_TIMEOUT_MS);
+            connection.setReadTimeout(HTTP_TIMEOUT_MS);
+            connection.setRequestMethod(method);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Connection", "close");
+            if (bodyJson != null) {
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            }
+            String token = normalizedToken();
+            if (includeToken && !token.isEmpty()) {
+                connection.setRequestProperty("Authorization", "Bearer " + token);
+            }
+            if (bodyJson != null) {
+                byte[] body = bodyJson.getBytes(StandardCharsets.UTF_8);
+                connection.setFixedLengthStreamingMode(body.length);
+                connection.getOutputStream().write(body);
+            }
+            int code = connection.getResponseCode();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(
+                    code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream(),
+                    StandardCharsets.UTF_8
+            ));
+            StringBuilder body = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                body.append(line);
+            }
+            reader.close();
+            if (code < 200 || code >= 300) {
+                if (code == 401 && includeToken && allowRegisterRetry && shouldRegisterBeforeRetry(target) && registerAppToken(serverBaseUrl(target))) {
+                    return httpRequest(target, method, includeToken, bodyJson, false);
+                }
+                throw new HaolemeHttpException(code, body.toString());
+            }
+            return body.toString();
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private boolean isConnectionReset(SocketException e) {
+        String message = e.getMessage();
+        return message != null && message.toLowerCase(Locale.US).contains("connection reset");
+    }
+
+    private String safeRequestLabel(String target) {
+        try {
+            Uri uri = Uri.parse(target);
+            String host = uri.getHost();
+            String path = uri.getPath();
+            return (host == null ? "" : host) + (path == null ? "" : path);
+        } catch (Exception ignored) {
+            return "request";
+        }
     }
 
     private boolean shouldRegisterBeforeRetry(String target) {
@@ -4156,6 +4194,50 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 .replace("-", "_");
         prefs.edit().putString(PREF_APP_CLIENT_ID, clientId).apply();
         return clientId;
+    }
+
+    private String cloudFailureMessage(Exception e) {
+        Throwable cause = rootCause(e);
+        if (cause instanceof UnknownHostException) {
+            return isEnglish() ? "Cloud refresh failed: DNS cannot find the server." : "云端刷新失败：DNS 找不到服务器。";
+        }
+        if (cause instanceof SocketTimeoutException) {
+            return isEnglish() ? "Cloud refresh failed: server timed out." : "云端刷新失败：服务器超时。";
+        }
+        if (cause instanceof ConnectException) {
+            return isEnglish() ? "Cloud refresh failed: cannot connect to the server." : "云端刷新失败：无法连接服务器。";
+        }
+        if (cause instanceof SocketException && cause.getMessage() != null
+                && cause.getMessage().toLowerCase(Locale.US).contains("connection reset")) {
+            return isEnglish()
+                    ? "Cloud refresh failed: HTTPS handshake was reset. Check server TLS settings."
+                    : "云端刷新失败：HTTPS 握手被断开，请检查服务器 TLS 配置。";
+        }
+        if (cause instanceof IOException && cause.getMessage() != null && cause.getMessage().toLowerCase(Locale.US).contains("ssl")) {
+            return isEnglish() ? "Cloud refresh failed: secure connection failed." : "云端刷新失败：安全连接失败。";
+        }
+        if (e instanceof HaolemeHttpException) {
+            HaolemeHttpException http = (HaolemeHttpException) e;
+            if (http.statusCode == 401 || http.statusCode == 403) {
+                return isEnglish() ? "Cloud refresh failed: login expired. Pair again." : "云端刷新失败：登录已失效，请重新配对。";
+            }
+            if (http.statusCode == 426) {
+                return isEnglish() ? "Cloud refresh failed: app is too old. Update first." : "云端刷新失败：App 版本太旧，请先更新。";
+            }
+            if (http.statusCode >= 500) {
+                return isEnglish() ? "Cloud refresh failed: cloud service is temporarily unavailable." : "云端刷新失败：云服务暂时不可用。";
+            }
+            String serverMessage = http.errorMessage();
+            if (!serverMessage.isEmpty()) {
+                return (isEnglish() ? "Cloud refresh failed: " : "云端刷新失败：") + serverMessage;
+            }
+            return isEnglish() ? "Cloud refresh failed: HTTP " + http.statusCode + "." : "云端刷新失败：HTTP " + http.statusCode + "。";
+        }
+        String message = e == null ? "" : e.getMessage();
+        if (message == null || message.trim().isEmpty()) {
+            return isEnglish() ? "Cloud refresh failed." : "云端刷新失败。";
+        }
+        return (isEnglish() ? "Cloud refresh failed: " : "云端刷新失败：") + message.trim();
     }
 
     private String pairFailureMessage(Exception e) {

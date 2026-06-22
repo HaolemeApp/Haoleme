@@ -1,19 +1,19 @@
 {
   "android": {
-    "versionCode": 77,
-    "versionName": "0.6.66",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.66.apk",
+    "versionCode": 79,
+    "versionName": "0.6.68",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.68.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.66.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.6.66.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.68.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.6.68.apk"
     ],
-    "sha256": "0d6e2d09862fed1558b4d361041d7fa24a83d0bd01c58c96ffecfc5e128e589b",
+    "sha256": "8103bb66633778ab9d2c7ee2c25d310331365605612c2c447f213c0ef74aa737",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Improves update downloads with an in-app APK downloader, clearer failure reasons, checksum verification, and mirror fallback."
+    "notes": "Improves mobile cloud refresh reliability and reduces server load from long-running command output."
   },
   "python": {
-    "version": "0.3.2",
+    "version": "0.3.3",
     "packageUrl": "https://pypi.org/project/haoleme/"
   }
 }

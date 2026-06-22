@@ -35,6 +35,7 @@ READ_RATE_WINDOW_SECONDS = 60
 AUTH_FAILURE_RATE_LIMIT = 120
 MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_TAIL = 1_000_000
+MAX_LIST_OUTPUT_PREVIEW = 2000
 DEVICE_ONLINE_WINDOW_SECONDS = 90
 STALE_RUNNING_GRACE_SECONDS = 90
 STALE_RUNNING_SECONDS = DEVICE_ONLINE_WINDOW_SECONDS + STALE_RUNNING_GRACE_SECONDS
@@ -1698,7 +1699,7 @@ def list_runs(
             values,
         ).fetchall()
         names = device_names(db, account_key)
-    return [decode_run(row["payload"], names) for row in rows]
+    return [decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=False) for row in rows]
 
 
 def list_events(db_path: Path, account_key: str, since: str | None, limit: int) -> list[dict[str, Any]]:
@@ -1725,7 +1726,7 @@ def list_events(db_path: Path, account_key: str, since: str | None, limit: int) 
                 (account_key, limit),
             ).fetchall()
         names = device_names(db, account_key)
-    return [decode_run(row["payload"], names) for row in rows]
+    return [decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=False) for row in rows]
 
 
 def get_run(db_path: Path, account_key: str, run_id: str) -> dict[str, Any] | None:
@@ -1963,11 +1964,23 @@ def expire_stale_running_runs(db: sqlite3.Connection, account_key: str, now: str
     return expired
 
 
-def decode_run(payload_json: str, names: dict[str, str]) -> dict[str, Any]:
+def decode_run(
+    payload_json: str,
+    names: dict[str, str],
+    output_limit: int = MAX_OUTPUT_TAIL,
+    include_e2ee: bool = True,
+) -> dict[str, Any]:
     run = json.loads(payload_json)
     device_id = str(run.get("deviceId") or "")
     if device_id in names:
         run["deviceName"] = names[device_id]
+    if output_limit < MAX_OUTPUT_TAIL:
+        for key in ("stdoutTail", "stderrTail", "outputTail"):
+            value = str(run.get(key) or "")
+            if len(value) > output_limit:
+                run[key] = value[-output_limit:]
+    if not include_e2ee:
+        run.pop("e2ee", None)
     return run
 
 

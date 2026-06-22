@@ -19,6 +19,8 @@ from .crypto import encrypt_run_payload, is_valid_account_key
 
 DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "https://api.haoleme.cloud").rstrip("/")
 USER_AGENT = f"haoleme/{__version__}"
+RUNNING_SYNC_MIN_INTERVAL_SECONDS = 10.0
+SYNC_COALESCE_SECONDS = 0.35
 LEGACY_CLOUD_URLS = {
     "http://106.14.246.204",
     "https://106.14.246.204",
@@ -325,6 +327,7 @@ class CloudSyncer:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_error: str | None = None
+        self._last_sync_at = 0.0
         if self.client is not None:
             self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
@@ -336,7 +339,7 @@ class CloudSyncer:
     def close(self) -> None:
         if self.client is None:
             return
-        self._sync_once()
+        self._sync_once(force=True)
         self._stop.set()
         self._event.set()
         if self._thread is not None:
@@ -350,18 +353,23 @@ class CloudSyncer:
             if not self._event.is_set():
                 continue
             self._event.clear()
-            time.sleep(0.35)
+            time.sleep(SYNC_COALESCE_SECONDS)
             self._sync_once()
 
-    def _sync_once(self) -> None:
+    def _sync_once(self, force: bool = False) -> None:
         if self.client is None:
             return
         run = self.store.get_run(self.run_id)
         if run is None:
             return
+        if not force and run.status in {"created", "running"}:
+            now = time.monotonic()
+            if self._last_sync_at and now - self._last_sync_at < RUNNING_SYNC_MIN_INTERVAL_SECONDS:
+                return
         try:
             self.client.upsert_run(run)
             self.store.mark_cloud_synced(run.id)
+            self._last_sync_at = time.monotonic()
             self.last_error = None
         except Exception as exc:  # best-effort telemetry should not break commands
             self.last_error = str(exc)
