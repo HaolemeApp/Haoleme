@@ -410,15 +410,22 @@ public class MainActivity extends Activity implements LifecycleOwner {
         statusText.setPadding(0, dp(6), 0, dp(10));
         root.addView(statusText, matchWrap());
 
-        accountToken();
         String rawSavedServerUrl = prefs.getString("server_url", "").trim();
         String savedServerUrl = normalizeServerUrl(rawSavedServerUrl);
         if (shouldReplaceSavedServerUrl(rawSavedServerUrl, savedServerUrl)) {
+            boolean authServerChanged = shouldClearAuthForServerReplacement(rawSavedServerUrl, savedServerUrl);
+            if (authServerChanged) {
+                clearAllPairingAndCache();
+            }
             prefs.edit()
                     .putString("server_url", savedServerUrl)
                     .putBoolean("inputs_locked", true)
                     .apply();
+            if (authServerChanged) {
+                statusText.setText(isEnglish() ? "Server changed. Pair again to continue." : "服务器已切换，请重新配对后继续使用。");
+            }
         }
+        accountToken();
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -5280,6 +5287,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String bundledDefault = trimTrailingSlash(DEFAULT_SERVER_URL);
         if (!CANONICAL_SERVER_URL.equalsIgnoreCase(bundledDefault) && CANONICAL_SERVER_URL.equalsIgnoreCase(raw)) {
             return true;
+        }
+        return !normalizedSavedServerUrl.equals(raw);
+    }
+
+    private boolean shouldClearAuthForServerReplacement(String rawSavedServerUrl, String normalizedSavedServerUrl) {
+        String raw = trimTrailingSlash(rawSavedServerUrl == null ? "" : rawSavedServerUrl.trim());
+        if (raw.isEmpty()) {
+            return false;
         }
         return !normalizedSavedServerUrl.equals(raw);
     }

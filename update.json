@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 80,
-    "versionName": "0.6.69",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.69.apk",
+    "versionCode": 81,
+    "versionName": "0.6.70",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.70.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.69.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.69.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.70.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.70.apk"
     ],
-    "sha256": "230b884f16b00cfba6c8b6fe6141d3a60a7c71aa0a105764598ca8913d651411",
+    "sha256": "8ac3a9862cdc254546f01c0eb9fb950a10e3814f3f692adb61f00d763aba27ac",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Temporary server migration build. Uses the new HTTP server while ICP/HTTPS is being prepared."
+    "notes": "Clears old server tokens during temporary server migration and asks users to pair again."
   },
   "python": {
     "version": "0.3.3",

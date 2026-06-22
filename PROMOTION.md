@@ -19,7 +19,7 @@
 
 [下载 Haoleme.apk](https://github.com/HaolemeApp/Haoleme/releases/latest)
 
-当前版本：`0.6.69`
+当前版本：`0.6.70`
 
 首次安装时，Android 可能会提示“未知来源应用”，允许安装即可。
 
