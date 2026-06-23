@@ -240,8 +240,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     refreshRunDetail(selectedRunId, false);
                 }
             } catch (Throwable throwable) {
-                showStartupError(throwable);
-                return;
+                // A transient refresh error must never kill the auto-refresh loop
+                // or replace the UI with the startup-error screen. Keep polling.
             }
             handler.postDelayed(this, pollDelayMs());
         }

@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 90,
-    "versionName": "0.6.79",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.79.apk",
+    "versionCode": 91,
+    "versionName": "0.6.80",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.80.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.79.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.79.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.80.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.80.apk"
     ],
-    "sha256": "c41bbcf5c8160006564b050b1c0160acc4b80cd0ed2e93fde289685e21307874",
+    "sha256": "9413c04528e69b025f7518c798f7eb589b1a4dba7922bef7a9a8bbc27a8b2988",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "控制台实时性提升：运行中输出改为每秒刷新（原 3 秒）。"
+    "notes": "控制台不再卡住：持续输出的进程保持秒级刷新；自动刷新更稳。"
   },
   "python": {
-    "version": "0.3.22",
+    "version": "0.3.23",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.22-py3-none-any.whl",
-    "notes": "Tiered console sync cadence; heartbeat reports GPU usage."
+    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.23-py3-none-any.whl",
+    "notes": "Console stays near real-time while output keeps flowing (idle-based sync tiering)."
   }
 }
