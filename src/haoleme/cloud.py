@@ -15,7 +15,7 @@ from typing import Any
 
 from .store import RunRecord, RunStore, default_data_dir
 from . import __version__
-from .crypto import encrypt_run_payload, is_valid_account_key
+from .crypto import encrypt_output_chunk, encrypt_run_payload, is_valid_account_key
 
 
 DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "http://39.96.50.42").rstrip("/")
@@ -225,17 +225,53 @@ class CloudClient:
     def health(self) -> dict[str, Any]:
         return self.request("GET", "/health")
 
-    def upsert_run(self, run: RunRecord) -> None:
+    def upsert_run(self, run: RunRecord, *, include_output: bool = True) -> None:
         payload = run.to_dict()
         if self.config.device_id:
             payload["deviceId"] = self.config.device_id
         if self.config.device_name:
             payload["deviceName"] = self.config.device_name
         if is_valid_account_key(self.config.encryption_key):
-            payload = encrypt_run_payload(payload, self.config.encryption_key)
+            payload = encrypt_run_payload(payload, self.config.encryption_key, include_output=include_output)
         elif not env_flag("HAOLEME_ALLOW_PLAINTEXT_CLOUD_RUNS", False):
             raise RuntimeError("E2EE is not configured; run `hao login` from the app again before cloud sync")
         self.request("POST", "/api/runs", {"run": payload})
+
+    def append_run_update(self, run: RunRecord, deltas: dict[str, str]) -> None:
+        patch: dict[str, Any] = {
+            "id": run.id,
+            "status": run.status,
+            "pid": run.pid,
+            "exitCode": run.exit_code,
+            "endedAt": run.ended_at,
+            "updatedAt": run.updated_at,
+            "project": run.project,
+            "outputLength": len(run.output_tail),
+        }
+        if self.config.device_id:
+            patch["deviceId"] = self.config.device_id
+        if self.config.device_name:
+            patch["deviceName"] = self.config.device_name
+        output_delta = deltas.get("output_tail") or ""
+        stdout_delta = deltas.get("stdout_tail") or ""
+        stderr_delta = deltas.get("stderr_tail") or ""
+        if is_valid_account_key(self.config.encryption_key):
+            chunk_fields = {
+                "outputTail": output_delta,
+                "stdoutTail": stdout_delta,
+                "stderrTail": stderr_delta,
+            }
+            chunk_fields = {key: value for key, value in chunk_fields.items() if value}
+            if chunk_fields:
+                patch["e2eeOutputChunk"] = encrypt_output_chunk(run.id, self.config.encryption_key, chunk_fields)
+        else:
+            if output_delta:
+                patch["outputDelta"] = output_delta
+            if stdout_delta:
+                patch["stdoutDelta"] = stdout_delta
+            if stderr_delta:
+                patch["stderrDelta"] = stderr_delta
+        self.request("POST", "/api/runs", {"append": True, "run": patch})
 
     def heartbeat(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
@@ -382,6 +418,10 @@ class CloudSyncer:
         self._thread: threading.Thread | None = None
         self.last_error: str | None = None
         self._last_sync_at = 0.0
+        self._initial_synced = False
+        self._synced_output_len = 0
+        self._synced_stdout_len = 0
+        self._synced_stderr_len = 0
         if self.client is not None:
             self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
@@ -410,6 +450,18 @@ class CloudSyncer:
             time.sleep(SYNC_COALESCE_SECONDS)
             self._sync_once()
 
+    def _output_deltas(self, run: RunRecord) -> dict[str, str]:
+        return {
+            "output_tail": run.output_tail[self._synced_output_len :],
+            "stdout_tail": run.stdout_tail[self._synced_stdout_len :],
+            "stderr_tail": run.stderr_tail[self._synced_stderr_len :],
+        }
+
+    def _mark_output_synced(self, run: RunRecord) -> None:
+        self._synced_output_len = len(run.output_tail)
+        self._synced_stdout_len = len(run.stdout_tail)
+        self._synced_stderr_len = len(run.stderr_tail)
+
     def _sync_once(self, force: bool = False) -> None:
         if self.client is None:
             return
@@ -421,8 +473,23 @@ class CloudSyncer:
             if self._last_sync_at and now - self._last_sync_at < RUNNING_SYNC_MIN_INTERVAL_SECONDS:
                 return
         try:
-            self.client.upsert_run(run)
+            deltas = self._output_deltas(run)
+            has_output = any(deltas.values())
+            running = run.status in {"created", "running"}
+
+            if not self._initial_synced:
+                self.client.upsert_run(run, include_output=False)
+                self._initial_synced = True
+                self.client.append_run_update(run, deltas if has_output else {})
+            elif running:
+                self.client.append_run_update(run, deltas if has_output else {})
+            else:
+                if has_output:
+                    self.client.append_run_update(run, deltas)
+                self.client.upsert_run(run, include_output=False)
+
             self.store.mark_cloud_synced(run.id)
+            self._mark_output_synced(run)
             self._last_sync_at = time.monotonic()
             self.last_error = None
         except Exception as exc:  # best-effort telemetry should not break commands

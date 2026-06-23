@@ -36,6 +36,7 @@ READ_RATE_WINDOW_SECONDS = 60
 AUTH_FAILURE_RATE_LIMIT = 120
 MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_TAIL = 1_000_000
+MAX_OUTPUT_CHUNKS = 20_000
 MAX_LIST_OUTPUT_PREVIEW = 2000
 DEVICE_ONLINE_WINDOW_SECONDS = 90
 STALE_RUNNING_GRACE_SECONDS = 90
@@ -158,7 +159,14 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 if not can_read_run(auth, run):
                     self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
                     return
-                self.send_json({"run": run})
+                query = parse_qs(parsed.query)
+                self.send_json(
+                    build_run_fetch_payload(
+                        run,
+                        output_since=parse_output_since(query),
+                        output_length=parse_output_length(query),
+                    )
+                )
                 return
 
         if parsed.path.startswith("/api/") and auth.scope != "admin":
@@ -293,6 +301,18 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             run = payload.get("run") if isinstance(payload.get("run"), dict) else payload
             if not isinstance(run, dict) or not run.get("id"):
                 self.send_json({"error": "missing run", "code": "missing_run"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if payload.get("append"):
+                stored = append_run_update(self.server.db_path, auth.account_key, run, auth)
+                if stored is None:
+                    self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
+                    return
+                if auth.scope == "write":
+                    stored["deviceId"] = auth.device_id
+                    if not stored.get("deviceName"):
+                        stored["deviceName"] = auth.device_name
+                touch_token(self.server.db_path, auth.token_hash, stored.get("updatedAt", "") or iso_now())
+                self.send_json({"ok": True, "outputLength": stored.get("outputLength", 0), "outputChunks": len(stored.get("outputChunks") or [])})
                 return
             stored = normalize_run(run)
             if server_requires_e2ee() and not is_e2ee_run(stored):
@@ -1815,6 +1835,167 @@ def get_run(db_path: Path, account_key: str, run_id: str) -> dict[str, Any] | No
     return None if row is None else decode_run(row["payload"], names)
 
 
+def append_run_update(
+    db_path: Path,
+    account_key: str,
+    patch: dict[str, Any],
+    auth: Any,
+) -> dict[str, Any] | None:
+    run_id = str(patch.get("id") or "").strip()
+    if not run_id:
+        return None
+    with connect(db_path) as db:
+        row = db.execute(
+            "SELECT payload FROM runs WHERE account_key = ? AND id = ?",
+            (account_key, run_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            existing = json.loads(row["payload"])
+        except json.JSONDecodeError:
+            existing = {}
+        if auth.scope == "write":
+            device_id = str(existing.get("deviceId") or "")
+            if device_id and device_id != auth.device_id:
+                return None
+        for key in ("status", "pid", "exitCode", "endedAt", "updatedAt", "deviceId", "deviceName", "project"):
+            if key in patch and patch.get(key) is not None:
+                existing[key] = patch[key]
+        if auth.scope == "write" and auth.device_id:
+            existing["deviceId"] = auth.device_id
+            if not str(existing.get("deviceName") or "").strip():
+                existing["deviceName"] = auth.device_name
+        if existing.get("interruptRequestedAt") and not patch.get("interruptRequestedAt"):
+            pass
+        elif patch.get("interruptRequestedAt"):
+            existing["interruptRequestedAt"] = patch["interruptRequestedAt"]
+
+        chunk = patch.get("e2eeOutputChunk")
+        if isinstance(chunk, dict) and chunk.get("ciphertext"):
+            chunks = existing.get("outputChunks")
+            if not isinstance(chunks, list):
+                chunks = []
+            chunk_copy = {
+                "v": int_or_none(chunk.get("v")) or 1,
+                "alg": str(chunk.get("alg") or "AES-256-GCM")[:40],
+                "nonce": str(chunk.get("nonce") or "")[:128],
+                "ciphertext": str(chunk.get("ciphertext") or ""),
+                "seq": len(chunks),
+            }
+            chunks.append(chunk_copy)
+            existing["outputChunks"] = chunks[-MAX_OUTPUT_CHUNKS:]
+            if patch.get("outputLength") is not None:
+                existing["outputLength"] = max(0, int_or_none(patch.get("outputLength")) or 0)
+        else:
+            for target, delta_key in (
+                ("outputTail", "outputDelta"),
+                ("stdoutTail", "stdoutDelta"),
+                ("stderrTail", "stderrDelta"),
+            ):
+                delta = str(patch.get(delta_key) or "")
+                if not delta:
+                    continue
+                merged = str(existing.get(target) or "") + delta
+                existing[target] = merged[-MAX_OUTPUT_TAIL:]
+            existing["outputLength"] = len(str(existing.get("outputTail") or ""))
+
+        stored = normalize_run(existing)
+        db.execute(
+            """
+            INSERT INTO runs(account_key, id, updated_at, status, device_id, device_name, project, payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_key, id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                status = excluded.status,
+                device_id = excluded.device_id,
+                device_name = excluded.device_name,
+                project = excluded.project,
+                payload = excluded.payload
+            """,
+            (
+                account_key,
+                stored["id"],
+                stored["updatedAt"],
+                stored.get("status", ""),
+                stored.get("deviceId", ""),
+                stored.get("deviceName", ""),
+                normalize_project_name(stored.get("project")),
+                json.dumps(stored, ensure_ascii=False),
+            ),
+        )
+    if stored.get("deviceId"):
+        upsert_device(
+            db_path,
+            account_key,
+            stored.get("deviceId", ""),
+            stored.get("deviceName", "") or "好了么 CLI",
+            stored.get("updatedAt", "") or iso_now(),
+        )
+    return stored
+
+
+def parse_output_since(query: dict[str, list[str]]) -> int:
+    raw = first_query_value(query, "outputSince")
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def parse_output_length(query: dict[str, list[str]]) -> int:
+    raw = first_query_value(query, "outputLength")
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def build_run_fetch_payload(
+    run: dict[str, Any],
+    *,
+    output_since: int = 0,
+    output_length: int = 0,
+) -> dict[str, Any]:
+    if output_since <= 0 and output_length <= 0:
+        return {"run": run}
+
+    slim = dict(run)
+    chunks = slim.get("outputChunks")
+    if isinstance(chunks, list) and chunks:
+        slim["stdoutTail"] = ""
+        slim["stderrTail"] = ""
+        slim["outputTail"] = ""
+        new_chunks = chunks[output_since:] if output_since > 0 else chunks
+        return {
+            "run": slim,
+            "outputChunks": new_chunks,
+            "outputLength": int_or_none(slim.get("outputLength")) or 0,
+            "incremental": True,
+        }
+
+    output_tail = str(slim.get("outputTail") or "")
+    if output_length > 0 and output_length < len(output_tail):
+        append_text = output_tail[output_length:]
+    else:
+        append_text = output_tail
+    slim["stdoutTail"] = ""
+    slim["stderrTail"] = ""
+    slim["outputTail"] = ""
+    payload: dict[str, Any] = {
+        "run": slim,
+        "outputLength": len(output_tail),
+        "incremental": True,
+    }
+    if append_text:
+        payload["outputAppend"] = append_text
+    return payload
+
+
 def list_pending_interrupts(db_path: Path, account_key: str, device_id: str) -> list[dict[str, Any]]:
     if not device_id:
         return []
@@ -2183,6 +2364,22 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
     interrupt_requested_at = str(run.get("interruptRequestedAt") or "").strip()
     if interrupt_requested_at:
         normalized["interruptRequestedAt"] = interrupt_requested_at
+    output_chunks = run.get("outputChunks")
+    if isinstance(output_chunks, list) and output_chunks:
+        normalized["outputChunks"] = [
+            {
+                "v": int_or_none(item.get("v")) or 1,
+                "alg": str(item.get("alg") or "AES-256-GCM")[:40],
+                "nonce": str(item.get("nonce") or "")[:128],
+                "ciphertext": str(item.get("ciphertext") or ""),
+                "seq": int_or_none(item.get("seq")) or index,
+            }
+            for index, item in enumerate(output_chunks)
+            if isinstance(item, dict) and str(item.get("ciphertext") or "")
+        ]
+    output_length = int_or_none(run.get("outputLength"))
+    if output_length is not None:
+        normalized["outputLength"] = max(0, output_length)
     return normalized
 
 

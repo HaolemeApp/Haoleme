@@ -223,6 +223,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean pairingInProgress = false;
     private String selectedStatusFilter = "all";
     private String currentConsoleOutput = "";
+    private int consoleOutputSyncedLength = 0;
+    private int outputChunkSyncedCount = 0;
+    private boolean consoleIncrementalUsesChunks = false;
     private String currentTab = "runs";
 
     private final Runnable pollRunnable = new Runnable() {
@@ -3454,6 +3457,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         selectedRunId = id;
         selectedRunStatus = "";
+        consoleOutputSyncedLength = 0;
+        outputChunkSyncedCount = 0;
+        consoleIncrementalUsesChunks = false;
+        currentConsoleOutput = "";
         buildConsoleUi();
         loadCachedRunDetail(id);
         refreshRunDetail(id, true);
@@ -3733,12 +3740,27 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         executor.submit(() -> {
             try {
-                String body = httpGet(normalizedServerUrl() + "/api/runs/" + id);
-                final JSONObject run = decryptRun(new JSONObject(body).getJSONObject("run"));
-                prefs.edit().putString(CACHE_RUN_PREFIX + id, run.toString()).apply();
+                StringBuilder url = new StringBuilder(normalizedServerUrl()).append("/api/runs/").append(id);
+                if (!showLoading && id.equals(selectedRunId)) {
+                    if (consoleIncrementalUsesChunks && outputChunkSyncedCount > 0) {
+                        url.append("?outputSince=").append(outputChunkSyncedCount);
+                    } else if (consoleOutputSyncedLength > 0) {
+                        url.append("?outputLength=").append(consoleOutputSyncedLength);
+                    }
+                }
+                JSONObject payload = new JSONObject(httpGet(url.toString()));
+                final boolean incremental = payload.optBoolean("incremental", false);
+                final JSONObject run = decryptRun(payload.getJSONObject("run"), payload.optJSONArray("outputChunks"));
+                if (!incremental) {
+                    prefs.edit().putString(CACHE_RUN_PREFIX + id, run.toString()).apply();
+                }
                 handler.post(() -> {
                     if (id.equals(selectedRunId)) {
-                        updateRunDetail(run);
+                        if (incremental) {
+                            applyIncrementalRunDetail(run, payload);
+                        } else {
+                            updateRunDetail(run);
+                        }
                     }
                 });
             } catch (Exception e) {
@@ -3762,6 +3784,43 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
     }
 
+    private void applyIncrementalRunDetail(JSONObject run, JSONObject payload) {
+        String status = run.optString("status", "unknown");
+        if (selectedRunId != null && selectedRunId.equals(run.optString("id", ""))) {
+            selectedRunStatus = status;
+        }
+        String projectName = run.optString("project", "").trim();
+        String projectSuffix = projectName.isEmpty() ? "" : " · " + projectName;
+        detailMeta.setText(status.toUpperCase(Locale.US) + projectSuffix + statusSuffix(run));
+        detailMeta.setTextColor(statusColor(status));
+        updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
+
+        String appendText = payload.optString("outputAppend", "");
+        if (!appendText.isEmpty()) {
+            currentConsoleOutput = (currentConsoleOutput == null ? "" : currentConsoleOutput) + appendText;
+            consoleOutputSyncedLength = currentConsoleOutput.length();
+        }
+        JSONArray chunks = payload.optJSONArray("outputChunks");
+        if (chunks != null && chunks.length() > 0) {
+            consoleIncrementalUsesChunks = true;
+            currentConsoleOutput = (currentConsoleOutput == null ? "" : currentConsoleOutput) + decryptOutputChunks(run.optString("id", ""), chunks);
+            outputChunkSyncedCount += chunks.length();
+            consoleOutputSyncedLength = currentConsoleOutput.length();
+        }
+        if (payload.has("outputLength")) {
+            consoleOutputSyncedLength = Math.max(consoleOutputSyncedLength, payload.optInt("outputLength", consoleOutputSyncedLength));
+        }
+
+        renderConsoleText();
+        maybeNotify(run);
+        if (("running".equals(status) || "created".equals(status)) && consoleAutoScroll && consoleVerticalScroll != null) {
+            consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_DOWN));
+        }
+        if (statusText != null && !isConsoleRenderClipped() && (consoleSearchInput == null || consoleSearchInput.getText().toString().trim().isEmpty())) {
+            statusText.setText(isEnglish() ? "Console updated." : "控制台已更新。");
+        }
+    }
+
     private void updateRunDetail(JSONObject run) {
         updateRunDetail(run, false);
     }
@@ -3781,6 +3840,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setTextColor(statusColor(status));
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
         currentConsoleOutput = consoleOutput(run);
+        JSONArray chunks = run.optJSONArray("outputChunks");
+        outputChunkSyncedCount = chunks == null ? 0 : chunks.length();
+        consoleIncrementalUsesChunks = outputChunkSyncedCount > 0;
+        consoleOutputSyncedLength = currentConsoleOutput == null ? 0 : currentConsoleOutput.length();
         renderConsoleText();
         if (("running".equals(status) || "created".equals(status)) && consoleAutoScroll && consoleVerticalScroll != null) {
             consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_DOWN));
@@ -5442,40 +5505,118 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private JSONObject decryptRun(JSONObject run) {
+        return decryptRun(run, null);
+    }
+
+    private JSONObject decryptRun(JSONObject run, JSONArray extraChunks) {
+        JSONObject copy;
         JSONObject e2ee = run.optJSONObject("e2ee");
         if (e2ee == null || e2ee.optInt("v", 0) != 1) {
-            return run;
+            copy = run;
+        } else {
+            try {
+                byte[] key = accountEncryptionKeyBytes();
+                byte[] nonce = base64UrlDecode(e2ee.optString("nonce", ""));
+                byte[] ciphertext = base64UrlDecode(e2ee.optString("ciphertext", ""));
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
+                cipher.updateAAD(run.optString("id", "").getBytes(StandardCharsets.UTF_8));
+                byte[] plaintext = cipher.doFinal(ciphertext);
+                JSONObject fields = new JSONObject(new String(plaintext, StandardCharsets.UTF_8));
+                copy = new JSONObject(run.toString());
+                copy.put("commandText", fields.optString("commandText", copy.optString("commandText", "")));
+                copy.put("cwd", fields.optString("cwd", copy.optString("cwd", "")));
+                copy.put("stdoutTail", fields.optString("stdoutTail", ""));
+                copy.put("stderrTail", fields.optString("stderrTail", ""));
+                copy.put("outputTail", fields.optString("outputTail", ""));
+                if (fields.has("command")) {
+                    copy.put("command", fields.optJSONArray("command"));
+                }
+            } catch (Exception ignored) {
+                try {
+                    copy = new JSONObject(run.toString());
+                    copy.put("commandText", "Encrypted run. Re-pair this app to decrypt.");
+                    copy.put("stdoutTail", "");
+                    copy.put("stderrTail", "");
+                    copy.put("outputTail", "");
+                } catch (Exception nested) {
+                    return run;
+                }
+            }
         }
         try {
-            byte[] key = accountEncryptionKeyBytes();
-            byte[] nonce = base64UrlDecode(e2ee.optString("nonce", ""));
-            byte[] ciphertext = base64UrlDecode(e2ee.optString("ciphertext", ""));
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
-            cipher.updateAAD(run.optString("id", "").getBytes(StandardCharsets.UTF_8));
-            byte[] plaintext = cipher.doFinal(ciphertext);
-            JSONObject fields = new JSONObject(new String(plaintext, StandardCharsets.UTF_8));
-            JSONObject copy = new JSONObject(run.toString());
-            copy.put("commandText", fields.optString("commandText", copy.optString("commandText", "")));
-            copy.put("cwd", fields.optString("cwd", copy.optString("cwd", "")));
-            copy.put("stdoutTail", fields.optString("stdoutTail", ""));
-            copy.put("stderrTail", fields.optString("stderrTail", ""));
-            copy.put("outputTail", fields.optString("outputTail", ""));
-            if (fields.has("command")) {
-                copy.put("command", fields.optJSONArray("command"));
+            String runId = copy.optString("id", "");
+            StringBuilder merged = new StringBuilder(copy.optString("outputTail", ""));
+            String stdout = copy.optString("stdoutTail", "");
+            String stderr = copy.optString("stderrTail", "");
+            JSONArray chunks = run.optJSONArray("outputChunks");
+            if (chunks != null) {
+                merged.append(decryptOutputChunks(runId, chunks));
+            }
+            if (extraChunks != null) {
+                merged.append(decryptOutputChunks(runId, extraChunks));
+            }
+            if (merged.length() > 0) {
+                copy.put("outputTail", merged.toString());
+            } else if (!stdout.isEmpty() || !stderr.isEmpty()) {
+                copy.put("outputTail", consoleOutput(copy));
             }
             return copy;
         } catch (Exception ignored) {
-            try {
-                JSONObject copy = new JSONObject(run.toString());
-                copy.put("commandText", "Encrypted run. Re-pair this app to decrypt.");
-                copy.put("stdoutTail", "");
-                copy.put("stderrTail", "");
-                copy.put("outputTail", "");
-                return copy;
-            } catch (Exception nested) {
-                return run;
+            return copy;
+        }
+    }
+
+    private String decryptOutputChunks(String runId, JSONArray chunks) {
+        if (chunks == null || chunks.length() == 0) {
+            return "";
+        }
+        StringBuilder merged = new StringBuilder();
+        for (int i = 0; i < chunks.length(); i++) {
+            JSONObject chunk = chunks.optJSONObject(i);
+            if (chunk == null) {
+                continue;
             }
+            String piece = decryptOutputChunk(runId, chunk);
+            if (!piece.isEmpty()) {
+                merged.append(piece);
+            }
+        }
+        return merged.toString();
+    }
+
+    private String decryptOutputChunk(String runId, JSONObject chunk) {
+        if (chunk == null || chunk.optInt("v", 0) != 1) {
+            return "";
+        }
+        try {
+            byte[] key = accountEncryptionKeyBytes();
+            byte[] nonce = base64UrlDecode(chunk.optString("nonce", ""));
+            byte[] ciphertext = base64UrlDecode(chunk.optString("ciphertext", ""));
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
+            cipher.updateAAD(runId.getBytes(StandardCharsets.UTF_8));
+            byte[] plaintext = cipher.doFinal(ciphertext);
+            JSONObject fields = new JSONObject(new String(plaintext, StandardCharsets.UTF_8));
+            String output = fields.optString("outputTail", "");
+            if (!output.isEmpty()) {
+                return output;
+            }
+            String stdout = fields.optString("stdoutTail", "");
+            String stderr = fields.optString("stderrTail", "");
+            StringBuilder combined = new StringBuilder();
+            if (!stdout.isEmpty()) {
+                combined.append(stdout);
+            }
+            if (!stderr.isEmpty()) {
+                if (combined.length() > 0) {
+                    combined.append("\n");
+                }
+                combined.append(stderr);
+            }
+            return combined.toString();
+        } catch (Exception ignored) {
+            return "";
         }
     }
 

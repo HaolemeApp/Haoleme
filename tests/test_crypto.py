@@ -7,7 +7,9 @@ from haoleme.crypto import (
     b64url_decode,
     b64url_encode,
     decrypt_account_key,
+    decrypt_output_chunk,
     decrypt_run_payload,
+    encrypt_output_chunk,
     encrypt_run_payload,
     generate_account_key,
     generate_pair_keypair,
@@ -62,6 +64,28 @@ class CryptoTest(unittest.TestCase):
         self.assertNotIn("secret output", str(encrypted))
         self.assertIn("ciphertext", encrypted["e2ee"])
         self.assertEqual(decrypt_run_payload(encrypted, account_key)["outputTail"], "secret output")
+
+    def test_output_chunk_roundtrip_and_merge(self):
+        account_key = generate_account_key()
+        run = {
+            "id": "run-1",
+            "command": ["echo", "hi"],
+            "commandText": "echo hi",
+            "cwd": "/tmp",
+            "status": "running",
+            "stdoutTail": "",
+            "stderrTail": "",
+            "outputTail": "",
+        }
+        encrypted = encrypt_run_payload(run, account_key, include_output=False)
+        chunk = encrypt_output_chunk("run-1", account_key, {"outputTail": "line-1\n", "stdoutTail": "line-1\n"})
+        encrypted["outputChunks"] = [chunk]
+        decrypted = decrypt_run_payload(encrypted, account_key)
+        self.assertEqual(decrypted["outputTail"], "line-1\n")
+        self.assertEqual(
+            decrypt_output_chunk("run-1", account_key, encrypt_output_chunk("run-1", account_key, {"outputTail": "line-2\n"})),
+            {"outputTail": "line-2\n"},
+        )
 
 
 if __name__ == "__main__":

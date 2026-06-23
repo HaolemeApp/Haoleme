@@ -5,7 +5,9 @@ from unittest.mock import patch
 
 from haoleme.cloud_server import (
     AuthContext,
+    append_run_update,
     authenticate_device_token,
+    build_run_fetch_payload,
     account_has_cloud_data,
     backup_database,
     cancel_pair,
@@ -530,6 +532,65 @@ class CloudServerDeviceTest(unittest.TestCase):
                 "run-2": "2026-06-18T01:05:01Z",
                 "run-3": "2026-06-18T01:10:01Z",
             }.get(run_id, "2026-06-18T01:00:01Z"),
+            "deviceId": device_id,
+            "deviceName": device_name,
+            "stdoutTail": "hello\n",
+            "stderrTail": "",
+            "outputTail": "hello\n",
+        }
+
+
+class CloudServerAppendTest(unittest.TestCase):
+    def test_append_run_update_and_incremental_fetch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            init_db(db_path)
+            writer = AuthContext(
+                account_key=account_key,
+                token_hash="write",
+                scope="write",
+                device_id="dev_123",
+                device_name="CLI",
+            )
+
+            upsert_run(db_path, account_key, self.sample_run("run-1", "dev_123", "CLI", "running"))
+            stored = append_run_update(
+                db_path,
+                account_key,
+                {
+                    "id": "run-1",
+                    "status": "running",
+                    "updatedAt": "2026-06-18T01:00:02Z",
+                    "outputDelta": "more\n",
+                    "outputLength": 10,
+                },
+                writer,
+            )
+
+            self.assertIsNotNone(stored)
+            self.assertEqual(stored["outputTail"], "hello\nmore\n")
+            self.assertEqual(stored["outputLength"], len("hello\nmore\n"))
+
+            record_device_heartbeat(db_path, account_key, "dev_123", "CLI", iso_now())
+            run = get_run(db_path, account_key, "run-1")
+            payload = build_run_fetch_payload(run, output_length=len("hello\n"))
+            self.assertTrue(payload["incremental"])
+            self.assertEqual(payload["outputAppend"], "more\n")
+            self.assertEqual(payload["run"]["outputTail"], "")
+
+    def sample_run(self, run_id, device_id, device_name, status="succeeded"):
+        return {
+            "id": run_id,
+            "command": ["echo", "hello"],
+            "commandText": "echo hello",
+            "cwd": "/tmp",
+            "status": status,
+            "pid": 123,
+            "exitCode": 0 if status == "succeeded" else None,
+            "startedAt": "2026-06-18T01:00:00Z",
+            "endedAt": "2026-06-18T01:00:01Z" if status != "running" else None,
+            "updatedAt": "2026-06-18T01:00:01Z",
             "deviceId": device_id,
             "deviceName": device_name,
             "stdoutTail": "hello\n",

@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 87,
-    "versionName": "0.6.76",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.76.apk",
+    "versionCode": 88,
+    "versionName": "0.6.77",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.77.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.76.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.76.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.77.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.77.apk"
     ],
-    "sha256": "c28cb1f9a2c79be3a40cdb3c3fad4b8ae72eb92580b03f7543d3b8437d006423",
+    "sha256": "be7cda9b2d12036d9553bf4c08d20d38b64046b26101546689eac44c2ba88b88",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Faster console refresh (~5s CLI sync, 3s app poll while running)."
+    "notes": "Incremental console sync: append small output chunks instead of full payload."
   },
   "python": {
-    "version": "0.3.20",
+    "version": "0.3.21",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.20-py3-none-any.whl",
-    "notes": "Faster running command cloud sync (5s instead of 10s)."
+    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.21-py3-none-any.whl",
+    "notes": "Incremental console sync via append API and encrypted output chunks."
   }
 }

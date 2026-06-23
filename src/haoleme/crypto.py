@@ -14,6 +14,8 @@ E2EE_VERSION = 1
 RUN_E2EE_ALGORITHM = "AES-256-GCM"
 KEY_WRAP_ALGORITHM = "RSA-OAEP-SHA256"
 ENCRYPTED_FIELDS = ("command", "commandText", "cwd", "stdoutTail", "stderrTail", "outputTail")
+METADATA_ENCRYPTED_FIELDS = ("command", "commandText", "cwd")
+OUTPUT_ENCRYPTED_FIELDS = ("stdoutTail", "stderrTail", "outputTail")
 
 
 def b64url_encode(value: bytes) -> str:
@@ -66,12 +68,13 @@ def decrypt_account_key(encrypted_key: str, private_key_pem: bytes) -> str:
     return b64url_encode(plaintext)
 
 
-def encrypt_run_payload(run: dict[str, Any], account_key: str) -> dict[str, Any]:
+def encrypt_run_payload(run: dict[str, Any], account_key: str, *, include_output: bool = True) -> dict[str, Any]:
     key = b64url_decode(account_key)
     if len(key) != 32:
         raise ValueError("好了么 encryption key must be 32 bytes")
 
-    cleartext = {field: run.get(field) for field in ENCRYPTED_FIELDS}
+    fields = ENCRYPTED_FIELDS if include_output else METADATA_ENCRYPTED_FIELDS
+    cleartext = {field: run.get(field) for field in fields}
     cleartext_bytes = json.dumps(cleartext, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     nonce = os.urandom(12)
     aad = str(run.get("id") or "").encode("utf-8")
@@ -93,6 +96,39 @@ def encrypt_run_payload(run: dict[str, Any], account_key: str) -> dict[str, Any]
     return encrypted
 
 
+def encrypt_output_chunk(run_id: str, account_key: str, deltas: dict[str, str]) -> dict[str, Any]:
+    key = b64url_decode(account_key)
+    if len(key) != 32:
+        raise ValueError("好了么 encryption key must be 32 bytes")
+    cleartext = {field: str(deltas.get(field) or "") for field in OUTPUT_ENCRYPTED_FIELDS if deltas.get(field)}
+    if not cleartext:
+        raise ValueError("output chunk is empty")
+    cleartext_bytes = json.dumps(cleartext, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    nonce = os.urandom(12)
+    aad = str(run_id or "").encode("utf-8")
+    ciphertext = AESGCM(key).encrypt(nonce, cleartext_bytes, aad)
+    return {
+        "v": E2EE_VERSION,
+        "alg": RUN_E2EE_ALGORITHM,
+        "nonce": b64url_encode(nonce),
+        "ciphertext": b64url_encode(ciphertext),
+    }
+
+
+def decrypt_output_chunk(run_id: str, account_key: str, chunk: dict[str, Any]) -> dict[str, str]:
+    key = b64url_decode(account_key)
+    if int(chunk.get("v") or 0) != E2EE_VERSION:
+        return {}
+    nonce = b64url_decode(str(chunk.get("nonce") or ""))
+    ciphertext = b64url_decode(str(chunk.get("ciphertext") or ""))
+    aad = str(run_id or "").encode("utf-8")
+    cleartext = AESGCM(key).decrypt(nonce, ciphertext, aad)
+    fields = json.loads(cleartext.decode("utf-8"))
+    if not isinstance(fields, dict):
+        return {}
+    return {field: str(fields.get(field) or "") for field in OUTPUT_ENCRYPTED_FIELDS if fields.get(field)}
+
+
 def decrypt_run_payload(run: dict[str, Any], account_key: str) -> dict[str, Any]:
     e2ee = run.get("e2ee")
     if not isinstance(e2ee, dict):
@@ -111,4 +147,18 @@ def decrypt_run_payload(run: dict[str, Any], account_key: str) -> dict[str, Any]
     for field in ENCRYPTED_FIELDS:
         if field in fields:
             decrypted[field] = fields[field]
+    output_chunks = run.get("outputChunks")
+    if isinstance(output_chunks, list):
+        merged_output = {field: "" for field in OUTPUT_ENCRYPTED_FIELDS}
+        for chunk in output_chunks:
+            if not isinstance(chunk, dict):
+                continue
+            piece = decrypt_output_chunk(str(run.get("id") or ""), account_key, chunk)
+            for field, value in piece.items():
+                merged_output[field] = merged_output.get(field, "") + value
+        for field, value in merged_output.items():
+            if value and not decrypted.get(field):
+                decrypted[field] = value
+            elif value:
+                decrypted[field] = str(decrypted.get(field) or "") + value
     return decrypted
