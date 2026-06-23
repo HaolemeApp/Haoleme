@@ -182,6 +182,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView connectionSubtitleText;
     private TextView statusText;
     private TextView deviceSummaryText;
+    private TextView deviceGpuText;
     private HorizontalScrollView devicesScrollView;
     private LinearLayout devicesContainer;
     private LinearLayout runsContainer;
@@ -643,6 +644,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
         menuParams.setMargins(dp(8), 0, 0, 0);
         deviceHeader.addView(deviceMenuButton, menuParams);
         content.addView(deviceHeader, matchWrap());
+
+        deviceGpuText = new TextView(this);
+        deviceGpuText.setTextSize(12);
+        deviceGpuText.setTextColor(textSecondary());
+        deviceGpuText.setPadding(dp(10), dp(8), dp(10), dp(8));
+        deviceGpuText.setVisibility(View.GONE);
+        LinearLayout.LayoutParams gpuParams = matchWrap();
+        gpuParams.setMargins(0, 0, 0, dp(6));
+        content.addView(deviceGpuText, gpuParams);
 
         TextView runsTitle = sectionTitle(isEnglish() ? "Device Runs" : "设备运行");
         LinearLayout.LayoutParams runsTitleParams = matchWrap();
@@ -2831,6 +2841,72 @@ public class MainActivity extends Activity implements LifecycleOwner {
             text.append("\n").append(isEnglish() ? "Token: " : "Token 使用：").append(tokenUsed);
         }
         deviceSummaryText.setText(text.toString());
+        updateDeviceGpu();
+    }
+
+    private void updateDeviceGpu() {
+        if (deviceGpuText == null) {
+            return;
+        }
+        boolean all = selectedDeviceId == null || "all".equals(selectedDeviceId);
+        JSONArray devices = cachedDevicesArray();
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < devices.length(); i++) {
+            JSONObject device = devices.optJSONObject(i);
+            if (device == null) {
+                continue;
+            }
+            String id = device.optString("id", "");
+            if (!all && !id.equals(selectedDeviceId)) {
+                continue;
+            }
+            JSONArray gpus = device.optJSONArray("gpus");
+            if (gpus == null || gpus.length() == 0) {
+                continue;
+            }
+            if (out.length() > 0) {
+                out.append("\n");
+            }
+            if (all) {
+                out.append(device.optString("name", id)).append("\n");
+            }
+            for (int g = 0; g < gpus.length(); g++) {
+                JSONObject gpu = gpus.optJSONObject(g);
+                if (gpu == null) {
+                    continue;
+                }
+                if (g > 0) {
+                    out.append("\n");
+                }
+                int idx = gpu.optInt("index", g);
+                out.append("GPU").append(idx);
+                String name = gpu.optString("name", "").trim();
+                if (!name.isEmpty()) {
+                    out.append(" ").append(name);
+                }
+                int util = gpu.optInt("utilization", -1);
+                if (util >= 0) {
+                    out.append("  ").append(isEnglish() ? "util " : "占用 ").append(util).append("%");
+                }
+                int memUsed = gpu.optInt("memoryUsed", -1);
+                int memTotal = gpu.optInt("memoryTotal", -1);
+                if (memUsed >= 0 && memTotal > 0) {
+                    out.append("  ").append(isEnglish() ? "mem " : "显存 ")
+                            .append(memUsed).append("/").append(memTotal).append(" MB");
+                }
+                int temp = gpu.optInt("temperature", -1);
+                if (temp >= 0) {
+                    out.append("  ").append(temp).append("°C");
+                }
+            }
+        }
+        if (out.length() == 0) {
+            deviceGpuText.setVisibility(View.GONE);
+        } else {
+            String header = isEnglish() ? "GPU\n" : "显卡\n";
+            deviceGpuText.setText(header + out);
+            deviceGpuText.setVisibility(View.VISIBLE);
+        }
     }
 
     private void showClearDeviceRunsDialog(String deviceId, String currentName) {

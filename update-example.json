@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 88,
-    "versionName": "0.6.77",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.77.apk",
+    "versionCode": 89,
+    "versionName": "0.6.78",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.78.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.77.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.77.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.78.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.78.apk"
     ],
-    "sha256": "be7cda9b2d12036d9553bf4c08d20d38b64046b26101546689eac44c2ba88b88",
+    "sha256": "22302f3f7b6309831a328f875d738a939578b949ae3ef056a462ae9798cf3173",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Incremental console sync: append small output chunks instead of full payload."
+    "notes": "设备页新增服务器显卡占用监测；控制台同步改为阶梯式（新进程更快）。"
   },
   "python": {
-    "version": "0.3.21",
+    "version": "0.3.22",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.21-py3-none-any.whl",
-    "notes": "Incremental console sync via append API and encrypted output chunks."
+    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.22-py3-none-any.whl",
+    "notes": "Tiered console sync cadence; heartbeat reports GPU usage."
   }
 }
