@@ -6,10 +6,14 @@
 #   ./deploy/upload-release.sh --python     # python wheel + cloud package only
 #   ./deploy/upload-release.sh --android    # android APK only
 #   ./deploy/upload-release.sh --github     # also create a GitHub release
+#   ./deploy/upload-release.sh --pypi       # also upload wheel + sdist to PyPI
 #
 # Auth (pick one):
 #   export HAOLEME_UPLOAD_PASSWORD='...'
 #   ssh root@39.96.50.42   # when SSH keys are configured
+#
+# PyPI (with --pypi or when HAOLEME_PYPI_TOKEN is set during python upload):
+#   export HAOLEME_PYPI_TOKEN='pypi-...'
 #
 # Optional env:
 #   HAOLEME_UPLOAD_HOST=39.96.50.42
@@ -27,6 +31,7 @@ cd "$ROOT"
 UPLOAD_PYTHON=1
 UPLOAD_ANDROID=1
 DO_GITHUB=0
+UPLOAD_PYPI=0
 SKIP_BUILD=0
 
 while [[ $# -gt 0 ]]; do
@@ -39,6 +44,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --github)
       DO_GITHUB=1
+      ;;
+    --pypi)
+      UPLOAD_PYPI=1
       ;;
     --skip-build)
       SKIP_BUILD=1
@@ -97,24 +105,45 @@ fi
 mkdir -p dist
 
 WHEEL_PATH="dist/haoleme-${PYTHON_VERSION}-py3-none-any.whl"
+SDIST_PATH="dist/haoleme-${PYTHON_VERSION}.tar.gz"
 APK_PATH="dist/Haoleme-${ANDROID_VERSION}.apk"
+
+if [[ "$UPLOAD_PYPI" -eq 1 && "$UPLOAD_PYTHON" -eq 0 ]]; then
+  echo "--pypi requires a python build/upload." >&2
+  exit 2
+fi
+
+if [[ -n "${HAOLEME_PYPI_TOKEN:-}" ]]; then
+  UPLOAD_PYPI=1
+fi
+
+build_python_artifacts() {
+  echo "Building Python wheel + sdist ${PYTHON_VERSION}..."
+  local built=0
+  for py in ${HAOLEME_BUILD_PYTHON:-} /opt/anaconda3/bin/python python3; do
+    [[ -n "$py" && -x "$py" ]] || continue
+    if "$py" -m build -o dist >/dev/null 2>&1; then
+      built=1
+      break
+    fi
+  done
+  if [[ "$built" -eq 0 ]]; then
+    local venv="${ROOT}/.venv-build"
+    if [[ ! -x "${venv}/bin/python" ]]; then
+      python3 -m venv "$venv"
+      "${venv}/bin/pip" install -q build twine
+    fi
+    "${venv}/bin/python" -m build -o dist >/dev/null
+  fi
+  [[ -f "$WHEEL_PATH" ]] || { echo "Missing wheel: $WHEEL_PATH" >&2; exit 1; }
+  if [[ "$UPLOAD_PYPI" -eq 1 ]]; then
+    [[ -f "$SDIST_PATH" ]] || { echo "Missing sdist: $SDIST_PATH" >&2; exit 1; }
+  fi
+}
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
   if [[ "$UPLOAD_PYTHON" -eq 1 ]]; then
-    echo "Building Python wheel ${PYTHON_VERSION}..."
-    built=0
-    for py in ${HAOLEME_BUILD_PYTHON:-} python3 /opt/anaconda3/bin/python; do
-      [[ -n "$py" && -x "$py" ]] || continue
-      if "$py" -m build --wheel -o dist >/dev/null 2>&1; then
-        built=1
-        break
-      fi
-    done
-    if [[ "$built" -eq 0 ]]; then
-      python3 -m pip install -q build
-      python3 -m build --wheel -o dist >/dev/null
-    fi
-    [[ -f "$WHEEL_PATH" ]] || { echo "Missing wheel: $WHEEL_PATH" >&2; exit 1; }
+    build_python_artifacts
   fi
 
   if [[ "$UPLOAD_ANDROID" -eq 1 ]]; then
@@ -126,8 +155,8 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
         export PATH="$JAVA_HOME/bin:$PATH"
       fi
       if command -v java >/dev/null 2>&1; then
-        echo "Building Android APK ${ANDROID_VERSION} (code ${ANDROID_CODE})..."
-        (cd android && ./gradlew assembleRelease >/dev/null)
+        echo "Testing Android build ${ANDROID_VERSION} (code ${ANDROID_CODE})..."
+        (cd android && ./gradlew assembleRelease lintVitalRelease)
         cp "android/app/build/outputs/apk/release/app-release.apk" "$APK_PATH"
       else
         echo "Java not found; reusing existing APK if present." >&2
@@ -242,6 +271,36 @@ if [[ "${#remote_copy_cmds[@]}" -gt 0 ]]; then
   remote_cmd "$(printf '%s && ' "${remote_copy_cmds[@]}") echo 'Server update ok'"
 fi
 
+if [[ "$UPLOAD_PYPI" -eq 1 ]]; then
+  if [[ -z "${HAOLEME_PYPI_TOKEN:-}" ]]; then
+    echo "HAOLEME_PYPI_TOKEN is required for PyPI upload." >&2
+    exit 1
+  fi
+  PYPI_TOKEN="$HAOLEME_PYPI_TOKEN"
+  if [[ "$PYPI_TOKEN" != pypi-* ]]; then
+    PYPI_TOKEN="pypi-${PYPI_TOKEN}"
+  fi
+  twine_py=""
+  for py in ${HAOLEME_BUILD_PYTHON:-} /opt/anaconda3/bin/python "${ROOT}/.venv-build/bin/python" python3; do
+    [[ -n "$py" && -x "$py" ]] || continue
+    if "$py" -m twine --version >/dev/null 2>&1; then
+      twine_py="$py"
+      break
+    fi
+  done
+  if [[ -z "$twine_py" ]]; then
+    venv="${ROOT}/.venv-build"
+    if [[ ! -x "${venv}/bin/python" ]]; then
+      python3 -m venv "$venv"
+    fi
+    "${venv}/bin/pip" install -q twine
+    twine_py="${venv}/bin/python"
+  fi
+  echo "Uploading ${PYTHON_VERSION} to PyPI..."
+  TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_TOKEN" \
+    "$twine_py" -m twine upload "$WHEEL_PATH" "$SDIST_PATH"
+fi
+
 if [[ "$DO_GITHUB" -eq 1 ]] && command -v gh >/dev/null 2>&1; then
   TAG="v${ANDROID_VERSION}"
   if [[ "$UPLOAD_ANDROID" -eq 1 && -f "$APK_PATH" ]]; then
@@ -252,6 +311,9 @@ if [[ "$DO_GITHUB" -eq 1 ]] && command -v gh >/dev/null 2>&1; then
 fi
 
 echo "Done."
+if [[ "$UPLOAD_PYPI" -eq 1 ]]; then
+  echo "PyPI: https://pypi.org/project/haoleme/${PYTHON_VERSION}/"
+fi
 echo "Python: ${PYTHON_VERSION} -> ${PUBLIC_BASE}/downloads/$(basename "$WHEEL_PATH")"
 if [[ -f "$APK_PATH" ]]; then
   echo "Android: ${ANDROID_VERSION} -> ${PUBLIC_BASE}/downloads/$(basename "$APK_PATH")"

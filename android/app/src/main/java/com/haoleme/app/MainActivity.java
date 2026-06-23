@@ -2093,7 +2093,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
             String online = device.optBoolean("online", false) ? (isEnglish() ? "online" : "在线") : (isEnglish() ? "offline" : "离线");
             String lastSeen = device.optString("lastSeenAt", "");
             String suffix = id.equals(current) ? (isEnglish() ? " · current" : " · 当前") : "";
-            labels[i] = name + " · " + online + suffix + (lastSeen.isEmpty() ? "" : "\n" + (isEnglish() ? "Last seen: " : "最后在线：") + lastSeen);
+            String seenLabel = formatDeviceTimestamp(lastSeen);
+            labels[i] = name + " · " + online + suffix + (seenLabel.isEmpty() ? "" : "\n" + (isEnglish() ? "Last seen: " : "最后在线：") + seenLabel);
         }
 
         new AlertDialog.Builder(this)
@@ -2804,21 +2805,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
             deviceSummaryText.setText(isEnglish() ? "All active devices" : "全部活跃设备");
             return;
         }
-        String lastSeen = deviceLastSeen.get(selectedDeviceId);
-        String tokenUsed = deviceTokenLastUsed.get(selectedDeviceId);
+        String lastSeen = formatDeviceTimestamp(deviceLastSeen.get(selectedDeviceId));
+        String tokenUsed = formatDeviceTimestamp(deviceTokenLastUsed.get(selectedDeviceId));
         StringBuilder text = new StringBuilder(selectedDeviceName());
-        if (lastSeen != null && !lastSeen.trim().isEmpty()) {
-            boolean online = Boolean.TRUE.equals(deviceOnline.get(selectedDeviceId));
-            text.append("\n").append(online ? (isEnglish() ? "Online" : "在线") : (isEnglish() ? "Offline" : "离线"));
-            text.append(isEnglish() ? " · Last heartbeat: " : " · 最后心跳：").append(lastSeen.trim());
+        boolean online = Boolean.TRUE.equals(deviceOnline.get(selectedDeviceId));
+        text.append("\n").append(online ? (isEnglish() ? "Online" : "在线") : (isEnglish() ? "Offline" : "离线"));
+        if (!lastSeen.isEmpty()) {
+            text.append("\n").append(isEnglish() ? "Heartbeat: " : "最后心跳：").append(lastSeen);
         }
-        if (tokenUsed != null && !tokenUsed.trim().isEmpty()) {
-            if (text.length() > 0) {
-                text.append(" · ");
-            }
-            text.append(isEnglish() ? "Token used: " : "Token 使用：").append(tokenUsed.trim());
+        if (!tokenUsed.isEmpty()) {
+            text.append("\n").append(isEnglish() ? "Token: " : "Token 使用：").append(tokenUsed);
         }
-        deviceSummaryText.setText(text.length() == 0 ? (isEnglish() ? "No recent activity yet" : "暂无最近活动") : text.toString());
+        deviceSummaryText.setText(text.toString());
     }
 
     private void showClearDeviceRunsDialog(String deviceId, String currentName) {
@@ -5651,6 +5649,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return 0L;
         }
         String value = raw.trim();
+        int dot = value.indexOf('.');
+        if (dot > 0) {
+            int zone = value.indexOf('Z', dot);
+            if (zone < 0) {
+                zone = value.indexOf('+', dot);
+            }
+            if (zone < 0) {
+                zone = value.length();
+            }
+            value = value.substring(0, dot) + value.substring(zone);
+        }
         String[] patterns = new String[]{
                 "yyyy-MM-dd'T'HH:mm:ss.SSSX",
                 "yyyy-MM-dd'T'HH:mm:ssX",
@@ -5669,6 +5678,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         }
         return 0L;
+    }
+
+    private String formatDeviceTimestamp(String raw) {
+        if (raw == null || raw.trim().isEmpty() || "null".equals(raw)) {
+            return "";
+        }
+        long millis = parseTimestamp(raw);
+        if (millis <= 0L) {
+            return "";
+        }
+        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA);
+        format.setTimeZone(TimeZone.getTimeZone("Asia/Shanghai"));
+        return format.format(new Date(millis));
     }
 
     private String latestOutputLine(JSONObject run) {

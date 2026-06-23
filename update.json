@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 85,
-    "versionName": "0.6.74",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.74.apk",
+    "versionCode": 86,
+    "versionName": "0.6.75",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.75.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.74.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.74.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.75.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.75.apk"
     ],
-    "sha256": "42571767f6652f0de5cccf235839af3f7554259ad186147f3788a806d7cdaa87",
+    "sha256": "c2be804f34f7a93b5c8b930b7b6f35fb634fa5fe22cb2adf4155cb0d3163b080",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Add console interrupt button to stop running commands from the app."
+    "notes": "Device page: show heartbeat and token time in China time, seconds only."
   },
   "python": {
     "version": "0.3.19",
