@@ -13,7 +13,9 @@
     "notes": "Add console interrupt button to stop running commands from the app."
   },
   "python": {
-    "version": "0.3.18",
-    "packageUrl": "https://pypi.org/project/haoleme/"
+    "version": "0.3.19",
+    "packageUrl": "https://pypi.org/project/haoleme/",
+    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.19-py3-none-any.whl",
+    "notes": "Add hao version and hao update commands."
   }
 }

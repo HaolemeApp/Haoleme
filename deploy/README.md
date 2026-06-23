@@ -70,6 +70,29 @@ sudo -u haoleme haoleme-cloud monitor
 
 The monitor checks database health, disk free space, permission boundaries, and the newest backup age/checksum. Set `HAOLEME_ALERT_WEBHOOK_URL=https://...` in the monitor service if you want failures POSTed to an external alert endpoint.
 
+## Upload App / CLI Releases
+
+From the repo root, after bumping versions in `src/haoleme/__init__.py` and/or
+`android/app/build.gradle`:
+
+```bash
+export HAOLEME_UPLOAD_PASSWORD='your-server-password'
+chmod +x deploy/upload-release.sh
+
+# Python wheel + update.json (+ reinstall cloud package)
+./deploy/upload-release.sh --python
+
+# Android APK + update.json
+./deploy/upload-release.sh --android
+
+# Both, and create a GitHub release for the APK
+./deploy/upload-release.sh --github
+```
+
+Users can then run `hao update` to install the latest CLI from
+`http://39.96.50.42/downloads/update.json`, and the Android app can check the
+same manifest for APK updates.
+
 ## Health And Security Checks
 
 ```bash
