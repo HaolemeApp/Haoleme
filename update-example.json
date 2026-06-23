@@ -1,19 +1,19 @@
 {
   "android": {
-    "versionCode": 83,
-    "versionName": "0.6.72",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.72.apk",
+    "versionCode": 84,
+    "versionName": "0.6.73",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.73.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.72.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.72.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.73.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.73.apk"
     ],
-    "sha256": "9ba79eb354746f40db5549d64caff60722df3b36e1fbdbeb8e7241707a73f349",
+    "sha256": "f044f4f02095267edc88d1bbc377b8e6ab429cddd00fa0fb59a08b2830641050",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Notifications now show the real command instead of \"Encrypted command\" (foreground service decrypts E2EE runs)."
+    "notes": "Fix update check (restore correct update/server URLs) and show real command in notifications."
   },
   "python": {
-    "version": "0.3.13",
+    "version": "0.3.14",
     "packageUrl": "https://pypi.org/project/haoleme/"
   }
 }
