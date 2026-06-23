@@ -13,9 +13,9 @@
     "notes": "Settings icons: smaller theme/language/mask/donation/diagnostics; new quiet-hours bell icon."
   },
   "python": {
-    "version": "0.3.24",
+    "version": "0.3.25",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.24-py3-none-any.whl",
-    "notes": "Add `haoleme-cloud stats` (online / DAU / MAU operator metrics)."
+    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.25-py3-none-any.whl",
+    "notes": "Add /stats admin endpoint (browser-viewable online/DAU/MAU) + haoleme-cloud stats."
   }
 }

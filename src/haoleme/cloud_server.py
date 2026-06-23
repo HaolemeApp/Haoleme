@@ -107,6 +107,9 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             auth = self.authenticated_context(allow_legacy=False)
             self.send_json(health_payload(self.server.db_path, self.server.min_android_version_code, detailed=auth is not None))
             return
+        if parsed.path == "/stats" or parsed.path == "/api/admin/stats":
+            self.send_stats_page(parsed)
+            return
         if parsed.path.startswith("/downloads/"):
             self.send_download(remove_prefix(parsed.path, "/downloads/"))
             return
@@ -840,6 +843,32 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "too many authentication failures", "code": "auth_rate_limited"}, status=HTTPStatus.TOO_MANY_REQUESTS)
             return
         self.send_json({"error": "unauthorized", "code": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+
+    def send_stats_page(self, parsed) -> None:
+        configured = server_stats_token()
+        query = parse_qs(parsed.query)
+        provided = (query.get("token", [""])[0] or self.bearer_token() or "").strip()
+        if not configured:
+            self.send_json(
+                {"error": "stats endpoint not configured; set HAOLEME_STATS_TOKEN", "code": "stats_disabled"},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        if not provided or not secrets.compare_digest(provided, configured):
+            self.send_json({"error": "forbidden", "code": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+            return
+        stats = active_user_stats(self.server.db_path)
+        if parsed.path == "/api/admin/stats" or query.get("format", [""])[0] == "json":
+            self.send_json(stats)
+            return
+        body = render_stats_html(stats).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(body)
 
     def authenticated_context(self, allow_legacy: bool = True) -> AuthContext | None:
         token = self.bearer_token()
@@ -2519,6 +2548,45 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 def server_requires_e2ee() -> bool:
     return env_flag("HAOLEME_REQUIRE_E2EE", env_flag("REMINDER_REQUIRE_E2EE", False))
+
+
+def server_stats_token() -> str:
+    return (os.environ.get("HAOLEME_STATS_TOKEN") or os.environ.get("REMINDER_STATS_TOKEN") or "").strip()
+
+
+def render_stats_html(stats: dict[str, Any]) -> str:
+    def card(label: str, value: Any, sub: str = "") -> str:
+        sub_html = f'<div class="s">{sub}</div>' if sub else ""
+        return f'<div class="card"><div class="v">{value}</div><div class="l">{label}</div>{sub_html}</div>'
+
+    cards = "".join([
+        card("在线 Online", stats["appOnline"], "近 5 分钟"),
+        card("日活 DAU", stats["appDau"], "近 24 小时"),
+        card("月活 MAU", stats["appMau"], "近 30 天"),
+        card("总账号 Accounts", stats["appTotalAccounts"], f'{stats["appInstalls"]} 个安装'),
+        card("在线服务器 Servers", f'{stats["serversOnline"]}/{stats["serversTotal"]}', "近 5 分钟"),
+    ])
+    return (
+        "<!doctype html><html lang=\"zh\"><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<meta http-equiv=\"refresh\" content=\"30\">"
+        "<title>好了么 · 活跃数据</title><style>"
+        ":root{color-scheme:light dark}"
+        "body{font-family:-apple-system,system-ui,'PingFang SC',sans-serif;margin:0;padding:18px;background:#0b0f14;color:#e7edf3}"
+        "h1{font-size:18px;font-weight:600;margin:4px 0 16px}"
+        ".grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}"
+        ".card{background:#161c24;border:1px solid #232c38;border-radius:14px;padding:16px}"
+        ".v{font-size:34px;font-weight:700;line-height:1.1}"
+        ".l{font-size:13px;color:#9fb0c3;margin-top:6px}"
+        ".s{font-size:11px;color:#67788c;margin-top:2px}"
+        ".ts{font-size:11px;color:#67788c;margin-top:16px;text-align:center}"
+        "</style></head><body>"
+        "<h1>好了么 · 活跃数据</h1>"
+        f"<div class=\"grid\">{cards}</div>"
+        f"<div class=\"ts\">更新于 {stats['generatedAt']} · 每 30 秒自动刷新</div>"
+        "</body></html>"
+    )
 
 
 def server_allows_legacy_admin_tokens() -> bool:
