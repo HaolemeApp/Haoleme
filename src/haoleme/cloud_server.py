@@ -1700,7 +1700,7 @@ def list_runs(
             values,
         ).fetchall()
         names = device_names(db, account_key)
-    return [decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=False) for row in rows]
+    return [decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=True) for row in rows]
 
 
 def list_events(db_path: Path, account_key: str, since: str | None, limit: int) -> list[dict[str, Any]]:
@@ -1727,7 +1727,7 @@ def list_events(db_path: Path, account_key: str, since: str | None, limit: int) 
                 (account_key, limit),
             ).fetchall()
         names = device_names(db, account_key)
-    return [decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=False) for row in rows]
+    return [decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=True) for row in rows]
 
 
 def get_run(db_path: Path, account_key: str, run_id: str) -> dict[str, Any] | None:
