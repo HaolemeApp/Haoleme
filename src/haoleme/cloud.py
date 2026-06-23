@@ -424,6 +424,7 @@ class CloudSyncer:
         self.last_error: str | None = None
         self._last_sync_at = 0.0
         self._started_at = time.monotonic()
+        self._last_output_at = time.monotonic()
         self._initial_synced = False
         self._synced_output_len = 0
         self._synced_stdout_len = 0
@@ -457,17 +458,19 @@ class CloudSyncer:
             self._sync_once()
 
     def _running_sync_interval(self) -> float:
-        # Tiered cadence by run age: near real-time for fresh runs, easing off so
-        # long-lived processes don't hammer the cloud. ~1s for the first 2 min,
-        # ramping to ~5s by 10 min and ~10s by 30 min, then a flat 10s.
-        age = time.monotonic() - self._started_at
-        if age <= 120:
+        # Tiered cadence by how long output has been idle, NOT by run age: a job
+        # that keeps printing (e.g. training logs) stays near real-time forever so
+        # the console never appears to freeze, while a genuinely quiet run eases
+        # off to avoid hammering the cloud. ~1s while output is flowing (idle < 2
+        # min), ramping to ~5s by 10 min idle and ~10s by 30 min idle.
+        idle = time.monotonic() - self._last_output_at
+        if idle <= 120:
             return 1.0
-        if age >= 1800:
+        if idle >= 1800:
             return RUNNING_SYNC_MAX_INTERVAL_SECONDS
-        if age <= 600:
-            return 1.0 + (age - 120) / (600 - 120) * (5.0 - 1.0)
-        return 5.0 + (age - 600) / (1800 - 600) * (RUNNING_SYNC_MAX_INTERVAL_SECONDS - 5.0)
+        if idle <= 600:
+            return 1.0 + (idle - 120) / (600 - 120) * (5.0 - 1.0)
+        return 5.0 + (idle - 600) / (1800 - 600) * (RUNNING_SYNC_MAX_INTERVAL_SECONDS - 5.0)
 
     def _output_deltas(self, run: RunRecord) -> dict[str, str]:
         return {
@@ -494,6 +497,8 @@ class CloudSyncer:
         try:
             deltas = self._output_deltas(run)
             has_output = any(deltas.values())
+            if has_output:
+                self._last_output_at = time.monotonic()
             running = run.status in {"created", "running"}
 
             if not self._initial_synced:

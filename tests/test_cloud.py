@@ -11,15 +11,21 @@ from haoleme.store import RunRecord
 
 
 class TieredSyncIntervalTest(unittest.TestCase):
-    def test_running_sync_interval_eases_with_age(self):
+    def test_running_sync_interval_eases_with_output_idle(self):
         syncer = CloudSyncer.__new__(CloudSyncer)
-        syncer._started_at = 0.0
-        for age, expected in [(0, 1.0), (120, 1.0), (600, 5.0), (1800, 10.0), (5000, 10.0)]:
-            with patch.object(cloud_module.time, "monotonic", return_value=float(age)):
+        syncer._last_output_at = 0.0
+        # Interval depends on time since last output, not run age.
+        for idle, expected in [(0, 1.0), (120, 1.0), (600, 5.0), (1800, 10.0), (5000, 10.0)]:
+            with patch.object(cloud_module.time, "monotonic", return_value=float(idle)):
                 self.assertAlmostEqual(syncer._running_sync_interval(), expected, places=2)
+        # Fresh output (idle resets to ~0) snaps back to the fast tier.
+        syncer._last_output_at = 4000.0
+        with patch.object(cloud_module.time, "monotonic", return_value=4001.0):
+            self.assertAlmostEqual(syncer._running_sync_interval(), 1.0, places=2)
         prev = 0.0
-        for age in range(0, 2000, 50):
-            with patch.object(cloud_module.time, "monotonic", return_value=float(age)):
+        syncer._last_output_at = 0.0
+        for idle in range(0, 2000, 50):
+            with patch.object(cloud_module.time, "monotonic", return_value=float(idle)):
                 cur = syncer._running_sync_interval()
             self.assertGreaterEqual(cur + 1e-9, prev)
             prev = cur
