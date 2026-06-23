@@ -1,9 +1,11 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from haoleme.cloud_server import (
+    active_user_stats,
     AuthContext,
     append_run_update,
     authenticate_device_token,
@@ -95,6 +97,40 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertIsNotNone(device)
             self.assertEqual(device["name"], "Server A")
             self.assertEqual(device["lastSeenAt"], "2026-06-18T01:05:00Z")
+
+    def test_active_user_stats_counts_distinct_accounts_by_recency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            init_db(db_path)
+            now = datetime.now(timezone.utc)
+
+            def iso(delta):
+                return (now - delta).isoformat().replace("+00:00", "Z")
+
+            # (account, last_used_at age, revoked)
+            tokens = [
+                ("acc1", timedelta(minutes=1), False),   # online + dau + mau
+                ("acc1", timedelta(minutes=2), False),   # same account, 2nd install
+                ("acc2", timedelta(hours=5), False),     # dau + mau
+                ("acc3", timedelta(days=10), False),     # mau only
+                ("acc4", timedelta(days=60), False),     # outside all windows (still total)
+                ("acc5", timedelta(minutes=1), True),    # revoked -> ignored
+            ]
+            with connect(db_path) as db:
+                for i, (acc, age, revoked) in enumerate(tokens):
+                    db.execute(
+                        "INSERT INTO app_tokens(token_hash, account_key, client_id, client_name,"
+                        " platform, created_at, last_used_at, revoked_at) VALUES (?,?,?,?,?,?,?,?)",
+                        (f"hash{i}", acc, f"app_{i}", "n", "android",
+                         iso(timedelta(days=90)), iso(age), iso(timedelta(0)) if revoked else ""),
+                    )
+
+            stats = active_user_stats(db_path)
+            self.assertEqual(stats["appOnline"], 1)          # acc1
+            self.assertEqual(stats["appDau"], 2)             # acc1, acc2
+            self.assertEqual(stats["appMau"], 3)             # acc1, acc2, acc3
+            self.assertEqual(stats["appTotalAccounts"], 4)   # acc1..acc4 (revoked excluded)
+            self.assertEqual(stats["appInstalls"], 5)        # non-revoked tokens
 
     def test_device_heartbeat_stores_and_returns_gpus(self):
         with tempfile.TemporaryDirectory() as tmp:

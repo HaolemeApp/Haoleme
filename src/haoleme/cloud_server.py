@@ -2574,6 +2574,8 @@ def main(argv: list[str] | None = None) -> int:
         return audit_permissions_command(args[1:])
     if args and args[0] == "monitor":
         return monitor_command(args[1:])
+    if args and args[0] == "stats":
+        return stats_command(args[1:])
 
     parser = argparse.ArgumentParser(prog="haoleme-cloud")
     parser.add_argument("--host", default=os.environ.get("HAOLEME_CLOUD_HOST") or os.environ.get("REMINDER_CLOUD_HOST", "0.0.0.0"))
@@ -2621,6 +2623,63 @@ def audit_permissions_command(argv: list[str]) -> int:
     payload = permission_audit(Path(ns.db))
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if payload.get("ok") else 1
+
+
+def active_user_stats(db_path: Path) -> dict[str, Any]:
+    """Active-user metrics for the operator: online / DAU / MAU.
+
+    A "user" is a distinct account_key. App activity is tracked via
+    app_tokens.last_used_at (touched on every app request, including the
+    background poll), so recency of that timestamp gives liveness.
+    """
+    online_window = 300        # 5 minutes
+    day = 86400
+    month = 30 * day
+    with connect(db_path) as db:
+        app_rows = db.execute(
+            "SELECT account_key, last_used_at FROM app_tokens WHERE revoked_at = ''"
+        ).fetchall()
+        device_rows = db.execute(
+            "SELECT account_key, last_seen_at FROM devices WHERE revoked_at = ''"
+        ).fetchall()
+
+    def accounts_within(rows: list[sqlite3.Row], ts_key: str, seconds: int) -> set[str]:
+        return {
+            row["account_key"]
+            for row in rows
+            if is_recent_timestamp(row[ts_key] or "", seconds)
+        }
+
+    return {
+        "generatedAt": iso_now(),
+        "appOnline": len(accounts_within(app_rows, "last_used_at", online_window)),
+        "appDau": len(accounts_within(app_rows, "last_used_at", day)),
+        "appMau": len(accounts_within(app_rows, "last_used_at", month)),
+        "appTotalAccounts": len({row["account_key"] for row in app_rows}),
+        "appInstalls": len(app_rows),
+        "serversOnline": len(accounts_within(device_rows, "last_seen_at", online_window)),
+        "serversTotal": len({row["account_key"] for row in device_rows}),
+        "onlineWindowSeconds": online_window,
+    }
+
+
+def stats_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="haoleme-cloud stats")
+    parser.add_argument("--db", default=os.environ.get("HAOLEME_CLOUD_DB") or os.environ.get("REMINDER_CLOUD_DB", "/data/haoleme-cloud.db"))
+    parser.add_argument("--json", action="store_true", help="print raw JSON instead of a summary")
+    ns = parser.parse_args(argv)
+    stats = active_user_stats(Path(ns.db))
+    if ns.json:
+        print(json.dumps(stats, ensure_ascii=False, indent=2))
+        return 0
+    print("好了么 cloud — active users")
+    print(f"  Online (app, <=5min): {stats['appOnline']}")
+    print(f"  DAU    (app, <=24h):  {stats['appDau']}")
+    print(f"  MAU    (app, <=30d):  {stats['appMau']}")
+    print(f"  Total accounts:       {stats['appTotalAccounts']}  ({stats['appInstalls']} app install(s))")
+    print(f"  Servers online:       {stats['serversOnline']} / {stats['serversTotal']}")
+    print(f"  As of:                {stats['generatedAt']}")
+    return 0
 
 
 def monitor_command(argv: list[str]) -> int:
