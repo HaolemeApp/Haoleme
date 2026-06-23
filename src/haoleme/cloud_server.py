@@ -114,6 +114,29 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/") and not auth:
             self.send_unauthorized()
             return
+
+        if parsed.path.startswith("/api/runs/"):
+            run_id = unquote(remove_prefix(parsed.path, "/api/runs/")).strip("/")
+            if is_single_run_id(run_id):
+                if auth.scope not in {"admin", "write"}:
+                    self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                if not self.allow_read_attempt(auth):
+                    self.send_json(
+                        {"error": "too many read requests, slow down", "code": "read_rate_limited"},
+                        status=HTTPStatus.TOO_MANY_REQUESTS,
+                    )
+                    return
+                run = get_run(self.server.db_path, auth.account_key, run_id)
+                if run is None:
+                    self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
+                    return
+                if not can_read_run(auth, run):
+                    self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"run": run})
+                return
+
         if parsed.path.startswith("/api/") and auth.scope != "admin":
             self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
             return
@@ -144,15 +167,6 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             events = list_events(self.server.db_path, auth.account_key, since, limit)
             latest = max((run.get("updatedAt", "") for run in events), default=since or "")
             self.send_json({"events": events, "latest": latest})
-            return
-
-        if parsed.path.startswith("/api/runs/"):
-            run_id = remove_prefix(parsed.path, "/api/runs/")
-            run = get_run(self.server.db_path, auth.account_key, run_id)
-            if run is None:
-                self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
-                return
-            self.send_json({"run": run})
             return
 
         self.send_json({"error": "not found", "code": "not_found"}, status=HTTPStatus.NOT_FOUND)
@@ -2070,6 +2084,19 @@ def decode_run(
     if not include_e2ee:
         run.pop("e2ee", None)
     return run
+
+
+def is_single_run_id(run_id: str) -> bool:
+    return bool(run_id) and "/" not in run_id
+
+
+def can_read_run(auth: AuthContext, run: dict[str, Any]) -> bool:
+    if auth.scope == "admin":
+        return True
+    if auth.scope == "write":
+        device_id = str(run.get("deviceId") or "")
+        return bool(device_id) and device_id == auth.device_id
+    return False
 
 
 def normalize_run(run: dict[str, Any]) -> dict[str, Any]:

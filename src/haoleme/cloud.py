@@ -22,7 +22,7 @@ DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "http://39.96.50.42").rs
 USER_AGENT = f"haoleme/{__version__}"
 RUNNING_SYNC_MIN_INTERVAL_SECONDS = 10.0
 SYNC_COALESCE_SECONDS = 0.35
-INTERRUPT_POLL_SECONDS = 1.5
+INTERRUPT_POLL_SECONDS = 1.0
 LEGACY_CLOUD_URLS = {
     "http://106.14.246.204",
     "https://106.14.246.204",
@@ -335,6 +335,7 @@ class InterruptWatcher:
         self._stop = threading.Event()
         self._triggered = threading.Event()
         self._thread: threading.Thread | None = None
+        self.last_error: str | None = None
 
     def start(self) -> None:
         if self.client is None:
@@ -359,8 +360,8 @@ class InterruptWatcher:
                         self._triggered.set()
                         self.on_interrupt()
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                self.last_error = str(exc)
             self._stop.wait(timeout=INTERRUPT_POLL_SECONDS)
 
 

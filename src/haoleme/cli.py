@@ -1069,6 +1069,8 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
         syncer.request_sync()
         syncer.close()
         print(f"好了么 interrupted: {run_id}")
+        if watcher.last_error:
+            print(f"好了么 interrupt poll warning: {watcher.last_error}", file=sys.stderr)
         if syncer.last_error:
             print(f"好了么 cloud sync warning: {syncer.last_error}", file=sys.stderr)
         return 130
@@ -1111,27 +1113,46 @@ def should_use_pty() -> bool:
     return os.name == "posix" and hasattr(os, "openpty")
 
 
+def subprocess_session_kwargs() -> dict[str, object]:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    return {}
+
+
+def send_signal_to_process_tree(proc: subprocess.Popen, signum: int) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "posix":
+        try:
+            os.killpg(os.getpgid(proc.pid), signum)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.send_signal(signum)
+    except ProcessLookupError:
+        return
+
+
 def terminate_process_on_interrupt(proc: subprocess.Popen, interrupt_event: threading.Event) -> bool:
     if proc.poll() is not None:
         return interrupt_event.is_set()
     if not interrupt_event.is_set():
         return False
-    try:
-        proc.send_signal(signal.SIGINT)
-    except ProcessLookupError:
-        return True
+    send_signal_to_process_tree(proc, signal.SIGINT)
     for _ in range(10):
         if proc.poll() is not None:
             return True
         time.sleep(0.2)
-    try:
-        proc.terminate()
-    except ProcessLookupError:
-        return True
+    send_signal_to_process_tree(proc, signal.SIGTERM)
     try:
         proc.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        send_signal_to_process_tree(proc, signal.SIGKILL)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
     return True
 
 
@@ -1153,6 +1174,7 @@ def run_command_with_pty(
                 stdout=slave_fd,
                 stderr=slave_fd,
                 close_fds=True,
+                **subprocess_session_kwargs(),
             )
         except Exception:
             restore_sighup(previous_sighup)
@@ -1164,8 +1186,7 @@ def run_command_with_pty(
     syncer.request_sync()
 
     def forward_signal(signum: int, _frame: object) -> None:
-        if proc.poll() is None:
-            proc.send_signal(signum)
+        send_signal_to_process_tree(proc, signum)
 
     previous_sigint = signal.signal(signal.SIGINT, forward_signal)
     previous_sigterm = signal.signal(signal.SIGTERM, forward_signal)
@@ -1280,6 +1301,7 @@ def run_command_with_pipes(
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            **subprocess_session_kwargs(),
         )
     except Exception:
         restore_sighup(previous_sighup)
@@ -1291,8 +1313,7 @@ def run_command_with_pipes(
     stop_forwarding = threading.Event()
 
     def forward_signal(signum: int, _frame: object) -> None:
-        if proc.poll() is None:
-            proc.send_signal(signum)
+        send_signal_to_process_tree(proc, signum)
 
     previous_sigint = signal.signal(signal.SIGINT, forward_signal)
     previous_sigterm = signal.signal(signal.SIGTERM, forward_signal)

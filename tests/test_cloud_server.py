@@ -4,10 +4,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from haoleme.cloud_server import (
+    AuthContext,
     authenticate_device_token,
     account_has_cloud_data,
     backup_database,
     cancel_pair,
+    can_read_run,
     connect,
     consume_space_join_code,
     confirm_pair,
@@ -400,6 +402,16 @@ class CloudServerDeviceTest(unittest.TestCase):
             upsert_run(db_path, account_key, self.sample_run("run-1", "dev_123", "Server A", "running"))
             run = get_run(db_path, account_key, "run-1")
             self.assertTrue(run.get("interruptRequestedAt"))
+
+    def test_write_token_can_read_own_run_for_interrupt_polling(self):
+        admin = AuthContext(account_key="account-key", token_hash="admin", scope="admin")
+        writer = AuthContext(account_key="account-key", token_hash="write", scope="write", device_id="dev_123")
+        other = AuthContext(account_key="account-key", token_hash="write", scope="write", device_id="dev_other")
+        run = self.sample_run("run-1", "dev_123", "Server A", "running")
+
+        self.assertTrue(can_read_run(admin, run))
+        self.assertTrue(can_read_run(writer, run))
+        self.assertFalse(can_read_run(other, run))
 
     def test_interrupt_rejects_finished_run(self):
         with tempfile.TemporaryDirectory() as tmp:
