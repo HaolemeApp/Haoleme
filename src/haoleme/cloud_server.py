@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
+from ._compat import remove_prefix, remove_suffix, unlink_missing
 
 
 DEFAULT_MIN_ANDROID_VERSION_CODE = 22
@@ -106,7 +107,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             self.send_json(health_payload(self.server.db_path, self.server.min_android_version_code, detailed=auth is not None))
             return
         if parsed.path.startswith("/downloads/"):
-            self.send_download(parsed.path.removeprefix("/downloads/"))
+            self.send_download(remove_prefix(parsed.path, "/downloads/"))
             return
 
         auth = self.authenticated_context()
@@ -146,7 +147,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/runs/"):
-            run_id = parsed.path.removeprefix("/api/runs/")
+            run_id = remove_prefix(parsed.path, "/api/runs/")
             run = get_run(self.server.db_path, auth.account_key, run_id)
             if run is None:
                 self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
@@ -159,7 +160,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path.startswith("/downloads/"):
-            self.send_download(parsed.path.removeprefix("/downloads/"), head_only=True)
+            self.send_download(remove_prefix(parsed.path, "/downloads/"), head_only=True)
             return
         if parsed.path == "/health":
             self.send_response(HTTPStatus.OK)
@@ -230,7 +231,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             if auth.scope != "admin":
                 self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
                 return
-            device_id = unquote(parsed.path.removeprefix("/api/devices/").removesuffix("/rename")).strip("/")
+            device_id = unquote(remove_suffix(remove_prefix(parsed.path, "/api/devices/"), "/rename")).strip("/")
             self.rename_device(auth, device_id)
             return
         if parsed.path == "/api/devices/heartbeat":
@@ -323,7 +324,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/runs/"):
-            run_id = parsed.path.removeprefix("/api/runs/")
+            run_id = remove_prefix(parsed.path, "/api/runs/")
             deleted = delete_run(self.server.db_path, auth.account_key, run_id)
             if not deleted:
                 self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
@@ -337,7 +338,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/runs"):
-            device_id = unquote(parsed.path.removeprefix("/api/devices/").removesuffix("/runs")).strip("/")
+            device_id = unquote(remove_suffix(remove_prefix(parsed.path, "/api/devices/"), "/runs")).strip("/")
             if not device_id:
                 self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -349,7 +350,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/devices/"):
-            device_id = unquote(parsed.path.removeprefix("/api/devices/")).strip("/")
+            device_id = unquote(remove_prefix(parsed.path, "/api/devices/")).strip("/")
             revoked = revoke_device(self.server.db_path, auth.account_key, device_id)
             if not revoked:
                 self.send_json({"error": "device not found", "code": "device_not_found"}, status=HTTPStatus.NOT_FOUND)
@@ -841,7 +842,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         end = file_size - 1
         partial = False
         if range_header.startswith("bytes="):
-            requested = range_header.removeprefix("bytes=").split(",", 1)[0].strip()
+            requested = remove_prefix(range_header, "bytes=").split(",", 1)[0].strip()
             if "-" in requested:
                 raw_start, raw_end = requested.split("-", 1)
                 try:
@@ -1128,7 +1129,7 @@ def backup_database(db_path: Path, backup_dir: Path, keep: int = DEFAULT_BACKUP_
     backup_path.chmod(0o600)
     verified = verify_sqlite_database(backup_path)
     if not verified["ok"]:
-        backup_path.unlink(missing_ok=True)
+        unlink_missing(backup_path)
         raise RuntimeError(f"backup verification failed: {verified.get('error') or verified.get('quickCheck')}")
     write_backup_checksum(backup_path)
     prune_backups(backup_dir, keep)
@@ -1140,8 +1141,8 @@ def prune_backups(backup_dir: Path, keep: int) -> None:
         return
     backups = sorted(backup_dir.glob("haoleme-cloud-*.db"), key=lambda path: path.stat().st_mtime, reverse=True)
     for old in backups[keep:]:
-        old.with_suffix(old.suffix + ".sha256").unlink(missing_ok=True)
-        old.unlink(missing_ok=True)
+        unlink_missing(old.with_suffix(old.suffix + ".sha256"))
+        unlink_missing(old)
 
 
 def verify_sqlite_database(path: Path) -> dict[str, Any]:

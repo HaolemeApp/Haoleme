@@ -7,6 +7,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from ._compat import remove_prefix
 from .store import RunStore
 
 
@@ -38,7 +39,7 @@ class HaolemeRequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/runs/"):
-            run_id = parsed.path.removeprefix("/api/runs/")
+            run_id = remove_prefix(parsed.path, "/api/runs/")
             run = self.server.store.get_run(run_id)
             if run is None:
                 self.send_json({"error": "run not found"}, status=HTTPStatus.NOT_FOUND)
@@ -67,7 +68,7 @@ class HaolemeRequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/runs/"):
-            run_id = parsed.path.removeprefix("/api/runs/")
+            run_id = remove_prefix(parsed.path, "/api/runs/")
             if self.server.store.delete_run(run_id):
                 self.send_json({"deleted": True})
                 return
@@ -102,7 +103,7 @@ class HaolemeRequestHandler(BaseHTTPRequestHandler):
 
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
-            return secrets.compare_digest(auth.removeprefix("Bearer ").strip(), token)
+            return secrets.compare_digest(remove_prefix(auth, "Bearer ").strip(), token)
 
         header_token = self.headers.get("X-Haoleme-Token", "")
         return bool(header_token) and secrets.compare_digest(header_token, token)

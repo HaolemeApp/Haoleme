@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from ._compat import shlex_join
 
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -24,7 +25,7 @@ class ClosingConnection(sqlite3.Connection):
 
 
 def utc_now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def default_data_dir() -> Path:
@@ -66,7 +67,7 @@ class RunRecord:
 
     @property
     def commandText(self) -> str:
-        return shlex.join(self.command)
+        return shlex_join(self.command)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "RunRecord":

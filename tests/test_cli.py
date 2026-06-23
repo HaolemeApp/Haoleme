@@ -11,10 +11,12 @@ from pathlib import Path
 from haoleme.cli import (
     HEARTBEAT_INTERVAL_SECONDS,
     ORPHANED_RUN_GRACE_SECONDS,
+    command_needs_shell,
     heartbeat_initial_delay,
     heartbeat_state_path,
     main,
     pairing_login_command,
+    qr_matrix_to_terminal_lines,
     read_heartbeat_state,
     reconcile_orphaned_running_runs,
     reusable_login_device_id,
@@ -74,6 +76,29 @@ class CliPairingTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         client_cls.assert_called_once_with(DEFAULT_CLOUD_URL)
+
+    def test_command_needs_shell_detects_shell_syntax(self):
+        # Single tokens with shell metacharacters / whitespace run via the shell.
+        for token in ["echo a && echo b", "ls | wc -l", "cat > out.txt", "echo $HOME", "ls *.py"]:
+            self.assertTrue(command_needs_shell(token), token)
+        # Plain program names / paths execute directly.
+        for token in ["ls", "npm", "./build.sh", "/usr/bin/python3", "my-tool"]:
+            self.assertFalse(command_needs_shell(token), token)
+
+    def test_qr_terminal_rendering_uses_gap_free_blocks(self):
+        lines = qr_matrix_to_terminal_lines([
+            [True, False],
+            [False, True],
+        ])
+
+        # One terminal line per matrix row, rendered with background-coloured
+        # blocks (black dark / white light, no half-block glyphs) so scanning
+        # stays reliable.
+        self.assertEqual(len(lines), 2)
+        self.assertNotIn("▀", "".join(lines))
+        for line in lines:
+            self.assertIn("\033[40m", line)  # black dark module
+            self.assertIn("\033[47m", line)  # white light module
 
     def test_old_config_without_machine_id_is_not_reused(self):
         config = CloudConfig(

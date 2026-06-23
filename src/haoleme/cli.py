@@ -7,7 +7,6 @@ import os
 import select
 import re
 import secrets
-import shlex
 import signal
 import shutil
 import subprocess
@@ -21,6 +20,7 @@ from pathlib import Path
 from socket import gethostname
 
 from . import __version__
+from ._compat import remove_prefix, shlex_join, unlink_missing
 from .cloud import DEFAULT_CLOUD_URL, CloudClient, CloudConfig, CloudSyncer, PairingClient, default_config_path, describe_cloud_error, generate_account_token, generate_device_id, get_or_create_machine_id
 from .crypto import decrypt_account_key, generate_pair_keypair
 from .server import serve
@@ -184,7 +184,7 @@ def ngrok_command(argv: Sequence[str]) -> int:
 
     token = ns.token or os.environ.get("HAOLEME_TOKEN") or secrets.token_urlsafe(24)
     local_url = f"http://{ns.host}:{ns.port}"
-    public_url = f"https://{ns.domain.removeprefix('https://').removeprefix('http://').rstrip('/')}"
+    public_url = f"https://{remove_prefix(remove_prefix(ns.domain, 'https://'), 'http://').rstrip('/')}"
 
     print("Starting 好了么 local server...")
     print(f"Local:  {local_url}")
@@ -202,7 +202,7 @@ def ngrok_command(argv: Sequence[str]) -> int:
     time.sleep(0.5)
 
     proc = subprocess.Popen(
-        [ngrok, "http", str(ns.port), "--url", ns.domain.removeprefix("https://").removeprefix("http://").rstrip("/")],
+        [ngrok, "http", str(ns.port), "--url", remove_prefix(remove_prefix(ns.domain, "https://"), "http://").rstrip("/")],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -690,7 +690,7 @@ def start_heartbeat_daemon() -> tuple[bool, str]:
         return True, f"already running (pid {pid})"
 
     pid_path.parent.mkdir(parents=True, exist_ok=True)
-    pid_path.unlink(missing_ok=True)
+    unlink_missing(pid_path)
     log_path = heartbeat_log_path()
     with log_path.open("a", encoding="utf-8") as log_file:
         proc = subprocess.Popen(
@@ -709,13 +709,13 @@ def stop_heartbeat_daemon() -> tuple[bool, str]:
     pid_path = heartbeat_pid_path()
     pid = read_heartbeat_pid()
     if not pid or not is_process_running(pid):
-        pid_path.unlink(missing_ok=True)
+        unlink_missing(pid_path)
         return False, "not running"
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError as exc:
         return False, f"could not stop pid {pid}: {exc}"
-    pid_path.unlink(missing_ok=True)
+    unlink_missing(pid_path)
     return True, f"stopped (pid {pid})"
 
 
@@ -824,11 +824,20 @@ def print_qr(text: str) -> None:
     qr = qrcode.QRCode(border=2)
     qr.add_data(text)
     qr.make(fit=True)
-    matrix = qr.get_matrix()
-    white = "\033[47m  \033[0m"
-    black = "\033[40m  \033[0m"
-    for row in matrix:
-        print("".join(black if cell else white for cell in row))
+    for line in qr_matrix_to_terminal_lines(qr.get_matrix()):
+        print(line)
+
+
+def qr_matrix_to_terminal_lines(matrix: Sequence[Sequence[bool]]) -> list[str]:
+    # Each module is a background-coloured cell. Background colours fill the whole
+    # character box, including the inter-line spacing terminals add, so modules tile
+    # seamlessly with no scan-breaking gaps (unlike half-block glyphs such as ▀,
+    # which only paint the foreground). Terminal cells are about half as wide as
+    # they are tall, so two columns per module keeps the rendered code square —
+    # essential for reliable scanning.
+    dark = "\033[40m  \033[0m"   # black block: QR "dark" module
+    light = "\033[47m  \033[0m"  # white block: QR "light" module / quiet zone
+    return ["".join(dark if cell else light for cell in row) for row in matrix]
 
 
 def cloud_logout_command(_argv: Sequence[str]) -> int:
@@ -844,7 +853,7 @@ def cloud_logout_command(_argv: Sequence[str]) -> int:
             data.pop("cloud", None)
             config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception:
-        config_path.unlink(missing_ok=True)
+        unlink_missing(config_path)
     stop_heartbeat_daemon()
     print("好了么 cloud login removed.")
     return 0
@@ -1025,13 +1034,16 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
     syncer.request_sync()
 
     print(f"好了么 run: {run_id}", flush=True)
-    print(f"Command: {shlex.join(command)}", flush=True)
+    print(f"Command: {shlex_join(command)}", flush=True)
     if project:
         print(f"Project: {project}", flush=True)
 
-    executable_command = resolve_local_executable(command)
+    if len(command) == 1 and command_needs_shell(command[0]):
+        executable_command = ["/bin/sh", "-c", command[0]]
+    else:
+        executable_command = resolve_local_executable(command)
     if executable_command != list(command):
-        print(f"Resolved: {shlex.join(executable_command)}", flush=True)
+        print(f"Resolved: {shlex_join(executable_command)}", flush=True)
 
     try:
         if should_use_pty():
@@ -1051,6 +1063,17 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
     if syncer.last_error:
         print(f"好了么 cloud sync warning: {syncer.last_error}", file=sys.stderr)
     return exit_code
+
+
+# Characters that imply the user wants shell interpretation (pipes, redirects,
+# logical operators, globs, variable/command substitution, whitespace between
+# words). A bare program path never contains these, so a single command token
+# that does is treated as a shell command line and run via the shell.
+_SHELL_METACHARACTERS = frozenset("|&;<>()$`\\\"'*?[]{}~# \t\n")
+
+
+def command_needs_shell(token: str) -> bool:
+    return any(ch in _SHELL_METACHARACTERS for ch in token)
 
 
 def resolve_local_executable(command: Sequence[str]) -> list[str]:
