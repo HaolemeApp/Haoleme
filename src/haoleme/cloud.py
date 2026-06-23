@@ -252,6 +252,13 @@ class CloudClient:
             raise RuntimeError("cloud response missing run")
         return run
 
+    def list_pending_interrupts(self) -> list[dict[str, Any]]:
+        payload = self.request("GET", "/api/devices/pending-interrupts")
+        interrupts = payload.get("interrupts")
+        if not isinstance(interrupts, list):
+            return []
+        return [item for item in interrupts if isinstance(item, dict)]
+
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         body = None
         headers = {
@@ -354,12 +361,12 @@ class InterruptWatcher:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                run = self.client.get_run(self.run_id)
-                if run.get("interruptRequestedAt"):
-                    if not self._triggered.is_set():
-                        self._triggered.set()
-                        self.on_interrupt()
-                    return
+                for item in self.client.list_pending_interrupts():
+                    if item.get("id") == self.run_id and item.get("interruptRequestedAt"):
+                        if not self._triggered.is_set():
+                            self._triggered.set()
+                            self.on_interrupt()
+                        return
             except Exception as exc:
                 self.last_error = str(exc)
             self._stop.wait(timeout=INTERRUPT_POLL_SECONDS)

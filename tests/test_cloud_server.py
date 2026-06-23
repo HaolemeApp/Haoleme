@@ -31,6 +31,7 @@ from haoleme.cloud_server import (
     delete_run,
     delete_runs_for_device,
     list_devices,
+    list_pending_interrupts,
     list_runs,
     latest_backup_status,
     monitor_payload,
@@ -402,6 +403,19 @@ class CloudServerDeviceTest(unittest.TestCase):
             upsert_run(db_path, account_key, self.sample_run("run-1", "dev_123", "Server A", "running"))
             run = get_run(db_path, account_key, "run-1")
             self.assertTrue(run.get("interruptRequestedAt"))
+
+    def test_pending_interrupts_lists_active_device_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            init_db(db_path)
+
+            upsert_run(db_path, account_key, self.sample_run("run-1", "dev_123", "Server A", "running"))
+            upsert_run(db_path, account_key, self.sample_run("run-2", "dev_other", "Other", "running"))
+            request_run_interrupt(db_path, account_key, "run-1")
+
+            interrupts = list_pending_interrupts(db_path, account_key, "dev_123")
+            self.assertEqual([item["id"] for item in interrupts], ["run-1"])
 
     def test_write_token_can_read_own_run_for_interrupt_polling(self):
         admin = AuthContext(account_key="account-key", token_hash="admin", scope="admin")

@@ -115,6 +115,30 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             self.send_unauthorized()
             return
 
+        if parsed.path == "/api/devices/pending-interrupts":
+            if auth.scope != "write":
+                self.send_json({"error": "write token required", "code": "write_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            if not auth.device_id:
+                self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if not self.allow_read_attempt(auth):
+                self.send_json(
+                    {"error": "too many read requests, slow down", "code": "read_rate_limited"},
+                    status=HTTPStatus.TOO_MANY_REQUESTS,
+                )
+                return
+            self.send_json(
+                {
+                    "interrupts": list_pending_interrupts(
+                        self.server.db_path,
+                        auth.account_key,
+                        auth.device_id,
+                    )
+                }
+            )
+            return
+
         if parsed.path.startswith("/api/runs/"):
             run_id = unquote(remove_prefix(parsed.path, "/api/runs/")).strip("/")
             if is_single_run_id(run_id):
@@ -1789,6 +1813,32 @@ def get_run(db_path: Path, account_key: str, run_id: str) -> dict[str, Any] | No
         ).fetchone()
         names = device_names(db, account_key)
     return None if row is None else decode_run(row["payload"], names)
+
+
+def list_pending_interrupts(db_path: Path, account_key: str, device_id: str) -> list[dict[str, Any]]:
+    if not device_id:
+        return []
+    with connect(db_path) as db:
+        expire_stale_running_runs(db, account_key)
+        rows = db.execute(
+            """
+            SELECT id, payload FROM runs
+            WHERE account_key = ? AND device_id = ? AND status IN ('created', 'running')
+            ORDER BY updated_at DESC
+            LIMIT 50
+            """,
+            (account_key, device_id),
+        ).fetchall()
+    interrupts: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            run = json.loads(row["payload"])
+        except json.JSONDecodeError:
+            continue
+        requested_at = str(run.get("interruptRequestedAt") or "").strip()
+        if requested_at:
+            interrupts.append({"id": row["id"], "interruptRequestedAt": requested_at})
+    return interrupts
 
 
 def request_run_interrupt(

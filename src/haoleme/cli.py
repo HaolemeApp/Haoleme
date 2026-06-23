@@ -30,6 +30,7 @@ from .store import RunStore, default_db_path
 RESERVED_COMMANDS = {"run", "server", "status", "public", "ngrok", "login", "heartbeat", "cloud-login", "cloud-logout", "cloud-status", "project", "doctor", "sync"}
 PUBLIC_URL_RE = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
 HEARTBEAT_INTERVAL_SECONDS = 60
+HEARTBEAT_ACTIVE_POLL_SECONDS = 3
 ORPHANED_RUN_GRACE_SECONDS = 30
 INTERRUPT_NOTE = "\n[好了么] Interrupted from mobile app.\n"
 
@@ -688,7 +689,11 @@ def start_heartbeat_daemon() -> tuple[bool, str]:
     pid_path = heartbeat_pid_path()
     pid = read_heartbeat_pid()
     if pid and is_process_running(pid):
-        return True, f"already running (pid {pid})"
+        state = read_heartbeat_state()
+        if state.get("haolemeVersion") != __version__:
+            stop_heartbeat_daemon()
+        else:
+            return True, f"already running (pid {pid})"
 
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     unlink_missing(pid_path)
@@ -732,6 +737,7 @@ def heartbeat_run_foreground() -> int:
         print("hao: cloud is not configured. Run hao login.", file=sys.stderr)
         return 1
 
+    write_heartbeat_state(haolemeVersion=__version__)
     delay = heartbeat_initial_delay(config)
     print(f"好了么 heartbeat started. First heartbeat in {delay}s, then every {HEARTBEAT_INTERVAL_SECONDS}s.", flush=True)
     try:
@@ -745,6 +751,9 @@ def heartbeat_run_foreground() -> int:
             try:
                 client = CloudClient(config, timeout=8.0)
                 store = RunStore()
+                interrupted = apply_cloud_interrupts(store, client)
+                if interrupted:
+                    print(f"Applied {interrupted} cloud interrupt(s).", flush=True)
                 recovered = reconcile_orphaned_running_runs(store, client)
                 if recovered:
                     print(f"Recovered {recovered} orphaned run(s).", flush=True)
@@ -754,13 +763,20 @@ def heartbeat_run_foreground() -> int:
                     write_heartbeat_state(lastSyncAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), lastSyncedRuns=synced)
                 client.heartbeat()
                 now_text = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                write_heartbeat_state(lastOkAt=now_text, lastError="", pendingRuns=store.count_unsynced_runs())
+                write_heartbeat_state(
+                    haolemeVersion=__version__,
+                    lastOkAt=now_text,
+                    lastError="",
+                    pendingRuns=store.count_unsynced_runs(),
+                )
                 print(f"Heartbeat ok: {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
             except Exception as exc:
                 error = describe_cloud_error(exc)
                 write_heartbeat_state(lastError=error)
                 print(f"Heartbeat failed: {error}", flush=True)
-            time.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            store = RunStore()
+            sleep_seconds = HEARTBEAT_ACTIVE_POLL_SECONDS if store.list_active_runs(limit=1) else HEARTBEAT_INTERVAL_SECONDS
+            time.sleep(sleep_seconds)
     except KeyboardInterrupt:
         print("好了么 heartbeat stopped.", flush=True)
         return 130
@@ -1119,19 +1135,59 @@ def subprocess_session_kwargs() -> dict[str, object]:
     return {}
 
 
-def send_signal_to_process_tree(proc: subprocess.Popen, signum: int) -> None:
-    if proc.poll() is not None:
+def send_signal_to_pid(pid: int, signum: int) -> None:
+    if pid <= 0:
         return
     if os.name == "posix":
         try:
-            os.killpg(os.getpgid(proc.pid), signum)
+            os.killpg(os.getpgid(pid), signum)
             return
         except (ProcessLookupError, PermissionError, OSError):
             pass
     try:
-        proc.send_signal(signum)
-    except ProcessLookupError:
+        os.kill(pid, signum)
+    except (ProcessLookupError, PermissionError, OSError):
         return
+
+
+def send_signal_to_process_tree(proc: subprocess.Popen, signum: int) -> None:
+    if proc.poll() is not None:
+        return
+    send_signal_to_pid(proc.pid, signum)
+
+
+def kill_process_tree(pid: int) -> None:
+    if pid <= 0 or not is_process_running(pid):
+        return
+    send_signal_to_pid(pid, signal.SIGINT)
+    for _ in range(10):
+        if not is_process_running(pid):
+            return
+        time.sleep(0.2)
+    send_signal_to_pid(pid, signal.SIGTERM)
+    for _ in range(15):
+        if not is_process_running(pid):
+            return
+        time.sleep(0.2)
+    send_signal_to_pid(pid, signal.SIGKILL)
+
+
+def apply_cloud_interrupts(store: RunStore, client: CloudClient) -> int:
+    applied = 0
+    pending_ids = {str(item.get("id") or "") for item in client.list_pending_interrupts() if item.get("id")}
+    if not pending_ids:
+        return 0
+    for run in store.list_active_runs(limit=100):
+        if run.id not in pending_ids:
+            continue
+        if run.pid is not None:
+            kill_process_tree(run.pid)
+        store.cancel_run(run.id, INTERRUPT_NOTE)
+        updated = store.get_run(run.id)
+        if updated is not None:
+            client.upsert_run(updated)
+        applied += 1
+    return applied
 
 
 def terminate_process_on_interrupt(proc: subprocess.Popen, interrupt_event: threading.Event) -> bool:

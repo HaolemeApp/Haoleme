@@ -238,8 +238,8 @@ class CliPairingTest(unittest.TestCase):
 
     def test_interrupt_watcher_triggers_callback(self):
         class Client:
-            def get_run(self, _run_id):
-                return {"interruptRequestedAt": "2026-06-18T01:00:00Z"}
+            def list_pending_interrupts(self):
+                return [{"id": "run-1", "interruptRequestedAt": "2026-06-18T01:00:00Z"}]
 
         triggered = threading.Event()
         watcher = InterruptWatcher(Client(), "run-1", triggered.set)
