@@ -385,6 +385,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        gpus = sanitize_gpus(payload.get("gpus")) if "gpus" in payload else None
         seen_at = iso_now()
         device = record_device_heartbeat(
             self.server.db_path,
@@ -392,6 +393,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             device_id,
             device_name or "好了么 CLI",
             seen_at,
+            gpus=gpus,
         )
         touch_token(self.server.db_path, auth.token_hash, seen_at)
         self.send_json({"ok": True, "device": device, "onlineWindowSeconds": DEVICE_ONLINE_WINDOW_SECONDS})
@@ -1116,6 +1118,8 @@ def init_db(db_path: Path) -> None:
         ensure_column(db, "runs", "project", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "devices", "manual_name", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "devices", "revoked_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "devices", "gpus", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "devices", "gpus_updated_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "app_tokens", "revoked_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "space_join_codes", "encryption_key", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "space_join_codes", "client_name", "TEXT NOT NULL DEFAULT ''")
@@ -2127,9 +2131,40 @@ def upsert_device(db_path: Path, account_key: str, device_id: str, name: str, se
         )
 
 
-def record_device_heartbeat(db_path: Path, account_key: str, device_id: str, name: str, seen_at: str) -> dict[str, Any] | None:
+def record_device_heartbeat(
+    db_path: Path,
+    account_key: str,
+    device_id: str,
+    name: str,
+    seen_at: str,
+    gpus: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     upsert_device(db_path, account_key, device_id, name, seen_at)
+    if gpus is not None:
+        with connect(db_path) as db:
+            db.execute(
+                "UPDATE devices SET gpus = ?, gpus_updated_at = ? WHERE account_key = ? AND id = ?",
+                (json.dumps(gpus, ensure_ascii=False), seen_at, account_key, device_id),
+            )
     return get_device(db_path, account_key, device_id)
+
+
+def sanitize_gpus(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value[:16]:
+        if not isinstance(item, dict):
+            continue
+        out.append({
+            "index": int_or_none(item.get("index")),
+            "name": str(item.get("name") or "")[:80],
+            "utilization": int_or_none(item.get("utilization")),
+            "memoryUsed": int_or_none(item.get("memoryUsed")),
+            "memoryTotal": int_or_none(item.get("memoryTotal")),
+            "temperature": int_or_none(item.get("temperature")),
+        })
+    return out
 
 
 def rename_device(db_path: Path, account_key: str, device_id: str, name: str) -> dict[str, Any] | None:
@@ -2169,7 +2204,7 @@ def get_device(db_path: Path, account_key: str, device_id: str) -> dict[str, Any
     with connect(db_path) as db:
         row = db.execute(
             """
-            SELECT id, name, created_at, last_seen_at, revoked_at
+            SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at
             FROM devices
             WHERE account_key = ? AND id = ? AND revoked_at = ''
             """,
@@ -2187,6 +2222,8 @@ def list_devices(db_path: Path, account_key: str) -> list[dict[str, Any]]:
                    d.created_at,
                    d.last_seen_at,
                    d.revoked_at,
+                   d.gpus,
+                   d.gpus_updated_at,
                    MAX(t.last_used_at) AS token_last_used_at
             FROM devices d
             LEFT JOIN device_tokens t
@@ -2194,7 +2231,7 @@ def list_devices(db_path: Path, account_key: str) -> list[dict[str, Any]]:
                AND t.device_id = d.id
                AND t.revoked_at = ''
             WHERE d.account_key = ? AND d.revoked_at = ''
-            GROUP BY d.id, d.name, d.created_at, d.last_seen_at, d.revoked_at
+            GROUP BY d.id, d.name, d.created_at, d.last_seen_at, d.revoked_at, d.gpus, d.gpus_updated_at
             ORDER BY last_seen_at DESC
             """,
             (account_key,),
@@ -2203,6 +2240,15 @@ def list_devices(db_path: Path, account_key: str) -> list[dict[str, Any]]:
 
 
 def format_device(row: sqlite3.Row) -> dict[str, Any]:
+    gpus: list[dict[str, Any]] = []
+    raw_gpus = safe_row_get(row, "gpus")
+    if raw_gpus:
+        try:
+            parsed = json.loads(raw_gpus)
+            if isinstance(parsed, list):
+                gpus = parsed
+        except (TypeError, ValueError):
+            gpus = []
     return {
         "id": row["id"],
         "name": row["name"],
@@ -2212,6 +2258,8 @@ def format_device(row: sqlite3.Row) -> dict[str, Any]:
         "revokedAt": safe_row_get(row, "revoked_at") or "",
         "online": is_recent_timestamp(row["last_seen_at"], DEVICE_ONLINE_WINDOW_SECONDS),
         "onlineWindowSeconds": DEVICE_ONLINE_WINDOW_SECONDS,
+        "gpus": gpus,
+        "gpusUpdatedAt": safe_row_get(row, "gpus_updated_at") or "",
     }
 
 

@@ -40,6 +40,7 @@ from haoleme.cloud_server import (
     permission_audit,
     rename_device,
     record_device_heartbeat,
+    sanitize_gpus,
     request_run_interrupt,
     revoke_device,
     store_device_token,
@@ -94,6 +95,32 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertIsNotNone(device)
             self.assertEqual(device["name"], "Server A")
             self.assertEqual(device["lastSeenAt"], "2026-06-18T01:05:00Z")
+
+    def test_device_heartbeat_stores_and_returns_gpus(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_gpu"
+            init_db(db_path)
+
+            gpus = sanitize_gpus([
+                {"index": "0", "name": "NVIDIA A100", "utilization": "37",
+                 "memoryUsed": "1024", "memoryTotal": "81920", "temperature": "45"},
+                "junk",
+            ])
+            device = record_device_heartbeat(
+                db_path, account_key, device_id, "GPU box", "2026-06-23T01:00:00Z", gpus=gpus
+            )
+            self.assertEqual(len(device["gpus"]), 1)
+            self.assertEqual(device["gpus"][0]["utilization"], 37)
+            self.assertEqual(device["gpus"][0]["name"], "NVIDIA A100")
+
+            listed = list_devices(db_path, account_key)
+            self.assertEqual(listed[0]["gpus"][0]["memoryTotal"], 81920)
+
+            # A heartbeat without gpus must not wipe the last known values.
+            record_device_heartbeat(db_path, account_key, device_id, "GPU box", "2026-06-23T01:01:00Z")
+            self.assertEqual(list_devices(db_path, account_key)[0]["gpus"][0]["utilization"], 37)
 
     def test_device_token_is_write_scoped_hashed_and_revocable(self):
         with tempfile.TemporaryDirectory() as tmp:

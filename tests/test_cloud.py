@@ -2,10 +2,27 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from haoleme.cloud import CloudClient, CloudConfig, DEFAULT_CLOUD_URL, generate_account_token, get_or_create_machine_id, normalize_cloud_url
+import haoleme.cloud as cloud_module
+from haoleme.cloud import CloudClient, CloudConfig, CloudSyncer, DEFAULT_CLOUD_URL, generate_account_token, get_or_create_machine_id, normalize_cloud_url
 from haoleme.crypto import generate_account_key
 from haoleme.store import RunRecord
+
+
+class TieredSyncIntervalTest(unittest.TestCase):
+    def test_running_sync_interval_eases_with_age(self):
+        syncer = CloudSyncer.__new__(CloudSyncer)
+        syncer._started_at = 0.0
+        for age, expected in [(0, 1.0), (120, 1.0), (600, 5.0), (1800, 10.0), (5000, 10.0)]:
+            with patch.object(cloud_module.time, "monotonic", return_value=float(age)):
+                self.assertAlmostEqual(syncer._running_sync_interval(), expected, places=2)
+        prev = 0.0
+        for age in range(0, 2000, 50):
+            with patch.object(cloud_module.time, "monotonic", return_value=float(age)):
+                cur = syncer._running_sync_interval()
+            self.assertGreaterEqual(cur + 1e-9, prev)
+            prev = cur
 
 
 class CloudConfigTest(unittest.TestCase):

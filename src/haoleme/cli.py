@@ -752,6 +752,50 @@ def heartbeat_initial_delay(config: CloudConfig) -> int:
     return int(digest[:8], 16) % HEARTBEAT_INTERVAL_SECONDS
 
 
+def _parse_int(value: str):
+    value = value.strip()
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def collect_gpu_stats() -> list:
+    """Snapshot NVIDIA GPU utilization via nvidia-smi. Empty list if unavailable."""
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return []
+    try:
+        proc = subprocess.run(
+            [
+                nvidia_smi,
+                "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    gpus = []
+    for line in proc.stdout.decode("utf-8", errors="replace").strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 6:
+            continue
+        gpus.append({
+            "index": _parse_int(parts[0]),
+            "name": parts[1][:80],
+            "utilization": _parse_int(parts[2]),
+            "memoryUsed": _parse_int(parts[3]),
+            "memoryTotal": _parse_int(parts[4]),
+            "temperature": _parse_int(parts[5]),
+        })
+    return gpus
+
+
 def heartbeat_run_foreground() -> int:
     config = CloudConfig.load()
     if config is None:
@@ -782,7 +826,7 @@ def heartbeat_run_foreground() -> int:
                 if synced:
                     print(f"Synced {synced} pending run(s).", flush=True)
                     write_heartbeat_state(lastSyncAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), lastSyncedRuns=synced)
-                client.heartbeat()
+                client.heartbeat(gpus=collect_gpu_stats())
                 now_text = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 write_heartbeat_state(
                     haolemeVersion=__version__,

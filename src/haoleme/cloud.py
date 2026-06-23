@@ -20,7 +20,10 @@ from .crypto import encrypt_output_chunk, encrypt_run_payload, is_valid_account_
 
 DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "http://39.96.50.42").rstrip("/")
 USER_AGENT = f"haoleme/{__version__}"
-RUNNING_SYNC_MIN_INTERVAL_SECONDS = 5.0
+# Console sync cadence is tiered by run age (see CloudSyncer._running_sync_interval):
+# fast (MIN) for fresh runs, easing to MAX for long-lived ones.
+RUNNING_SYNC_MIN_INTERVAL_SECONDS = 1.0
+RUNNING_SYNC_MAX_INTERVAL_SECONDS = 10.0
 SYNC_COALESCE_SECONDS = 0.35
 INTERRUPT_POLL_SECONDS = 1.0
 LEGACY_CLOUD_URLS = {
@@ -273,12 +276,14 @@ class CloudClient:
                 patch["stderrDelta"] = stderr_delta
         self.request("POST", "/api/runs", {"append": True, "run": patch})
 
-    def heartbeat(self) -> dict[str, Any]:
+    def heartbeat(self, gpus: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         if self.config.device_id:
             payload["deviceId"] = self.config.device_id
         if self.config.device_name:
             payload["deviceName"] = self.config.device_name
+        if gpus is not None:
+            payload["gpus"] = gpus
         return self.request("POST", "/api/devices/heartbeat", payload)
 
     def get_run(self, run_id: str) -> dict[str, Any]:
@@ -418,6 +423,7 @@ class CloudSyncer:
         self._thread: threading.Thread | None = None
         self.last_error: str | None = None
         self._last_sync_at = 0.0
+        self._started_at = time.monotonic()
         self._initial_synced = False
         self._synced_output_len = 0
         self._synced_stdout_len = 0
@@ -450,6 +456,19 @@ class CloudSyncer:
             time.sleep(SYNC_COALESCE_SECONDS)
             self._sync_once()
 
+    def _running_sync_interval(self) -> float:
+        # Tiered cadence by run age: near real-time for fresh runs, easing off so
+        # long-lived processes don't hammer the cloud. ~1s for the first 2 min,
+        # ramping to ~5s by 10 min and ~10s by 30 min, then a flat 10s.
+        age = time.monotonic() - self._started_at
+        if age <= 120:
+            return 1.0
+        if age >= 1800:
+            return RUNNING_SYNC_MAX_INTERVAL_SECONDS
+        if age <= 600:
+            return 1.0 + (age - 120) / (600 - 120) * (5.0 - 1.0)
+        return 5.0 + (age - 600) / (1800 - 600) * (RUNNING_SYNC_MAX_INTERVAL_SECONDS - 5.0)
+
     def _output_deltas(self, run: RunRecord) -> dict[str, str]:
         return {
             "output_tail": run.output_tail[self._synced_output_len :],
@@ -470,7 +489,7 @@ class CloudSyncer:
             return
         if not force and run.status in {"created", "running"}:
             now = time.monotonic()
-            if self._last_sync_at and now - self._last_sync_at < RUNNING_SYNC_MIN_INTERVAL_SECONDS:
+            if self._last_sync_at and now - self._last_sync_at < self._running_sync_interval():
                 return
         try:
             deltas = self._output_deltas(run)
