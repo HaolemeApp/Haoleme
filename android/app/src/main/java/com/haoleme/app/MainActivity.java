@@ -130,7 +130,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final int CAMERA_REQUEST = 4108;
     private static final long POLL_MS = 5000L;
     private static final long CONSOLE_RUNNING_POLL_MS = 1000L;
-    private static final int HTTP_TIMEOUT_MS = 20000;
+    private static final int HTTP_CONNECT_TIMEOUT_MS = 8000;
+    private static final int HTTP_READ_TIMEOUT_MS = 12000;
+    private static final int HTTP_LIST_READ_TIMEOUT_MS = 10000;
     private static final String CACHE_RUNS = "cached_runs_json";
     private static final String CACHE_RUNS_AT = "cached_runs_at";
     private static final String CACHE_RUNS_PREFIX = "cached_runs_json_";
@@ -167,9 +169,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
     };
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService executor = Executors.newFixedThreadPool(3);
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
     private final java.util.concurrent.atomic.AtomicBoolean consoleRefreshInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean runsRefreshInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean devicesRefreshInFlight =
             new java.util.concurrent.atomic.AtomicBoolean(false);
     private final Map<String, String> knownStatuses = new HashMap<>();
     private final Map<String, String> deviceNames = new HashMap<>();
@@ -553,8 +559,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         TextView refreshButton = actionButton(actionLabel("↻", t("refresh"), 1.28f));
         refreshButton.setOnClickListener(v -> {
-            refreshDevices();
-            refreshRuns();
+            refreshDevices(true);
+            refreshRuns(true);
         });
         LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(dp(104), dp(46));
         refreshParams.setMargins(dp(8), 0, 0, 0);
@@ -634,8 +640,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         TextView refreshDeviceButton = actionButton(actionLabel("↻", "", 1.34f));
         refreshDeviceButton.setContentDescription(t("refresh"));
         refreshDeviceButton.setOnClickListener(v -> {
-            refreshDevices();
-            refreshRuns();
+            refreshDevices(true);
+            refreshRuns(true);
         });
         deviceHeader.addView(refreshDeviceButton, new LinearLayout.LayoutParams(dp(42), dp(42)));
 
@@ -2470,6 +2476,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshRuns() {
+        refreshRuns(false);
+    }
+
+    private void refreshRuns(boolean manual) {
+        if (!manual) {
+            if (!runsRefreshInFlight.compareAndSet(false, true)) {
+                return;
+            }
+        } else {
+            runsRefreshInFlight.set(true);
+        }
         String url = normalizedServerUrl() + "/api/runs?limit=50";
         if (selectedDeviceId != null && !selectedDeviceId.isEmpty() && !"all".equals(selectedDeviceId)) {
             url += "&deviceId=" + Uri.encode(selectedDeviceId);
@@ -2481,12 +2498,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
             url += "&project=" + Uri.encode(selectedProjectFilter);
         }
         final String requestUrl = url;
-        statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
+        if (manual || !hasCachedRuns()) {
+            statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
+        }
         executor.submit(() -> {
             try {
-                String body = httpGet(requestUrl);
+                String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
                 final JSONArray runs = decryptRuns(new JSONObject(body).getJSONArray("runs"));
-                saveRunsCache(runs);
                 handler.post(() -> {
                     if ("devices".equals(currentTab)) {
                         loadCachedDevices();
@@ -2495,6 +2513,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     }
                     renderRuns(runs, false);
                 });
+                executor.submit(() -> saveRunsCache(runs));
             } catch (Exception e) {
                 Log.w(TAG, "refreshRuns failed for " + safeRequestLabel(requestUrl), e);
                 handler.post(() -> {
@@ -2509,26 +2528,44 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         statusText.setText(cloudFailureMessage(e));
                     }
                 });
+            } finally {
+                runsRefreshInFlight.set(false);
             }
         });
     }
 
     private void refreshDevices() {
+        refreshDevices(false);
+    }
+
+    private void refreshDevices(boolean manual) {
+        if (!manual) {
+            if (!devicesRefreshInFlight.compareAndSet(false, true)) {
+                return;
+            }
+        } else {
+            devicesRefreshInFlight.set(true);
+        }
+        final String requestUrl = normalizedServerUrl() + "/api/devices";
         executor.submit(() -> {
             try {
-                String body = httpGet(normalizedServerUrl() + "/api/devices");
+                String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
                 JSONArray devices = new JSONObject(body).getJSONArray("devices");
                 prefs.edit().putString(CACHE_DEVICES, devices.toString()).apply();
                 handler.post(() -> renderDevices(devices));
             } catch (Exception ignored) {
-                Log.w(TAG, "refreshDevices failed for " + safeRequestLabel(normalizedServerUrl() + "/api/devices"), ignored);
+                Log.w(TAG, "refreshDevices failed for " + safeRequestLabel(requestUrl), ignored);
                 handler.post(() -> {
                     mergeDevicesFromCachedRuns();
                     if ("devices".equals(currentTab)) {
                         loadCachedDevices();
-                        statusText.setText(cloudFailureMessage(ignored) + (isEnglish() ? " Showing saved devices." : " 正在显示已保存设备。"));
+                        if (manual || !hasCachedRuns()) {
+                            statusText.setText(cloudFailureMessage(ignored) + (isEnglish() ? " Showing saved devices." : " 正在显示已保存设备。"));
+                        }
                     }
                 });
+            } finally {
+                devicesRefreshInFlight.set(false);
             }
         });
     }
@@ -4299,7 +4336,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private String httpGet(String target) throws Exception {
-        return httpRequest(target, "GET", true);
+        return httpRequest(target, "GET", true, null, true, HTTP_READ_TIMEOUT_MS);
+    }
+
+    private String httpGet(String target, int readTimeoutMs) throws Exception {
+        return httpRequest(target, "GET", true, null, true, readTimeoutMs);
     }
 
     private String httpGetPublic(String target) throws Exception {
@@ -4323,21 +4364,39 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private String httpRequest(String target, String method, boolean includeToken, String bodyJson, boolean allowRegisterRetry) throws Exception {
+        return httpRequest(target, method, includeToken, bodyJson, allowRegisterRetry, HTTP_READ_TIMEOUT_MS);
+    }
+
+    private String httpRequest(
+            String target,
+            String method,
+            boolean includeToken,
+            String bodyJson,
+            boolean allowRegisterRetry,
+            int readTimeoutMs
+    ) throws Exception {
         try {
-            return httpRequestOnce(target, method, includeToken, bodyJson, allowRegisterRetry);
+            return httpRequestOnce(target, method, includeToken, bodyJson, allowRegisterRetry, readTimeoutMs);
         } catch (SocketException e) {
             if (isConnectionReset(e)) {
-                return httpRequestOnce(target, method, includeToken, bodyJson, allowRegisterRetry);
+                return httpRequestOnce(target, method, includeToken, bodyJson, allowRegisterRetry, readTimeoutMs);
             }
             throw e;
         }
     }
 
-    private String httpRequestOnce(String target, String method, boolean includeToken, String bodyJson, boolean allowRegisterRetry) throws Exception {
+    private String httpRequestOnce(
+            String target,
+            String method,
+            boolean includeToken,
+            String bodyJson,
+            boolean allowRegisterRetry,
+            int readTimeoutMs
+    ) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(target).openConnection();
         try {
-            connection.setConnectTimeout(HTTP_TIMEOUT_MS);
-            connection.setReadTimeout(HTTP_TIMEOUT_MS);
+            connection.setConnectTimeout(HTTP_CONNECT_TIMEOUT_MS);
+            connection.setReadTimeout(readTimeoutMs);
             connection.setRequestMethod(method);
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Connection", "close");
@@ -4367,7 +4426,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             reader.close();
             if (code < 200 || code >= 300) {
                 if (code == 401 && includeToken && allowRegisterRetry && shouldRegisterBeforeRetry(target) && registerAppToken(serverBaseUrl(target))) {
-                    return httpRequest(target, method, includeToken, bodyJson, false);
+                    return httpRequest(target, method, includeToken, bodyJson, false, readTimeoutMs);
                 }
                 throw new HaolemeHttpException(code, body.toString());
             }
