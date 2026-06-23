@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -27,7 +28,23 @@ from .server import serve
 from .store import RunStore, default_db_path
 
 
-RESERVED_COMMANDS = {"run", "server", "status", "public", "ngrok", "login", "heartbeat", "cloud-login", "cloud-logout", "cloud-status", "project", "doctor", "sync"}
+RESERVED_COMMANDS = {
+    "run",
+    "server",
+    "status",
+    "public",
+    "ngrok",
+    "login",
+    "heartbeat",
+    "cloud-login",
+    "cloud-logout",
+    "cloud-status",
+    "project",
+    "doctor",
+    "sync",
+    "version",
+    "update",
+}
 PUBLIC_URL_RE = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
 HEARTBEAT_INTERVAL_SECONDS = 60
 HEARTBEAT_ACTIVE_POLL_SECONDS = 3
@@ -69,6 +86,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return doctor_command(args[1:])
     if first == "sync":
         return sync_command(args[1:])
+    if first == "version":
+        return version_command(args[1:])
+    if first == "update":
+        return update_command(args[1:])
     if first == "run":
         command, project_override = parse_run_args(args[1:])
         return run_command(command, project_override=project_override)
@@ -894,6 +915,208 @@ def cloud_status_command(_argv: Sequence[str]) -> int:
         return 1
 
 
+def version_tuple(value: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for piece in re.split(r"[.+-]", str(value or "").strip()):
+        if piece.isdigit():
+            parts.append(int(piece))
+        elif parts:
+            break
+    return tuple(parts) if parts else (0,)
+
+
+def compare_versions(left: str, right: str) -> int:
+    left_parts = version_tuple(left)
+    right_parts = version_tuple(right)
+    width = max(len(left_parts), len(right_parts))
+    for index in range(width):
+        left_value = left_parts[index] if index < len(left_parts) else 0
+        right_value = right_parts[index] if index < len(right_parts) else 0
+        if left_value < right_value:
+            return -1
+        if left_value > right_value:
+            return 1
+    return 0
+
+
+def update_json_urls() -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        candidate = (raw or "").strip()
+        if not candidate or candidate in seen:
+            return
+        seen.add(candidate)
+        urls.append(candidate)
+
+    config = CloudConfig.load()
+    if config is not None:
+        add(config.api_url.rstrip("/") + "/downloads/update.json")
+    add(DEFAULT_CLOUD_URL.rstrip("/") + "/downloads/update.json")
+    add(os.environ.get("HAOLEME_UPDATE_URL", ""))
+    return urls
+
+
+def fetch_update_manifest(timeout: float = 8.0) -> tuple[dict[str, object], str]:
+    errors: list[str] = []
+    for url in update_json_urls():
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={"Accept": "application/json", "User-Agent": f"haoleme/{__version__}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read().decode("utf-8")
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("update manifest must be a JSON object")
+            return parsed, url
+        except Exception as exc:
+            errors.append(f"{url}: {describe_cloud_error(exc)}")
+    detail = errors[0] if errors else "no update URL configured"
+    raise RuntimeError(detail)
+
+
+def latest_python_release(manifest: dict[str, object]) -> dict[str, str]:
+    python = manifest.get("python")
+    if not isinstance(python, dict):
+        return {}
+    version = str(python.get("version") or "").strip()
+    package_url = str(python.get("packageUrl") or "").strip()
+    wheel_url = str(python.get("wheelUrl") or "").strip()
+    return {
+        "version": version,
+        "packageUrl": package_url,
+        "wheelUrl": wheel_url,
+    }
+
+
+def python_wheel_candidates(release: dict[str, str], manifest_source: str) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        candidate = (raw or "").strip()
+        if not candidate or candidate in seen:
+            return
+        seen.add(candidate)
+        candidates.append(candidate)
+
+    version = release.get("version", "")
+    add(release.get("wheelUrl", ""))
+    if version:
+        wheel_name = f"haoleme-{version}-py3-none-any.whl"
+        parsed = urllib.parse.urlparse(manifest_source)
+        if parsed.scheme and parsed.netloc:
+            base = f"{parsed.scheme}://{parsed.netloc}"
+            add(f"{base}/downloads/{wheel_name}")
+        config = CloudConfig.load()
+        if config is not None:
+            add(config.api_url.rstrip("/") + f"/downloads/{wheel_name}")
+        add(DEFAULT_CLOUD_URL.rstrip("/") + f"/downloads/{wheel_name}")
+    add(release.get("packageUrl", ""))
+    add("haoleme")
+    return candidates
+
+
+def version_command(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="hao version")
+    parser.add_argument("--check", action="store_true", help="Exit 1 when a newer release is available.")
+    ns = parser.parse_args(argv)
+
+    print(f"haoleme {__version__}")
+    print(f"Python  {sys.version.split()[0]}")
+    print(f"hao     {shutil.which('hao') or sys.argv[0]}")
+
+    try:
+        manifest, source = fetch_update_manifest()
+    except Exception as exc:
+        print(f"Update check: unavailable ({exc})")
+        return 1 if ns.check else 0
+
+    release = latest_python_release(manifest)
+    latest = release.get("version", "")
+    if not latest:
+        print("Update check: manifest has no python.version")
+        return 1 if ns.check else 0
+
+    print(f"Latest  {latest} ({source})")
+    if compare_versions(__version__, latest) < 0:
+        print("Status  update available (run: hao update)")
+        return 1 if ns.check else 0
+    print("Status  up to date")
+    return 0
+
+
+def update_command(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="hao update")
+    parser.add_argument("--check", action="store_true", help="Only report whether an update is available.")
+    parser.add_argument("--yes", "-y", action="store_true", help="Install without confirmation.")
+    ns = parser.parse_args(argv)
+
+    try:
+        manifest, source = fetch_update_manifest()
+    except Exception as exc:
+        print(f"hao update failed: {exc}", file=sys.stderr)
+        return 1
+
+    release = latest_python_release(manifest)
+    latest = release.get("version", "")
+    if not latest:
+        print("hao update failed: manifest has no python.version", file=sys.stderr)
+        return 1
+
+    if compare_versions(__version__, latest) >= 0:
+        print(f"hao is already up to date ({__version__}).")
+        return 0
+
+    print(f"Current: {__version__}")
+    print(f"Latest:  {latest}")
+    print(f"Source:  {source}")
+    if ns.check:
+        print("Update available. Run: hao update")
+        return 0
+
+    if not ns.yes:
+        answer = input(f"Install haoleme {latest}? [Y/n] ").strip().lower()
+        if answer in {"n", "no"}:
+            print("hao update cancelled.")
+            return 1
+
+    candidates = python_wheel_candidates(release, source)
+    last_error = ""
+    for target in candidates:
+        print(f"Trying: {target}")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-U", target],
+                check=True,
+            )
+            break
+        except subprocess.CalledProcessError as exc:
+            last_error = f"pip exited {exc.returncode}"
+    else:
+        print(f"hao update failed: {last_error or 'no install target worked'}", file=sys.stderr)
+        return 1
+
+    try:
+        import haoleme
+
+        installed = haoleme.__version__
+    except Exception:
+        installed = latest
+    print(f"Installed haoleme {installed}.")
+    stop_heartbeat_daemon()
+    started, message = start_heartbeat_daemon()
+    print(f"Heartbeat: {message}" if started else f"Heartbeat not restarted: {message}")
+    if compare_versions(installed, latest) < 0:
+        print("hao update warning: installed version still looks older than latest.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def sync_command(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="hao sync")
     parser.add_argument("--limit", type=int, default=500, help="Maximum pending runs to upload.")
@@ -1482,6 +1705,8 @@ Usage:
   hao cloud-logout
   hao doctor [--no-network]
   hao sync [--limit 500]
+  hao version [--check]
+  hao update [--check] [--yes]
   hao status [--limit 10]
   hao <command> [args...]
   hao [--project NAME|--no-project] <command> [args...]

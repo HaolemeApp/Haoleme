@@ -15,10 +15,13 @@ from haoleme.cli import (
     HEARTBEAT_INTERVAL_SECONDS,
     ORPHANED_RUN_GRACE_SECONDS,
     command_needs_shell,
+    compare_versions,
     heartbeat_initial_delay,
     heartbeat_state_path,
     main,
     pairing_login_command,
+    update_command,
+    version_command,
     qr_matrix_to_terminal_lines,
     read_heartbeat_state,
     reconcile_orphaned_running_runs,
@@ -58,6 +61,42 @@ class BrokenTarget:
 
 
 class CliPairingTest(unittest.TestCase):
+    def test_compare_versions_orders_semver_like_values(self):
+        self.assertEqual(compare_versions("0.3.9", "0.3.10"), -1)
+        self.assertEqual(compare_versions("0.3.19", "0.3.19"), 0)
+        self.assertEqual(compare_versions("1.0.0", "0.9.9"), 1)
+
+    def test_version_command_prints_current_version(self):
+        buffer = io.StringIO()
+        with patch("sys.stdout", buffer), patch("haoleme.cli.fetch_update_manifest") as fetch:
+            fetch.return_value = ({"python": {"version": "9.9.9"}}, "http://example.test/downloads/update.json")
+            exit_code = version_command([])
+        output = buffer.getvalue()
+        self.assertIn("haoleme", output)
+        self.assertEqual(exit_code, 0)
+
+    def test_version_check_exits_when_update_available(self):
+        with patch("haoleme.cli.fetch_update_manifest") as fetch, patch("haoleme.cli.__version__", "0.0.1"):
+            fetch.return_value = ({"python": {"version": "9.9.9"}}, "http://example.test/downloads/update.json")
+            self.assertEqual(version_command(["--check"]), 1)
+
+    def test_update_check_reports_available_release(self):
+        buffer = io.StringIO()
+        with patch("sys.stdout", buffer), patch("haoleme.cli.fetch_update_manifest") as fetch, patch("haoleme.cli.__version__", "0.0.1"):
+            fetch.return_value = (
+                {"python": {"version": "9.9.9", "packageUrl": "https://pypi.org/project/haoleme/"}},
+                "http://example.test/downloads/update.json",
+            )
+            exit_code = update_command(["--check"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Update available", buffer.getvalue())
+
+    def test_main_routes_version_subcommand(self):
+        with patch("haoleme.cli.version_command", return_value=0) as mocked:
+            exit_code = main(["version", "--check"])
+        self.assertEqual(exit_code, 0)
+        mocked.assert_called_once_with(["--check"])
+
     def test_main_treats_unknown_first_arg_as_command(self):
         with patch("haoleme.cli.run_command", return_value=0) as mocked:
             exit_code = main(["python", "train.py"])
