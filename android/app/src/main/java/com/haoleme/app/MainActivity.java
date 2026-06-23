@@ -129,7 +129,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String CHANNEL_ID = "runs";
     private static final int CAMERA_REQUEST = 4108;
     private static final long POLL_MS = 5000L;
-    private static final long CONSOLE_RUNNING_POLL_MS = 3000L;
+    private static final long CONSOLE_RUNNING_POLL_MS = 1000L;
     private static final int HTTP_TIMEOUT_MS = 20000;
     private static final String CACHE_RUNS = "cached_runs_json";
     private static final String CACHE_RUNS_AT = "cached_runs_at";

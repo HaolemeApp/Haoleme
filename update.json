@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 89,
-    "versionName": "0.6.78",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.78.apk",
+    "versionCode": 90,
+    "versionName": "0.6.79",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.79.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.78.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.78.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.79.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.79.apk"
     ],
-    "sha256": "22302f3f7b6309831a328f875d738a939578b949ae3ef056a462ae9798cf3173",
+    "sha256": "c41bbcf5c8160006564b050b1c0160acc4b80cd0ed2e93fde289685e21307874",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "设备页新增服务器显卡占用监测；控制台同步改为阶梯式（新进程更快）。"
+    "notes": "控制台实时性提升：运行中输出改为每秒刷新（原 3 秒）。"
   },
   "python": {
     "version": "0.3.22",
