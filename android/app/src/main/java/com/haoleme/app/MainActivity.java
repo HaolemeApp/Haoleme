@@ -129,6 +129,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String CHANNEL_ID = "runs";
     private static final int CAMERA_REQUEST = 4108;
     private static final long POLL_MS = 5000L;
+    private static final long CONSOLE_RUNNING_POLL_MS = 3000L;
     private static final int HTTP_TIMEOUT_MS = 20000;
     private static final String CACHE_RUNS = "cached_runs_json";
     private static final String CACHE_RUNS_AT = "cached_runs_at";
@@ -203,6 +204,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean scannerVisible = false;
     private boolean decodingFrame = false;
     private String selectedRunId = null;
+    private String selectedRunStatus = "";
     private String selectedDeviceId = "all";
     private String selectedProjectFilter = "all";
     private String latestDownloadUrl = "";
@@ -237,9 +239,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 showStartupError(throwable);
                 return;
             }
-            handler.postDelayed(this, POLL_MS);
+            handler.postDelayed(this, pollDelayMs());
         }
     };
+
+    private long pollDelayMs() {
+        if (selectedRunId != null
+                && ("running".equals(selectedRunStatus) || "created".equals(selectedRunStatus))) {
+            return CONSOLE_RUNNING_POLL_MS;
+        }
+        return POLL_MS;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -261,7 +271,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             } else {
                 restoreUpdateBadgeFromPrefs();
             }
-            handler.postDelayed(pollRunnable, POLL_MS);
+            handler.postDelayed(pollRunnable, pollDelayMs());
         } catch (Throwable throwable) {
             showStartupError(throwable);
         }
@@ -328,6 +338,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void buildUi() {
         selectedRunId = null;
+        selectedRunStatus = "";
         selectedStatusFilter = prefs.getString(PREF_STATUS_FILTER, "all");
         if (!"running".equals(selectedStatusFilter) && !"failed".equals(selectedStatusFilter) && !"succeeded".equals(selectedStatusFilter)) {
             selectedStatusFilter = "all";
@@ -3442,6 +3453,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         selectedRunId = id;
+        selectedRunStatus = "";
         buildConsoleUi();
         loadCachedRunDetail(id);
         refreshRunDetail(id, true);
@@ -3759,6 +3771,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
             maybeNotify(run);
         }
         String status = run.optString("status", "unknown");
+        if (selectedRunId != null && selectedRunId.equals(run.optString("id", ""))) {
+            selectedRunStatus = status;
+        }
         detailCommand.setText(displayText(run.optString("commandText", isEnglish() ? "(unknown command)" : "（未知命令）")));
         String projectName = run.optString("project", "").trim();
         String projectSuffix = projectName.isEmpty() ? "" : " · " + projectName;
@@ -3897,6 +3912,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void returnToList() {
         selectedRunId = null;
+        selectedRunStatus = "";
         buildUi();
         refreshRuns();
     }

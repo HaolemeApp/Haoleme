@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 86,
-    "versionName": "0.6.75",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.75.apk",
+    "versionCode": 87,
+    "versionName": "0.6.76",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.76.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.75.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.75.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.76.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.76.apk"
     ],
-    "sha256": "c2be804f34f7a93b5c8b930b7b6f35fb634fa5fe22cb2adf4155cb0d3163b080",
+    "sha256": "c28cb1f9a2c79be3a40cdb3c3fad4b8ae72eb92580b03f7543d3b8437d006423",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Device page: show heartbeat and token time in China time, seconds only."
+    "notes": "Faster console refresh (~5s CLI sync, 3s app poll while running)."
   },
   "python": {
-    "version": "0.3.19",
+    "version": "0.3.20",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.19-py3-none-any.whl",
-    "notes": "Add hao version and hao update commands."
+    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.20-py3-none-any.whl",
+    "notes": "Faster running command cloud sync (5s instead of 10s)."
   }
 }
