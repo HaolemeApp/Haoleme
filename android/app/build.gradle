@@ -6,8 +6,11 @@ def releaseStorePath = System.getenv("HAOLEME_ANDROID_KEYSTORE") ?: ""
 def releaseStorePassword = System.getenv("HAOLEME_ANDROID_KEYSTORE_PASSWORD") ?: ""
 def releaseKeyAlias = System.getenv("HAOLEME_ANDROID_KEY_ALIAS") ?: ""
 def releaseKeyPassword = System.getenv("HAOLEME_ANDROID_KEY_PASSWORD") ?: ""
-def defaultServerUrl = (project.findProperty("HAOLEME_DEFAULT_SERVER_URL") ?: System.getenv("HAOLEME_DEFAULT_SERVER_URL") ?: "https://api.haoleme.cloud").toString()
-def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "https://api.haoleme.cloud/downloads/update.json").toString()
+// Defaults use the raw IP because api.haoleme.cloud is not ICP-filed yet and is
+// unreachable. Override with -PHAOLEME_DEFAULT_SERVER_URL / -PHAOLEME_UPDATE_URLS
+// (or env vars) once the domain is filed.
+def defaultServerUrl = (project.findProperty("HAOLEME_DEFAULT_SERVER_URL") ?: System.getenv("HAOLEME_DEFAULT_SERVER_URL") ?: "http://39.96.50.42").toString()
+def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "http://39.96.50.42/downloads/update.json").toString()
 def legacyCompatStorePath = "build/manual/debug.keystore"
 def hasReleaseSigning = releaseStorePath
         && releaseStorePassword
