@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 92,
-    "versionName": "0.6.81",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.81.apk",
+    "versionCode": 93,
+    "versionName": "0.6.82",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.82.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.81.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.81.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.82.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.82.apk"
     ],
-    "sha256": "ba94d382435a93ef46e23e6c7cfd479ff0eeb3356bd889c8599e7b9555f0631b",
+    "sha256": "523ae270d3e9df227652355a24f2fa8114854256cbb3d93cf5415d03565cc355",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "控制台自动刷新修复：避免请求堆积导致看着像卡住，进入控制台立即开始刷新。"
+    "notes": "Settings icons: smaller theme/language/mask/donation/diagnostics; new quiet-hours bell icon."
   },
   "python": {
     "version": "0.3.23",

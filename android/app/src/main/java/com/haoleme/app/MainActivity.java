@@ -764,7 +764,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 v -> showThemeDialog()
         ), matchWrap());
         settingsContent.addView(settingsRow(
-                "文",
+                "language_icon",
                 color("#0EA5E9"),
                 t("language"),
                 t("language_subtitle"),
@@ -1084,33 +1084,44 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         if ("theme_icon".equals(icon)) {
             ThemeIconView theme = new ThemeIconView(this, iconColor);
-            chip.addView(theme, new FrameLayout.LayoutParams(dp(33), dp(33), Gravity.CENTER));
+            chip.addView(theme, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
             return chip;
         }
         if ("quiet_icon".equals(icon)) {
-            MoonIconView moon = new MoonIconView(this, iconColor);
-            chip.addView(moon, new FrameLayout.LayoutParams(dp(33), dp(33), Gravity.CENTER));
+            QuietHoursIconView quiet = new QuietHoursIconView(this, iconColor);
+            chip.addView(quiet, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
             return chip;
         }
         if ("mask_icon".equals(icon)) {
             MaskIconView mask = new MaskIconView(this, iconColor);
-            chip.addView(mask, new FrameLayout.LayoutParams(dp(33), dp(33), Gravity.CENTER));
+            chip.addView(mask, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
+            return chip;
+        }
+        if ("language_icon".equals(icon)) {
+            LanguageIconView language = new LanguageIconView(this, iconColor);
+            chip.addView(language, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
             return chip;
         }
         if ("diagnostics_icon".equals(icon)) {
             DiagnosticsIconView diagnostics = new DiagnosticsIconView(this, iconColor);
-            chip.addView(diagnostics, new FrameLayout.LayoutParams(dp(33), dp(33), Gravity.CENTER));
+            chip.addView(diagnostics, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
             return chip;
         }
 
         TextView iconView = new TextView(this);
         iconView.setText(icon);
-        iconView.setTextSize(icon.length() > 1 ? 20 : 27);
+        float textSize = icon.length() > 1 ? 20f : 27f;
+        int box = dp(30);
+        if ("♥".equals(icon)) {
+            textSize = 21f;
+            box = dp(26);
+        }
+        iconView.setTextSize(textSize);
         iconView.setTypeface(null, Typeface.BOLD);
         iconView.setGravity(Gravity.CENTER);
         iconView.setIncludeFontPadding(false);
         iconView.setTextColor(iconColor);
-        chip.addView(iconView, new FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER));
+        chip.addView(iconView, new FrameLayout.LayoutParams(box, box, Gravity.CENTER));
         return chip;
     }
 
@@ -6253,7 +6264,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             float stroke = Math.max(2.2f, size * 0.09f);
             float cx = getWidth() / 2f;
             float cy = getHeight() / 2f;
-            float radius = size * 0.36f;
+            float radius = size * 0.32f;
 
             paint.setColor(fillColor);
             paint.setStyle(Paint.Style.STROKE);
@@ -6268,11 +6279,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
     }
 
-    private static class MoonIconView extends View {
+    private static class QuietHoursIconView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int fillColor;
 
-        MoonIconView(Context context, int fillColor) {
+        QuietHoursIconView(Context context, int fillColor) {
             super(context);
             this.fillColor = fillColor;
         }
@@ -6281,23 +6292,64 @@ public class MainActivity extends Activity implements LifecycleOwner {
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             float size = Math.min(getWidth(), getHeight());
-            float stroke = Math.max(2.4f, size * 0.1f);
-            float inset = stroke * 1.2f;
-            RectF outer = new RectF(
-                    (getWidth() - size) / 2f + inset,
-                    (getHeight() - size) / 2f + inset,
-                    (getWidth() + size) / 2f - inset,
-                    (getHeight() + size) / 2f - inset
-            );
-            RectF inner = new RectF(outer);
-            inner.offset(size * 0.2f, -size * 0.02f);
+            float pad = size * 0.18f;
+            float left = (getWidth() - size) / 2f + pad;
+            float top = (getHeight() - size) / 2f + pad;
+            float right = (getWidth() + size) / 2f - pad;
+            float bottom = (getHeight() + size) / 2f - pad;
+            float stroke = Math.max(2f, size * 0.08f);
+            float cx = (left + right) / 2f;
 
             paint.setColor(fillColor);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(stroke);
             paint.setStrokeCap(Paint.Cap.ROUND);
-            canvas.drawArc(outer, 88, 220, false, paint);
-            canvas.drawArc(inner, 112, 168, false, paint);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+
+            float bellTop = top + size * 0.08f;
+            float bellBottom = bottom - size * 0.2f;
+            RectF bell = new RectF(left + size * 0.12f, bellTop, right - size * 0.12f, bellBottom);
+            canvas.drawArc(bell, 200f, 140f, false, paint);
+            canvas.drawLine(left + size * 0.18f, bellBottom, right - size * 0.18f, bellBottom, paint);
+            canvas.drawLine(cx, bellTop - size * 0.02f, cx, top, paint);
+            canvas.drawLine(cx - size * 0.12f, bottom - size * 0.08f, cx + size * 0.12f, bottom - size * 0.08f, paint);
+
+            canvas.drawLine(left + size * 0.08f, bottom - size * 0.04f, right - size * 0.08f, top + size * 0.12f, paint);
+        }
+    }
+
+    private static class LanguageIconView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int fillColor;
+
+        LanguageIconView(Context context, int fillColor) {
+            super(context);
+            this.fillColor = fillColor;
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float size = Math.min(getWidth(), getHeight());
+            float stroke = Math.max(2f, size * 0.08f);
+            float cx = getWidth() / 2f;
+            float cy = getHeight() / 2f;
+            float radius = size * 0.3f;
+
+            paint.setColor(fillColor);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(stroke);
+            canvas.drawCircle(cx, cy, radius, paint);
+            canvas.drawLine(cx - radius, cy, cx + radius, cy, paint);
+            canvas.drawArc(new RectF(cx - radius, cy - radius, cx + radius, cy + radius), -70f, 200f, false, paint);
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextSize(size * 0.34f);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+            Paint.FontMetrics metrics = paint.getFontMetrics();
+            float textY = cy - (metrics.ascent + metrics.descent) / 2f;
+            canvas.drawText("文", cx, textY, paint);
         }
     }
 
@@ -6315,10 +6367,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
             super.onDraw(canvas);
             float size = Math.min(getWidth(), getHeight());
             float stroke = Math.max(2.2f, size * 0.085f);
-            float left = (getWidth() - size) / 2f + size * 0.13f;
-            float top = (getHeight() - size) / 2f + size * 0.28f;
-            float right = left + size * 0.74f;
-            float bottom = top + size * 0.44f;
+            float left = (getWidth() - size) / 2f + size * 0.16f;
+            float top = (getHeight() - size) / 2f + size * 0.3f;
+            float right = left + size * 0.68f;
+            float bottom = top + size * 0.4f;
 
             paint.setColor(fillColor);
             paint.setStyle(Paint.Style.STROKE);
@@ -6356,11 +6408,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(stroke);
             paint.setStrokeCap(Paint.Cap.ROUND);
-            canvas.drawCircle(cx, cy, size * 0.36f, paint);
-            canvas.drawLine(cx, cy - size * 0.01f, cx, cy + size * 0.19f, paint);
+            canvas.drawCircle(cx, cy, size * 0.31f, paint);
+            canvas.drawLine(cx, cy + size * 0.01f, cx, cy + size * 0.16f, paint);
 
             paint.setStyle(Paint.Style.FILL);
-            canvas.drawCircle(cx, cy - size * 0.18f, size * 0.045f, paint);
+            canvas.drawCircle(cx, cy - size * 0.15f, size * 0.04f, paint);
         }
     }
 }
