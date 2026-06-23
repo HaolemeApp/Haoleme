@@ -1,19 +1,19 @@
 {
   "android": {
-    "versionCode": 84,
-    "versionName": "0.6.73",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.73.apk",
+    "versionCode": 85,
+    "versionName": "0.6.74",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.74.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.73.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.73.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.74.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.74.apk"
     ],
-    "sha256": "f044f4f02095267edc88d1bbc377b8e6ab429cddd00fa0fb59a08b2830641050",
+    "sha256": "42571767f6652f0de5cccf235839af3f7554259ad186147f3788a806d7cdaa87",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Fix update check (restore correct update/server URLs) and show real command in notifications."
+    "notes": "Add console interrupt button to stop running commands from the app."
   },
   "python": {
-    "version": "0.3.14",
+    "version": "0.3.15",
     "packageUrl": "https://pypi.org/project/haoleme/"
   }
 }

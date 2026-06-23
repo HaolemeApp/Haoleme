@@ -240,6 +240,13 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 return
             self.device_heartbeat(auth)
             return
+        if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/interrupt"):
+            if auth.scope != "admin":
+                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            run_id = unquote(remove_suffix(remove_prefix(parsed.path, "/api/runs/"), "/interrupt")).strip("/")
+            self.interrupt_run(auth, run_id)
+            return
         if parsed.path == "/api/runs":
             if not self.allow_write_attempt(auth):
                 self.send_json({"error": "too many write requests, slow down", "code": "write_rate_limited"}, status=HTTPStatus.TOO_MANY_REQUESTS)
@@ -274,6 +281,24 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             return
 
         self.send_json({"error": "not found", "code": "not_found"}, status=HTTPStatus.NOT_FOUND)
+
+    def interrupt_run(self, auth: AuthContext, run_id: str) -> None:
+        if not run_id:
+            self.send_json({"error": "missing run id", "code": "missing_run_id"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        result, error_code = request_run_interrupt(self.server.db_path, auth.account_key, run_id)
+        if error_code == "run_not_found":
+            self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        if error_code == "run_not_active":
+            self.send_json({"error": "run is not active", "code": "run_not_active"}, status=HTTPStatus.CONFLICT)
+            return
+        self.send_json(
+            {
+                "ok": True,
+                "interruptRequestedAt": result.get("interruptRequestedAt", "") if result else "",
+            }
+        )
 
     def rename_device(self, auth: AuthContext, device_id: str) -> None:
         if not device_id:
@@ -1636,6 +1661,17 @@ def touch_token(db_path: Path, token_hash_value: str, used_at: str) -> None:
 
 def upsert_run(db_path: Path, account_key: str, run: dict[str, Any]) -> None:
     with connect(db_path) as db:
+        existing_row = db.execute(
+            "SELECT payload FROM runs WHERE account_key = ? AND id = ?",
+            (account_key, run["id"]),
+        ).fetchone()
+        if existing_row is not None:
+            try:
+                existing = json.loads(existing_row["payload"])
+                if existing.get("interruptRequestedAt") and not run.get("interruptRequestedAt"):
+                    run["interruptRequestedAt"] = existing["interruptRequestedAt"]
+            except json.JSONDecodeError:
+                pass
         db.execute(
             """
             INSERT INTO runs(account_key, id, updated_at, status, device_id, device_name, project, payload)
@@ -1739,6 +1775,57 @@ def get_run(db_path: Path, account_key: str, run_id: str) -> dict[str, Any] | No
         ).fetchone()
         names = device_names(db, account_key)
     return None if row is None else decode_run(row["payload"], names)
+
+
+def request_run_interrupt(
+    db_path: Path,
+    account_key: str,
+    run_id: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    with connect(db_path) as db:
+        expire_stale_running_runs(db, account_key)
+        row = db.execute(
+            "SELECT payload FROM runs WHERE account_key = ? AND id = ?",
+            (account_key, run_id),
+        ).fetchone()
+        if row is None:
+            return None, "run_not_found"
+        try:
+            run = json.loads(row["payload"])
+        except json.JSONDecodeError:
+            return None, "run_not_found"
+        status = str(run.get("status") or "")
+        if status not in {"created", "running"}:
+            return None, "run_not_active"
+        if not run.get("interruptRequestedAt"):
+            run["interruptRequestedAt"] = iso_now()
+        stored = normalize_run(run)
+        if run.get("interruptRequestedAt"):
+            stored["interruptRequestedAt"] = str(run["interruptRequestedAt"])
+        db.execute(
+            """
+            INSERT INTO runs(account_key, id, updated_at, status, device_id, device_name, project, payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_key, id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                status = excluded.status,
+                device_id = excluded.device_id,
+                device_name = excluded.device_name,
+                project = excluded.project,
+                payload = excluded.payload
+            """,
+            (
+                account_key,
+                stored["id"],
+                stored["updatedAt"],
+                stored.get("status", ""),
+                stored.get("deviceId", ""),
+                stored.get("deviceName", ""),
+                normalize_project_name(stored.get("project")),
+                json.dumps(stored, ensure_ascii=False),
+            ),
+        )
+    return stored, None
 
 
 def delete_run(db_path: Path, account_key: str, run_id: str) -> bool:
@@ -2016,6 +2103,9 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
             "nonce": str(e2ee.get("nonce") or "")[:128],
             "ciphertext": str(e2ee.get("ciphertext") or ""),
         }
+    interrupt_requested_at = str(run.get("interruptRequestedAt") or "").strip()
+    if interrupt_requested_at:
+        normalized["interruptRequestedAt"] = interrupt_requested_at
     return normalized
 
 

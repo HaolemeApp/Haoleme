@@ -21,7 +21,7 @@ from socket import gethostname
 
 from . import __version__
 from ._compat import remove_prefix, shlex_join, unlink_missing
-from .cloud import DEFAULT_CLOUD_URL, CloudClient, CloudConfig, CloudSyncer, PairingClient, default_config_path, describe_cloud_error, generate_account_token, generate_device_id, get_or_create_machine_id
+from .cloud import DEFAULT_CLOUD_URL, CloudClient, CloudConfig, CloudSyncer, InterruptWatcher, PairingClient, default_config_path, describe_cloud_error, generate_account_token, generate_device_id, get_or_create_machine_id
 from .crypto import decrypt_account_key, generate_pair_keypair
 from .server import serve
 from .store import RunStore, default_db_path
@@ -31,6 +31,7 @@ RESERVED_COMMANDS = {"run", "server", "status", "public", "ngrok", "login", "hea
 PUBLIC_URL_RE = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
 HEARTBEAT_INTERVAL_SECONDS = 60
 ORPHANED_RUN_GRACE_SECONDS = 30
+INTERRUPT_NOTE = "\n[好了么] Interrupted from mobile app.\n"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1045,17 +1046,32 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
     if executable_command != list(command):
         print(f"Resolved: {shlex_join(executable_command)}", flush=True)
 
+    interrupt_event = threading.Event()
+    watcher = InterruptWatcher(syncer.client, run_id, interrupt_event.set)
+    watcher.start()
     try:
-        if should_use_pty():
-            exit_code = run_command_with_pty(executable_command, store, run_id, syncer)
-        else:
-            exit_code = run_command_with_pipes(executable_command, store, run_id, syncer)
-    except FileNotFoundError:
-        store.append_output(run_id, "stderr_tail", f"command not found: {command[0]}\n")
-        store.finish_run(run_id, 127)
+        try:
+            if should_use_pty():
+                exit_code, interrupted = run_command_with_pty(executable_command, store, run_id, syncer, interrupt_event)
+            else:
+                exit_code, interrupted = run_command_with_pipes(executable_command, store, run_id, syncer, interrupt_event)
+        except FileNotFoundError:
+            store.append_output(run_id, "stderr_tail", f"command not found: {command[0]}\n")
+            store.finish_run(run_id, 127)
+            syncer.close()
+            print(f"hao: command not found: {command[0]}", file=sys.stderr)
+            return 127
+    finally:
+        watcher.stop()
+
+    if interrupted or watcher.triggered():
+        store.cancel_run(run_id, INTERRUPT_NOTE)
+        syncer.request_sync()
         syncer.close()
-        print(f"hao: command not found: {command[0]}", file=sys.stderr)
-        return 127
+        print(f"好了么 interrupted: {run_id}")
+        if syncer.last_error:
+            print(f"好了么 cloud sync warning: {syncer.last_error}", file=sys.stderr)
+        return 130
 
     store.finish_run(run_id, exit_code)
     syncer.close()
@@ -1095,7 +1111,37 @@ def should_use_pty() -> bool:
     return os.name == "posix" and hasattr(os, "openpty")
 
 
-def run_command_with_pty(command: Sequence[str], store: RunStore, run_id: str, syncer: CloudSyncer) -> int:
+def terminate_process_on_interrupt(proc: subprocess.Popen, interrupt_event: threading.Event) -> bool:
+    if proc.poll() is not None:
+        return interrupt_event.is_set()
+    if not interrupt_event.is_set():
+        return False
+    try:
+        proc.send_signal(signal.SIGINT)
+    except ProcessLookupError:
+        return True
+    for _ in range(10):
+        if proc.poll() is not None:
+            return True
+        time.sleep(0.2)
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return True
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    return True
+
+
+def run_command_with_pty(
+    command: Sequence[str],
+    store: RunStore,
+    run_id: str,
+    syncer: CloudSyncer,
+    interrupt_event: threading.Event | None = None,
+) -> tuple[int, bool]:
     previous_sighup = ignore_sighup()
     master_fd, slave_fd = os.openpty()
     proc: subprocess.Popen[bytes] | None = None
@@ -1126,8 +1172,12 @@ def run_command_with_pty(command: Sequence[str], store: RunStore, run_id: str, s
     stdin_fd = sys.stdin.fileno() if sys.stdin is not None and sys.stdin.isatty() else None
     output = bytearray()
 
+    interrupted = False
     try:
         while proc.poll() is None:
+            if interrupt_event is not None and terminate_process_on_interrupt(proc, interrupt_event):
+                interrupted = True
+                break
             read_fds = [master_fd]
             if stdin_fd is not None:
                 read_fds.append(stdin_fd)
@@ -1166,7 +1216,8 @@ def run_command_with_pty(command: Sequence[str], store: RunStore, run_id: str, s
         flush_pty_output(output, store, run_id, syncer, force=True)
         os.close(master_fd)
 
-    return proc.wait()
+    exit_code = proc.wait()
+    return exit_code, interrupted
 
 
 def read_pty_chunk(master_fd: int) -> bytes:
@@ -1214,7 +1265,13 @@ def flush_pty_output(
     syncer.request_sync()
 
 
-def run_command_with_pipes(command: Sequence[str], store: RunStore, run_id: str, syncer: CloudSyncer) -> int:
+def run_command_with_pipes(
+    command: Sequence[str],
+    store: RunStore,
+    run_id: str,
+    syncer: CloudSyncer,
+    interrupt_event: threading.Event | None = None,
+) -> tuple[int, bool]:
     previous_sighup = ignore_sighup()
     try:
         proc = subprocess.Popen(
@@ -1239,6 +1296,7 @@ def run_command_with_pipes(command: Sequence[str], store: RunStore, run_id: str,
 
     previous_sigint = signal.signal(signal.SIGINT, forward_signal)
     previous_sigterm = signal.signal(signal.SIGTERM, forward_signal)
+    interrupted = False
 
     try:
         threads = [
@@ -1256,7 +1314,12 @@ def run_command_with_pipes(command: Sequence[str], store: RunStore, run_id: str,
         for thread in threads:
             thread.start()
 
-        exit_code = proc.wait()
+        while proc.poll() is None:
+            if interrupt_event is not None and terminate_process_on_interrupt(proc, interrupt_event):
+                interrupted = True
+                break
+            time.sleep(0.2)
+        exit_code = proc.returncode if proc.returncode is not None else proc.wait()
         stop_forwarding.set()
         for thread in threads:
             thread.join(timeout=2)
@@ -1265,7 +1328,7 @@ def run_command_with_pipes(command: Sequence[str], store: RunStore, run_id: str,
         signal.signal(signal.SIGTERM, previous_sigterm)
         restore_sighup(previous_sighup)
 
-    return exit_code
+    return exit_code, interrupted
 
 
 def configured_cloud_client() -> CloudClient | None:

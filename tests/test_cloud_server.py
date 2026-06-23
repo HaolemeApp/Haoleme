@@ -17,6 +17,7 @@ from haoleme.cloud_server import (
     delete_all_runs,
     expire_stale_running_runs,
     get_pair,
+    get_run,
     init_db,
     health_payload,
     find_app_token,
@@ -34,6 +35,7 @@ from haoleme.cloud_server import (
     permission_audit,
     rename_device,
     record_device_heartbeat,
+    request_run_interrupt,
     revoke_device,
     store_device_token,
     store_app_token,
@@ -378,6 +380,38 @@ class CloudServerDeviceTest(unittest.TestCase):
         self.assertTrue(is_app_version_too_old("android", 1, 22))
         self.assertFalse(is_app_version_too_old("ios", 1, 22))
         self.assertFalse(is_app_version_too_old("ios", None, 22))
+
+    def test_running_run_can_be_interrupted_and_flag_survives_cli_sync(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            init_db(db_path)
+
+            upsert_run(db_path, account_key, self.sample_run("run-1", "dev_123", "Server A", "running"))
+            stored, error = request_run_interrupt(db_path, account_key, "run-1")
+
+            self.assertIsNone(error)
+            self.assertIsNotNone(stored)
+            self.assertTrue(stored.get("interruptRequestedAt"))
+
+            run = get_run(db_path, account_key, "run-1")
+            self.assertTrue(run.get("interruptRequestedAt"))
+
+            upsert_run(db_path, account_key, self.sample_run("run-1", "dev_123", "Server A", "running"))
+            run = get_run(db_path, account_key, "run-1")
+            self.assertTrue(run.get("interruptRequestedAt"))
+
+    def test_interrupt_rejects_finished_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            init_db(db_path)
+
+            upsert_run(db_path, account_key, self.sample_run("run-1", "dev_123", "Server A", "succeeded"))
+            stored, error = request_run_interrupt(db_path, account_key, "run-1")
+
+            self.assertIsNone(stored)
+            self.assertEqual(error, "run_not_active")
 
     def test_delete_all_runs_only_removes_current_account(self):
         with tempfile.TemporaryDirectory() as tmp:

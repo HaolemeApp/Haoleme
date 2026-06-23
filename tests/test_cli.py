@@ -4,6 +4,8 @@ import io
 import os
 import signal
 import sys
+import threading
+import time
 from unittest.mock import patch
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +27,7 @@ from haoleme.cli import (
     stream_output,
     write_heartbeat_state,
 )
-from haoleme.cloud import CloudConfig, DEFAULT_CLOUD_URL
+from haoleme.cloud import CloudConfig, DEFAULT_CLOUD_URL, InterruptWatcher
 from haoleme.store import RunStore
 
 
@@ -234,13 +236,47 @@ class CliPairingTest(unittest.TestCase):
             run = store.get_run("run-output")
             self.assertEqual(run.output_tail, "hello\n")
 
+    def test_interrupt_watcher_triggers_callback(self):
+        class Client:
+            def get_run(self, _run_id):
+                return {"interruptRequestedAt": "2026-06-18T01:00:00Z"}
+
+        triggered = threading.Event()
+        watcher = InterruptWatcher(Client(), "run-1", triggered.set)
+        watcher.start()
+        self.assertTrue(triggered.wait(timeout=3))
+        watcher.stop()
+        self.assertTrue(watcher.triggered())
+
+    def test_run_command_with_pipes_stops_on_interrupt_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-stop", [sys.executable, "-c", "import time; time.sleep(30)"], "/tmp")
+            interrupt_event = threading.Event()
+
+            def trigger():
+                time.sleep(0.5)
+                interrupt_event.set()
+
+            threading.Thread(target=trigger, daemon=True).start()
+            exit_code, interrupted = run_command_with_pipes(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                store,
+                "run-stop",
+                DummySyncer(),
+                interrupt_event,
+            )
+
+            self.assertTrue(interrupted)
+            self.assertNotEqual(exit_code, 0)
+
     @unittest.skipUnless(os.name == "posix" and hasattr(signal, "SIGHUP"), "SIGHUP is POSIX-only")
     def test_child_command_ignores_sighup(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(Path(tmp) / "runs.db")
             store.create_run("run-hup", [sys.executable, "-c", "signal"], "/tmp")
 
-            exit_code = run_command_with_pipes(
+            exit_code, interrupted = run_command_with_pipes(
                 [sys.executable, "-c", "import signal; print(signal.getsignal(signal.SIGHUP) == signal.SIG_IGN)"],
                 store,
                 "run-hup",
@@ -248,6 +284,7 @@ class CliPairingTest(unittest.TestCase):
             )
 
             run = store.get_run("run-hup")
+            self.assertFalse(interrupted)
             self.assertEqual(exit_code, 0)
             self.assertIn("True", run.output_tail)
 

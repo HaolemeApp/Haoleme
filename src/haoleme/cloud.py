@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from .store import RunRecord, RunStore, default_data_dir
@@ -21,6 +22,7 @@ DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "http://39.96.50.42").rs
 USER_AGENT = f"haoleme/{__version__}"
 RUNNING_SYNC_MIN_INTERVAL_SECONDS = 10.0
 SYNC_COALESCE_SECONDS = 0.35
+INTERRUPT_POLL_SECONDS = 1.5
 LEGACY_CLOUD_URLS = {
     "http://106.14.246.204",
     "https://106.14.246.204",
@@ -243,6 +245,13 @@ class CloudClient:
             payload["deviceName"] = self.config.device_name
         return self.request("POST", "/api/devices/heartbeat", payload)
 
+    def get_run(self, run_id: str) -> dict[str, Any]:
+        payload = self.request("GET", f"/api/runs/{run_id}")
+        run = payload.get("run")
+        if not isinstance(run, dict):
+            raise RuntimeError("cloud response missing run")
+        return run
+
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         body = None
         headers = {
@@ -316,6 +325,43 @@ class PairingClient:
         if not isinstance(parsed, dict):
             raise RuntimeError("cloud returned non-object JSON")
         return parsed
+
+
+class InterruptWatcher:
+    def __init__(self, client: CloudClient | None, run_id: str, on_interrupt: Callable[[], None]) -> None:
+        self.client = client
+        self.run_id = run_id
+        self.on_interrupt = on_interrupt
+        self._stop = threading.Event()
+        self._triggered = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self.client is None:
+            return
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+
+    def triggered(self) -> bool:
+        return self._triggered.is_set()
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                run = self.client.get_run(self.run_id)
+                if run.get("interruptRequestedAt"):
+                    if not self._triggered.is_set():
+                        self._triggered.set()
+                        self.on_interrupt()
+                    return
+            except Exception:
+                pass
+            self._stop.wait(timeout=INTERRUPT_POLL_SECONDS)
 
 
 class CloudSyncer:

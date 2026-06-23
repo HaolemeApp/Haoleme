@@ -191,6 +191,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView detailMeta;
     private TextView detailConsole;
     private TextView consoleAutoScrollButton;
+    private TextView consoleInterruptButton;
     private TextView consoleTopMoreButton;
     private EditText consoleSearchInput;
     private ScrollView consoleVerticalScroll;
@@ -1665,6 +1666,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
             case "more": return en ? "More" : "更多";
             case "auto_on": return en ? "Auto On" : "自动滚动开";
             case "auto_off": return en ? "Auto Off" : "自动滚动关";
+            case "interrupt": return en ? "Interrupt" : "中断";
+            case "interrupt_confirm": return en ? "Stop this running command on the linked computer?" : "确定要在电脑上停止这条正在运行的命令吗？";
             default: return key;
         }
     }
@@ -3527,6 +3530,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setPadding(0, dp(5), 0, dp(8));
         root.addView(detailMeta, matchWrap());
 
+        consoleInterruptButton = actionButton(actionLabel("■", t("interrupt"), 1.12f));
+        consoleInterruptButton.setTextColor(color("#B42318"));
+        consoleInterruptButton.setOnClickListener(v -> confirmInterruptRun());
+        LinearLayout.LayoutParams interruptParams = matchWrap();
+        interruptParams.setMargins(0, dp(4), 0, dp(4));
+        consoleInterruptButton.setVisibility(View.GONE);
+        root.addView(consoleInterruptButton, interruptParams);
+
         statusText = new TextView(this);
         statusText.setText(isEnglish() ? "Loading console..." : "正在加载控制台...");
         statusText.setTextSize(13);
@@ -3650,6 +3661,62 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
     }
 
+    private void updateConsoleInterruptButton(boolean visible) {
+        if (consoleInterruptButton == null) {
+            return;
+        }
+        consoleInterruptButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+        consoleInterruptButton.setEnabled(visible);
+    }
+
+    private void confirmInterruptRun() {
+        if (selectedRunId == null || selectedRunId.isEmpty()) {
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(t("interrupt"))
+                .setMessage(t("interrupt_confirm"))
+                .setNegativeButton(t("cancel"), null)
+                .setPositiveButton(t("interrupt"), (dialog, which) -> interruptRun(selectedRunId))
+                .show();
+    }
+
+    private void interruptRun(String id) {
+        if (id == null || id.isEmpty()) {
+            return;
+        }
+        if (statusText != null) {
+            statusText.setText(isEnglish() ? "Sending interrupt..." : "正在发送中断请求...");
+        }
+        if (consoleInterruptButton != null) {
+            consoleInterruptButton.setEnabled(false);
+        }
+        executor.submit(() -> {
+            try {
+                httpPostJson(normalizedServerUrl() + "/api/runs/" + Uri.encode(id) + "/interrupt", "{}");
+                handler.post(() -> {
+                    if (!id.equals(selectedRunId)) {
+                        return;
+                    }
+                    if (statusText != null) {
+                        statusText.setText(isEnglish() ? "Interrupt sent. Waiting for command to stop..." : "中断请求已发送，等待命令停止...");
+                    }
+                    refreshRunDetail(id, false);
+                });
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (!id.equals(selectedRunId)) {
+                        return;
+                    }
+                    updateConsoleInterruptButton(true);
+                    if (statusText != null) {
+                        statusText.setText((isEnglish() ? "Interrupt failed: " : "中断失败：") + e.getMessage());
+                    }
+                });
+            }
+        });
+    }
+
     private void refreshRunDetail(String id, boolean showLoading) {
         if (showLoading && statusText != null) {
             statusText.setText(isEnglish() ? "Loading console..." : "正在加载控制台...");
@@ -3699,6 +3766,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String projectSuffix = projectName.isEmpty() ? "" : " · " + projectName;
         detailMeta.setText(status.toUpperCase(Locale.US) + projectSuffix + statusSuffix(run));
         detailMeta.setTextColor(statusColor(status));
+        updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
         currentConsoleOutput = consoleOutput(run);
         renderConsoleText();
         if (("running".equals(status) || "created".equals(status)) && consoleAutoScroll && consoleVerticalScroll != null) {
