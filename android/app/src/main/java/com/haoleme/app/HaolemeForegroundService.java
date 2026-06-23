@@ -13,6 +13,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.util.Base64;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -31,6 +32,10 @@ import java.util.Map;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 public class HaolemeForegroundService extends Service {
     private static final String PREFS = "haoleme";
@@ -118,6 +123,7 @@ public class HaolemeForegroundService extends Service {
                     if (run == null) {
                         continue;
                     }
+                    run = decryptRun(run);
                     maybeNotify(run);
                     String updated = run.optString("updatedAt", "");
                     if (updated.compareTo(latest) > 0) {
@@ -131,6 +137,61 @@ public class HaolemeForegroundService extends Service {
             } catch (Exception ignored) {
             }
         });
+    }
+
+    // Decrypt the end-to-end-encrypted run fields (command, output, ...) so the
+    // notification shows the real command instead of the "Encrypted command"
+    // placeholder. Mirrors MainActivity.decryptRun, but never generates a key:
+    // if no key is paired or decryption fails, the run is left as-is.
+    private JSONObject decryptRun(JSONObject run) {
+        JSONObject e2ee = run.optJSONObject("e2ee");
+        if (e2ee == null || e2ee.optInt("v", 0) != 1) {
+            return run;
+        }
+        byte[] key = accountKeyBytesOrNull();
+        if (key == null) {
+            return run;
+        }
+        try {
+            byte[] nonce = base64UrlDecode(e2ee.optString("nonce", ""));
+            byte[] ciphertext = base64UrlDecode(e2ee.optString("ciphertext", ""));
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
+            cipher.updateAAD(run.optString("id", "").getBytes(StandardCharsets.UTF_8));
+            byte[] plaintext = cipher.doFinal(ciphertext);
+            JSONObject fields = new JSONObject(new String(plaintext, StandardCharsets.UTF_8));
+            JSONObject copy = new JSONObject(run.toString());
+            copy.put("commandText", fields.optString("commandText", copy.optString("commandText", "")));
+            copy.put("cwd", fields.optString("cwd", copy.optString("cwd", "")));
+            copy.put("stdoutTail", fields.optString("stdoutTail", ""));
+            copy.put("stderrTail", fields.optString("stderrTail", ""));
+            copy.put("outputTail", fields.optString("outputTail", ""));
+            if (fields.has("command")) {
+                copy.put("command", fields.optJSONArray("command"));
+            }
+            return copy;
+        } catch (Exception ignored) {
+            return run;
+        }
+    }
+
+    private byte[] accountKeyBytesOrNull() {
+        String saved = prefs.getString("encryption_key_b64", "");
+        if (saved == null || saved.isEmpty()) {
+            return null;
+        }
+        try {
+            byte[] decoded = base64UrlDecode(saved);
+            if (decoded.length == 32) {
+                return decoded;
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private byte[] base64UrlDecode(String value) {
+        return Base64.decode(value, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
     }
 
     private void maybeNotify(JSONObject run) {

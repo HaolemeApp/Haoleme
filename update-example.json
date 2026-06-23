@@ -1,19 +1,19 @@
 {
   "android": {
-    "versionCode": 82,
-    "versionName": "0.6.71",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.71.apk",
+    "versionCode": 83,
+    "versionName": "0.6.72",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.72.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.71.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.71.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.72.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.72.apk"
     ],
-    "sha256": "fd0caac5cb695c1524ec9be187975f322ef93c321d18664cfbb86cfa9827309b",
+    "sha256": "9ba79eb354746f40db5549d64caff60722df3b36e1fbdbeb8e7241707a73f349",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Improves first-run guidance and uses a simpler empty-runs test command."
+    "notes": "Notifications now show the real command instead of \"Encrypted command\" (foreground service decrypts E2EE runs)."
   },
   "python": {
-    "version": "0.3.4",
+    "version": "0.3.13",
     "packageUrl": "https://pypi.org/project/haoleme/"
   }
 }
