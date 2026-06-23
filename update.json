@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 91,
-    "versionName": "0.6.80",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.80.apk",
+    "versionCode": 92,
+    "versionName": "0.6.81",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.81.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.80.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.80.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.81.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.6.81.apk"
     ],
-    "sha256": "9413c04528e69b025f7518c798f7eb589b1a4dba7922bef7a9a8bbc27a8b2988",
+    "sha256": "ba94d382435a93ef46e23e6c7cfd479ff0eeb3356bd889c8599e7b9555f0631b",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "控制台不再卡住：持续输出的进程保持秒级刷新；自动刷新更稳。"
+    "notes": "控制台自动刷新修复：避免请求堆积导致看着像卡住，进入控制台立即开始刷新。"
   },
   "python": {
     "version": "0.3.23",

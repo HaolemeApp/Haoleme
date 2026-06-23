@@ -169,6 +169,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.atomic.AtomicBoolean consoleRefreshInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     private final Map<String, String> knownStatuses = new HashMap<>();
     private final Map<String, String> deviceNames = new HashMap<>();
     private final Map<String, String> deviceLastSeen = new HashMap<>();
@@ -3540,6 +3542,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         buildConsoleUi();
         loadCachedRunDetail(id);
         refreshRunDetail(id, true);
+        // Re-arm the auto-refresh loop so the console starts polling within ~1s
+        // (not up to one list-cadence later) and is guaranteed running.
+        handler.removeCallbacks(pollRunnable);
+        handler.postDelayed(pollRunnable, CONSOLE_RUNNING_POLL_MS);
     }
 
     private void buildConsoleUi() {
@@ -3811,6 +3817,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshRunDetail(String id, boolean showLoading) {
+        // Auto-poll refreshes must not pile up on the single-thread executor: if a
+        // poll fetch is still running, skip this tick. Otherwise slow networks /
+        // large output make the queue grow and the console renders ever-staler data
+        // (looking frozen). Explicit opens (showLoading) always run.
+        if (!showLoading && !consoleRefreshInFlight.compareAndSet(false, true)) {
+            return;
+        }
         if (showLoading && statusText != null) {
             statusText.setText(isEnglish() ? "Loading console..." : "正在加载控制台...");
         }
@@ -3845,6 +3858,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         statusText.setText((isEnglish() ? "Cannot load console: " : "无法加载控制台：") + e.getMessage());
                     }
                 });
+            } finally {
+                if (!showLoading) {
+                    consoleRefreshInFlight.set(false);
+                }
             }
         });
     }
