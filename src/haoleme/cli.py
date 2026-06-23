@@ -1050,6 +1050,9 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
     syncer = CloudSyncer(store, run_id, configured_cloud_client())
     syncer.request_sync()
 
+    if syncer.client is None:
+        print("hao: cloud not configured; mobile interrupt will not work. Run: hao login", file=sys.stderr)
+
     print(f"好了么 run: {run_id}", flush=True)
     print(f"Command: {shlex_join(command)}", flush=True)
     if project:
@@ -1159,17 +1162,28 @@ def send_signal_to_process_tree(proc: subprocess.Popen, signum: int) -> None:
 def kill_process_tree(pid: int) -> None:
     if pid <= 0 or not is_process_running(pid):
         return
-    send_signal_to_pid(pid, signal.SIGINT)
-    for _ in range(10):
-        if not is_process_running(pid):
-            return
-        time.sleep(0.2)
     send_signal_to_pid(pid, signal.SIGTERM)
     for _ in range(15):
         if not is_process_running(pid):
             return
         time.sleep(0.2)
     send_signal_to_pid(pid, signal.SIGKILL)
+
+
+def refresh_interrupt_event(
+    run_id: str,
+    client: CloudClient | None,
+    interrupt_event: threading.Event | None,
+) -> None:
+    if interrupt_event is None or client is None or interrupt_event.is_set():
+        return
+    try:
+        for item in client.list_pending_interrupts():
+            if item.get("id") == run_id and item.get("interruptRequestedAt"):
+                interrupt_event.set()
+                return
+    except Exception:
+        return
 
 
 def apply_cloud_interrupts(store: RunStore, client: CloudClient) -> int:
@@ -1195,20 +1209,18 @@ def terminate_process_on_interrupt(proc: subprocess.Popen, interrupt_event: thre
         return interrupt_event.is_set()
     if not interrupt_event.is_set():
         return False
-    send_signal_to_process_tree(proc, signal.SIGINT)
-    for _ in range(10):
+    # Mobile interrupt must stop shell loops (bash -c 'while ... sleep 1').
+    # SIGINT only cancels the current sleep and the shell keeps running.
+    send_signal_to_process_tree(proc, signal.SIGTERM)
+    for _ in range(15):
         if proc.poll() is not None:
             return True
         time.sleep(0.2)
-    send_signal_to_process_tree(proc, signal.SIGTERM)
+    send_signal_to_process_tree(proc, signal.SIGKILL)
     try:
         proc.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        send_signal_to_process_tree(proc, signal.SIGKILL)
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        proc.kill()
     return True
 
 
@@ -1252,6 +1264,7 @@ def run_command_with_pty(
     interrupted = False
     try:
         while proc.poll() is None:
+            refresh_interrupt_event(run_id, syncer.client, interrupt_event)
             if interrupt_event is not None and terminate_process_on_interrupt(proc, interrupt_event):
                 interrupted = True
                 break
@@ -1392,6 +1405,7 @@ def run_command_with_pipes(
             thread.start()
 
         while proc.poll() is None:
+            refresh_interrupt_event(run_id, syncer.client, interrupt_event)
             if interrupt_event is not None and terminate_process_on_interrupt(proc, interrupt_event):
                 interrupted = True
                 break

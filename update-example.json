@@ -13,7 +13,7 @@
     "notes": "Add console interrupt button to stop running commands from the app."
   },
   "python": {
-    "version": "0.3.17",
+    "version": "0.3.18",
     "packageUrl": "https://pypi.org/project/haoleme/"
   }
 }

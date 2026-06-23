@@ -3,6 +3,7 @@ import tempfile
 import io
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -23,6 +24,8 @@ from haoleme.cli import (
     reconcile_orphaned_running_runs,
     reusable_login_device_id,
     run_command_with_pipes,
+    subprocess_session_kwargs,
+    terminate_process_on_interrupt,
     should_continue_relogin,
     stream_output,
     write_heartbeat_state,
@@ -40,6 +43,8 @@ class DummyCloudClient:
 
 
 class DummySyncer:
+    client = None
+
     def request_sync(self):
         pass
 
@@ -247,6 +252,26 @@ class CliPairingTest(unittest.TestCase):
         self.assertTrue(triggered.wait(timeout=3))
         watcher.stop()
         self.assertTrue(watcher.triggered())
+
+    @unittest.skipUnless(os.name == "posix", "process groups are POSIX-only")
+    def test_terminate_process_on_interrupt_stops_bash_loop(self):
+        proc = subprocess.Popen(
+            ["bash", "-c", "for i in 1 2 3 4 5; do sleep 1; done"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **subprocess_session_kwargs(),
+        )
+        try:
+            time.sleep(1.5)
+            event = threading.Event()
+            event.set()
+            self.assertTrue(terminate_process_on_interrupt(proc, event))
+            proc.wait(timeout=5)
+            self.assertIsNotNone(proc.returncode)
+            self.assertNotEqual(proc.returncode, 0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
 
     def test_run_command_with_pipes_stops_on_interrupt_event(self):
         with tempfile.TemporaryDirectory() as tmp:
