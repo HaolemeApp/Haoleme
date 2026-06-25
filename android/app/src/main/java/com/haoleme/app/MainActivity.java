@@ -27,6 +27,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.Settings;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
@@ -42,15 +43,23 @@ import android.util.Log;
 import android.util.Size;
 import android.view.Gravity;
 import android.view.View;
+import android.view.Window;
 import android.widget.Button;
+import android.widget.CheckedTextView;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import android.content.DialogInterface;
+
+import android.content.res.ColorStateList;
 
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ExperimentalGetImage;
@@ -171,12 +180,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
-    private final java.util.concurrent.atomic.AtomicBoolean consoleRefreshInFlight =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-    private final java.util.concurrent.atomic.AtomicBoolean runsRefreshInFlight =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-    private final java.util.concurrent.atomic.AtomicBoolean devicesRefreshInFlight =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
     private final Map<String, String> knownStatuses = new HashMap<>();
     private final Map<String, String> deviceNames = new HashMap<>();
     private final Map<String, String> deviceLastSeen = new HashMap<>();
@@ -190,7 +193,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView connectionSubtitleText;
     private TextView statusText;
     private TextView deviceSummaryText;
-    private TextView deviceGpuText;
+    private LinearLayout deviceGpuContainer;
     private HorizontalScrollView devicesScrollView;
     private LinearLayout devicesContainer;
     private LinearLayout runsContainer;
@@ -276,6 +279,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
             buildUi();
             handlePairIntent(getIntent());
             loadCachedRuns();
+            if (statusText != null) {
+                statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
+            }
             refreshDevices();
             refreshRuns();
             if (autoCheckUpdatesEnabled()) {
@@ -627,15 +633,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
         content.addView(devicesScrollView, matchWrap());
 
         LinearLayout deviceHeader = new LinearLayout(this);
-        deviceHeader.setOrientation(LinearLayout.HORIZONTAL);
-        deviceHeader.setGravity(Gravity.CENTER_VERTICAL);
+        deviceHeader.setOrientation(LinearLayout.VERTICAL);
+
+        LinearLayout infoRow = new LinearLayout(this);
+        infoRow.setOrientation(LinearLayout.HORIZONTAL);
+        infoRow.setGravity(Gravity.CENTER_VERTICAL);
 
         deviceSummaryText = new TextView(this);
         deviceSummaryText.setText("");
         deviceSummaryText.setTextSize(12);
         deviceSummaryText.setTextColor(textSecondary());
         deviceSummaryText.setPadding(0, dp(4), dp(8), dp(10));
-        deviceHeader.addView(deviceSummaryText, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        infoRow.addView(deviceSummaryText, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
         TextView refreshDeviceButton = actionButton(actionLabel("↻", "", 1.34f));
         refreshDeviceButton.setContentDescription(t("refresh"));
@@ -643,24 +652,25 @@ public class MainActivity extends Activity implements LifecycleOwner {
             refreshDevices(true);
             refreshRuns(true);
         });
-        deviceHeader.addView(refreshDeviceButton, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        infoRow.addView(refreshDeviceButton, new LinearLayout.LayoutParams(dp(42), dp(42)));
 
         TextView deviceMenuButton = actionButton("⋯");
         deviceMenuButton.setTextSize(22);
         deviceMenuButton.setOnClickListener(v -> showDeviceActionsDialog());
         LinearLayout.LayoutParams menuParams = new LinearLayout.LayoutParams(dp(42), dp(42));
         menuParams.setMargins(dp(8), 0, 0, 0);
-        deviceHeader.addView(deviceMenuButton, menuParams);
-        content.addView(deviceHeader, matchWrap());
+        infoRow.addView(deviceMenuButton, menuParams);
 
-        deviceGpuText = new TextView(this);
-        deviceGpuText.setTextSize(12);
-        deviceGpuText.setTextColor(textSecondary());
-        deviceGpuText.setPadding(dp(10), dp(8), dp(10), dp(8));
-        deviceGpuText.setVisibility(View.GONE);
+        deviceHeader.addView(infoRow, matchWrap());
+
+        deviceGpuContainer = new LinearLayout(this);
+        deviceGpuContainer.setOrientation(LinearLayout.VERTICAL);
+        deviceGpuContainer.setVisibility(View.GONE);
         LinearLayout.LayoutParams gpuParams = matchWrap();
-        gpuParams.setMargins(0, 0, 0, dp(6));
-        content.addView(deviceGpuText, gpuParams);
+        gpuParams.setMargins(0, 0, 0, dp(4));
+        deviceHeader.addView(deviceGpuContainer, gpuParams);
+
+        content.addView(deviceHeader, matchWrap());
 
         TextView runsTitle = sectionTitle(isEnglish() ? "Device Runs" : "设备运行");
         LinearLayout.LayoutParams runsTitleParams = matchWrap();
@@ -971,12 +981,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 true,
                 v -> showWhatsNewDialog()
         ), matchWrap());
+        String ver = currentVersionName();
+        String cli = prefs.getString("latest_cli_version", "");
+        if (!cli.isEmpty()) ver += " / CLI " + cli;
         settingsContent.addView(settingsRow(
                 "i",
                 textSecondary(),
                 t("version"),
                 appDisplayName() + " app",
-                currentVersionName(),
+                ver,
                 false,
                 null
         ), matchWrap());
@@ -987,7 +1000,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 t("diagnostics_subtitle"),
                 "",
                 true,
-                v -> showDiagnosticsDialog()
+                v -> {
+                    String diag = diagnosticsText();
+                    copyText(appDisplayName() + " diagnostics", diag);
+                    statusText.setText(t("diagnostics_copied"));
+                    openExternalUrl("https://github.com/HaolemeApp/Haoleme/issues/new");
+                }
         ), matchWrap());
         settingsContent.addView(settingsRow(
                 "github",
@@ -1205,7 +1223,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String[] values = new String[]{THEME_LIGHT, THEME_DARK};
         String current = themeMode();
         int selected = THEME_DARK.equals(current) ? 1 : 0;
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("theme"))
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
                     prefs.edit().putString(PREF_THEME_MODE, values[which]).apply();
@@ -1213,7 +1231,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     buildUi();
                 })
                 .setNegativeButton(t("cancel"), null)
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void showLanguageDialog() {
@@ -1221,7 +1241,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String[] values = new String[]{LANG_ZH, LANG_EN};
         String current = languageMode();
         int selected = LANG_EN.equals(current) ? 1 : 0;
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("language"))
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
                     prefs.edit().putString(PREF_LANGUAGE_MODE, values[which]).apply();
@@ -1233,7 +1253,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     }
                 })
                 .setNegativeButton(t("cancel"), null)
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void showConsoleHistoryDialog(View row) {
@@ -1247,7 +1269,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 break;
             }
         }
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("console_history"))
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
                     prefs.edit().putInt(PREF_CONSOLE_HISTORY_CHARS, values[which]).apply();
@@ -1259,17 +1281,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     statusText.setText(isEnglish() ? "Console history window set to " + labels[which] + "." : "控制台历史窗口已设置为 " + labels[which] + "。");
                 })
                 .setNegativeButton(t("cancel"), null)
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     @ExperimentalGetImage
     private void showSyncSpaceDialog() {
         String[] labels = new String[]{t("share_sync_space"), t("join_sync_space"), t("scan_pair_qr")};
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("sync_space"))
                 .setItems(labels, (dialog, which) -> {
                     if (which == 0) {
-                        createSyncSpaceShare();
+                        showShareDeviceChoice();
                     } else if (which == 1) {
                         showJoinSyncSpaceDialog();
                     } else {
@@ -1277,11 +1301,46 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     }
                 })
                 .setNegativeButton(t("cancel"), null)
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
-    private void createSyncSpaceShare() {
-        statusText.setText(isEnglish() ? "Creating sync space code..." : "正在生成同步空间码...");
+    private void showShareDeviceChoice() {
+        if (deviceNames.isEmpty()) {
+            loadCachedDevices();
+        }
+        List<String> ids = new ArrayList<>();
+        List<String> labels = new ArrayList<>();
+        ids.add("all");
+        labels.add(isEnglish() ? "All devices" : "全部设备");
+        for (Map.Entry<String, String> e : deviceNames.entrySet()) {
+            ids.add(e.getKey());
+            boolean online = deviceOnline.getOrDefault(e.getKey(), false);
+            String label = e.getValue() + (online ? (isEnglish() ? " (online)" : " (在线)") : "");
+            labels.add(label);
+        }
+        if (ids.size() <= 1) {
+            // no devices, share all
+            createSyncSpaceShare(null);
+            return;
+        }
+        String[] items = labels.toArray(new String[0]);
+        AlertDialog d = dialogBuilder()
+                .setTitle(isEnglish() ? "Share run records for which devices?" : "分享哪些设备的运行记录？")
+                .setItems(items, (dialog, which) -> {
+                    String chosenId = ids.get(which);
+                    String dev = "all".equals(chosenId) ? null : chosenId;
+                    createSyncSpaceShare(dev);
+                })
+                .setNegativeButton(t("cancel"), null)
+                .create();
+        applyDialogStyle(d);
+        d.show();
+    }
+
+    private void createSyncSpaceShare(String shareDeviceId) {
+        statusText.setText(isEnglish() ? "Creating shared space code..." : "正在生成共享空间码...");
         updateExecutor.submit(() -> {
             try {
                 JSONObject payload = new JSONObject();
@@ -1293,14 +1352,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 String shareToken = response.optString("shareToken", "").trim();
                 String expiresAt = response.optString("expiresAt", "").trim();
                 String spaceId = response.optString("spaceId", "").trim();
-                String spaceUrl = buildSyncSpaceUrl(normalizedServerUrl(), code, shareToken);
+                String spaceUrl = buildSyncSpaceUrl(normalizedServerUrl(), code, shareToken, shareDeviceId);
                 handler.post(() -> {
                     if (!spaceId.isEmpty()) {
                         prefs.edit().putString("space_id", spaceId).apply();
                     }
                     buildUi();
+                    if (shareDeviceId != null) {
+                        String devName = deviceNames.getOrDefault(shareDeviceId, shareDeviceId);
+                        statusText.setText((isEnglish() ? "Shared space code for device " : "已为设备 ") + devName + (isEnglish() ? " created." : " 生成共享空间码。"));
+                    } else {
+                        statusText.setText(isEnglish() ? "Shared space code created." : "共享空间码已生成。");
+                    }
                     showSyncSpaceShareDialog(code, shareToken, expiresAt, spaceUrl);
-                    statusText.setText(isEnglish() ? "Sync space code created." : "同步空间码已生成。");
                 });
             } catch (Exception e) {
                 handler.post(() -> statusText.setText(syncSpaceFailureMessage(e)));
@@ -1324,8 +1388,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         TextView hint = new TextView(this);
         String expiry = expiresAt == null || expiresAt.isEmpty() ? "" : ("\n" + (isEnglish() ? "Expires: " : "过期时间：") + expiresAt);
         hint.setText((isEnglish()
-                ? "Use this code within 5 minutes, or scan the QR with another Haoleme app."
-                : "请在 5 分钟内使用这个码，或用另一台好了么扫码加入。") + expiry);
+                ? "Use this code within 5 minutes, or scan the QR with another Haoleme app. The other app will see run records for the shared devices (all or selected)."
+                : "请在 5 分钟内使用这个码，或用另一台好了么扫码加入。对方将看到共享设备（全部或选中）的运行记录。") + expiry);
         hint.setTextSize(13);
         hint.setTextColor(textSecondary());
         hint.setGravity(Gravity.CENTER);
@@ -1348,12 +1412,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
             body.addView(fallback, matchWrap());
         }
 
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("sync_space"))
                 .setView(body)
                 .setNegativeButton(t("close"), null)
                 .setPositiveButton(t("copy"), (dialog, which) -> copyText(t("sync_space_code"), code))
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void showJoinSyncSpaceDialog() {
@@ -1368,23 +1434,29 @@ public class MainActivity extends Activity implements LifecycleOwner {
         FrameLayout wrapper = new FrameLayout(this);
         wrapper.setPadding(pad, dp(8), pad, 0);
         wrapper.addView(input, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(50)));
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("join_sync_space"))
-                .setMessage(isEnglish() ? "Enter the 6-digit code shown on another Haoleme app." : "输入另一台好了么显示的 6 位同步空间码。")
+                .setMessage(isEnglish() ? "Enter the 6-digit code shown on another Haoleme app to share its run records." : "输入另一台好了么显示的 6 位共享空间码，以共享其运行记录。")
                 .setView(wrapper)
                 .setNegativeButton(t("cancel"), null)
                 .setPositiveButton(t("join_sync_space"), (dialog, which) -> joinSyncSpaceCode(input.getText().toString(), "", normalizedServerUrl()))
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void joinSyncSpaceCode(String rawCode, String shareToken, String serverUrl) {
+        joinSyncSpaceCode(rawCode, shareToken, serverUrl, null);
+    }
+
+    private void joinSyncSpaceCode(String rawCode, String shareToken, String serverUrl, String deviceId) {
         String code = rawCode == null ? "" : rawCode.replaceAll("\\D", "");
         if (code.length() != 6) {
-            statusText.setText(isEnglish() ? "Enter the 6-digit sync space code." : "请输入 6 位同步空间码。");
+            statusText.setText(isEnglish() ? "Enter the 6-digit shared space code." : "请输入 6 位共享空间码。");
             return;
         }
         String targetServer = normalizeServerUrl(serverUrl);
-        statusText.setText(isEnglish() ? "Joining sync space..." : "正在加入同步空间...");
+        statusText.setText(isEnglish() ? "Joining shared space..." : "正在加入共享空间...");
         updateExecutor.submit(() -> {
             try {
                 JSONObject payload = new JSONObject();
@@ -1406,7 +1478,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     throw new IOException("cloud returned empty sync token");
                 }
                 handler.post(() -> {
-                    clearLocalCache();
+                    // Do not clear local run records so original user's run history is preserved when joining shared space
+                    // clearLocalCache();  // removed per requirement
                     SharedPreferences.Editor editor = prefs.edit()
                             .putString("server_url", targetServer)
                             .putString("token", token)
@@ -1420,12 +1493,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     if (!encryptionKey.isEmpty()) {
                         editor.putString("encryption_key_b64", encryptionKey);
                     }
+                    selectedDeviceId = (deviceId != null && !deviceId.trim().isEmpty() && !"all".equals(deviceId)) ? deviceId : "all";
+                    editor.putString("selected_device_id", selectedDeviceId);
                     editor.apply();
-                    selectedDeviceId = "all";
                     selectedRunId = null;
                     currentTab = "runs";
                     buildUi();
-                    statusText.setText(isEnglish() ? "Joined sync space. Refreshing..." : "已加入同步空间，正在刷新...");
+                    statusText.setText(isEnglish() ? "Joined shared space. Refreshing..." : "已加入共享空间，正在刷新...");
                     refreshDevices();
                     refreshRuns();
                 });
@@ -1436,6 +1510,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private String buildSyncSpaceUrl(String server, String code, String shareToken) {
+        return buildSyncSpaceUrl(server, code, shareToken, null);
+    }
+
+    private String buildSyncSpaceUrl(String server, String code, String shareToken, String deviceId) {
         Uri.Builder builder = new Uri.Builder()
                 .scheme("haoleme")
                 .authority("space")
@@ -1443,6 +1521,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 .appendQueryParameter("code", code == null ? "" : code);
         if (shareToken != null && !shareToken.trim().isEmpty()) {
             builder.appendQueryParameter("share", shareToken.trim());
+        }
+        if (deviceId != null && !deviceId.trim().isEmpty() && !"all".equals(deviceId)) {
+            builder.appendQueryParameter("deviceId", deviceId.trim());
         }
         return builder.build().toString();
     }
@@ -1465,23 +1546,29 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String notes = prefs.getString("latest_update_notes", "");
         String version = latestName == null || latestName.trim().isEmpty() ? currentVersionName() : latestName.trim();
         if (notes == null || notes.trim().isEmpty()) {
-            notes = appDisplayName() + " " + currentVersionName() + (isEnglish()
+            String cli = prefs.getString("latest_cli_version", "");
+            String cliPart = cli.isEmpty() ? "" : " (CLI " + cli + ")";
+            notes = appDisplayName() + " " + currentVersionName() + cliPart + (isEnglish()
                     ? "\n\n- Improved command monitoring UI.\n- Better device and update experience."
                     : "\n\n- 改进命令监控界面。\n- 优化设备和更新体验。");
         }
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("whats_new"))
                 .setMessage((isEnglish() ? "Version " : "版本 ") + version + "\n\n" + notes.trim())
                 .setPositiveButton(t("ok"), null)
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void showDonationSheet() {
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("donation"))
                 .setMessage(t("donation_public_hint"))
                 .setPositiveButton(t("ok"), null)
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void openExternalUrl(String url) {
@@ -1632,11 +1719,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
             case "pair": return en ? "Pair" : "配对";
             case "or_enter_code": return en ? "Or enter 6-digit code" : "也可以输入 6 位配对码";
             case "code_instead_qr": return en ? "Use this instead of scanning QR." : "这是扫码之外的另一种配对方式。";
-            case "sync_space": return en ? "Sync Space" : "同步空间";
-            case "sync_space_subtitle": return en ? "Share or join a no-account space" : "无需账号，共享或加入一个空间";
-            case "share_sync_space": return en ? "Share This Space" : "分享当前空间";
-            case "join_sync_space": return en ? "Join Sync Space" : "加入同步空间";
-            case "sync_space_code": return en ? "Sync space code" : "同步空间码";
+            case "sync_space": return en ? "Shared Space" : "共享空间";
+            case "sync_space_subtitle": return en ? "Share command run status across multiple apps" : "多个 App 共享同一个空间的命令运行状态";
+            case "share_sync_space": return en ? "Share This Space" : "分享此空间";
+            case "join_sync_space": return en ? "Join Shared Space" : "加入共享空间";
+            case "sync_space_code": return en ? "Shared space code" : "共享空间码";
             case "appearance": return en ? "Appearance" : "外观";
             case "theme": return en ? "Theme" : "主题";
             case "theme_subtitle": return en ? "Choose light or dark mode" : "选择浅色或深色模式";
@@ -1670,7 +1757,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             case "export_runs_subtitle": return en ? "Share saved runs as JSON" : "将已保存运行记录导出为 JSON";
             case "clear_cloud_runs": return en ? "Clear Cloud Runs" : "清空云端运行";
             case "clear_cloud_runs_subtitle": return en ? "Delete all cloud run history in this space" : "删除当前空间的全部云端运行历史";
-            case "delete_sync_space": return en ? "Delete Sync Space" : "删除同步空间";
+            case "delete_sync_space": return en ? "Delete Shared Space" : "删除共享空间";
             case "delete_sync_space_subtitle": return en ? "Remove cloud data and pairing for this space" : "删除云端数据并移除当前配对";
             case "support": return en ? "Support" : "支持";
             case "donation": return en ? "Donation" : "打赏";
@@ -1686,7 +1773,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             case "whats_new_subtitle": return en ? "See the latest improvements" : "查看最新改进";
             case "version": return en ? "Version" : "版本";
             case "diagnostics": return en ? "Diagnostics & Feedback" : "诊断与反馈";
-            case "diagnostics_subtitle": return en ? "Send suggestions with app status" : "填写建议并附带应用状态";
+            case "diagnostics_subtitle": return en ? "Open GitHub issues (diagnostics copied)" : "打开 GitHub Issues（已复制诊断信息）";
             case "feedback": return en ? "Feedback" : "意见反馈";
             case "feedback_hint": return en ? "Describe the problem or suggestion..." : "写下你遇到的问题或建议...";
             case "send_feedback": return en ? "Send Feedback" : "发送反馈";
@@ -1796,7 +1883,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 break;
             }
         }
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("minimum_run_time"))
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
                     prefs.edit().putInt(PREF_NOTIFY_MIN_SECONDS, values[which]).apply();
@@ -1805,7 +1892,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     statusText.setText(isEnglish() ? "Notification filter updated." : "通知过滤已更新。");
                 })
                 .setNegativeButton(t("cancel"), null)
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private String localCacheSizeLabel() {
@@ -1854,7 +1943,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void confirmClearLocalCache() {
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(isEnglish() ? "Clear local cache" : "清理本地缓存")
                 .setMessage(isEnglish() ? "Remove saved runs, consoles, device cache and update state from this phone? Cloud history stays unchanged." : "删除这台手机上保存的运行、控制台、设备缓存和更新状态？云端历史不会受影响。")
                 .setNegativeButton(t("cancel"), null)
@@ -1865,7 +1954,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     refreshDevices();
                     refreshRuns();
                 })
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private int clearLocalCache() {
@@ -1884,7 +1975,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void confirmClearCompletedLocalRuns() {
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(isEnglish() ? "Clear completed runs" : "清理已完成运行")
                 .setMessage(isEnglish() ? "Remove completed runs from this phone's saved history? Running runs and cloud history stay unchanged." : "从这台手机的保存历史中删除已完成运行？运行中的记录和云端历史不会受影响。")
                 .setNegativeButton(t("cancel"), null)
@@ -1894,7 +1985,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     statusText.setText(isEnglish() ? "Removed " + removed + " completed local run(s)." : "已删除 " + removed + " 条本地已完成运行。");
                     refreshRuns();
                 })
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private int clearCompletedLocalRuns() {
@@ -1978,25 +2071,47 @@ public class MainActivity extends Activity implements LifecycleOwner {
             export.put("exportedAt", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(new Date()));
             export.put("server", normalizedServerUrl());
             export.put("runs", runs);
+            String json = export.toString(2);
+
+            File exportsDir = new File(getCacheDir(), "exports");
+            if (!exportsDir.exists()) {
+                exportsDir.mkdirs();
+            }
+            String ts = new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss'Z'", Locale.US).format(new Date());
+            File exportFile = new File(exportsDir, "haoleme-runs-" + ts + ".json");
+            try (FileOutputStream fos = new FileOutputStream(exportFile)) {
+                fos.write(json.getBytes(StandardCharsets.UTF_8));
+            }
+
+            Uri uri = FileProvider.getUriForFile(
+                    this,
+                    BuildConfig.APPLICATION_ID + ".fileprovider",
+                    exportFile
+            );
+
             Intent intent = new Intent(Intent.ACTION_SEND);
             intent.setType("application/json");
             intent.putExtra(Intent.EXTRA_SUBJECT, "Haoleme runs export");
-            intent.putExtra(Intent.EXTRA_TEXT, export.toString(2));
+            intent.putExtra(Intent.EXTRA_STREAM, uri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivity(Intent.createChooser(intent, isEnglish() ? "Export runs" : "导出运行记录"));
+            statusText.setText(isEnglish() ? "Choose an app to receive the export." : "请选择应用接收导出文件。");
         } catch (Exception e) {
             statusText.setText((isEnglish() ? "Export failed: " : "导出失败：") + e.getMessage());
         }
     }
 
     private void confirmClearCloudRuns() {
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("clear_cloud_runs"))
                 .setMessage(isEnglish()
-                        ? "Delete all run history from the cloud for this sync space? Paired devices stay connected."
-                        : "删除当前同步空间里的全部云端运行历史？已配对设备会继续保留。")
+                        ? "Delete all run history from the cloud for this shared space? Paired devices stay connected."
+                        : "删除当前共享空间里的全部云端运行历史？已配对设备会继续保留。")
                 .setNegativeButton(t("cancel"), null)
                 .setPositiveButton(t("delete"), (dialog, which) -> clearCloudRuns())
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void clearCloudRuns() {
@@ -2036,28 +2151,30 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void confirmDeleteSyncSpace() {
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("delete_sync_space"))
                 .setMessage(isEnglish()
-                        ? "Delete this sync space from the cloud and remove pairing from this phone? Other devices will need to pair again."
-                        : "从云端删除当前同步空间，并移除这台手机上的配对？其他设备需要重新配对。")
+                        ? "Delete this shared space from the cloud and remove pairing from this phone? Other devices will need to pair again."
+                        : "从云端删除当前共享空间，并移除这台手机上的配对？其他设备需要重新配对。")
                 .setNegativeButton(t("cancel"), null)
                 .setPositiveButton(t("delete"), (dialog, which) -> deleteSyncSpace())
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void deleteSyncSpace() {
-        statusText.setText(isEnglish() ? "Deleting sync space..." : "正在删除同步空间...");
+        statusText.setText(isEnglish() ? "Deleting shared space..." : "正在删除共享空间...");
         executor.submit(() -> {
             try {
                 httpRequest(normalizedServerUrl() + "/api/account", "DELETE");
                 handler.post(() -> {
                     clearAllPairingAndCache();
                     buildUi();
-                    statusText.setText(isEnglish() ? "Sync space deleted. Pair again to continue." : "同步空间已删除。请重新配对后继续使用。");
+                    statusText.setText(isEnglish() ? "Shared space deleted. Pair again to continue." : "共享空间已删除。请重新配对后继续使用。");
                 });
             } catch (Exception e) {
-                handler.post(() -> statusText.setText((isEnglish() ? "Delete sync space failed: " : "删除同步空间失败：") + e.getMessage()));
+                handler.post(() -> statusText.setText((isEnglish() ? "Delete shared space failed: " : "删除共享空间失败：") + e.getMessage()));
             }
         });
     }
@@ -2117,12 +2234,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private void showDeviceSecurityDialog() {
         List<JSONObject> devices = cachedDeviceList();
         if (devices.isEmpty()) {
-            new AlertDialog.Builder(this)
+            AlertDialog d = dialogBuilder()
                     .setTitle(t("device_security"))
                     .setMessage(isEnglish() ? "No saved devices yet. Refresh Devices first." : "还没有保存的设备。请先刷新设备。")
                     .setNegativeButton(t("close"), null)
                     .setPositiveButton(t("refresh"), (dialog, which) -> refreshDevices())
-                    .show();
+                    .create();
+            applyDialogStyle(d);
+            d.show();
             return;
         }
 
@@ -2140,7 +2259,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             labels[i] = name + " · " + online + suffix + (seenLabel.isEmpty() ? "" : "\n" + (isEnglish() ? "Last seen: " : "最后在线：") + seenLabel);
         }
 
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("device_security"))
                 .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
                 .setNegativeButton(t("close"), null)
@@ -2154,7 +2273,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     }
                     confirmRevokeDevices(selected);
                 })
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private List<JSONObject> cachedDeviceList() {
@@ -2179,14 +2300,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         String names = deviceNamesSummary(targets);
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(isEnglish() ? "Disconnect device" : "断联设备")
                 .setMessage(isEnglish()
                         ? "Stop these device(s) from uploading new runs?\n\n" + names
                         : "阻止这些设备继续上传新的运行记录？\n\n" + names)
                 .setNegativeButton(t("cancel"), null)
                 .setPositiveButton(isEnglish() ? "Disconnect" : "断联", (dialog, which) -> revokeDevices(targets))
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private String deviceNamesSummary(List<JSONObject> devices) {
@@ -2234,77 +2357,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         });
     }
 
-    private void showDiagnosticsDialog() {
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(18);
-        layout.setPadding(pad, dp(8), pad, 0);
-
-        EditText feedbackInput = new EditText(this);
-        feedbackInput.setMinLines(4);
-        feedbackInput.setMaxLines(8);
-        feedbackInput.setGravity(Gravity.TOP | Gravity.START);
-        feedbackInput.setHint(t("feedback_hint"));
-        feedbackInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        styleInput(feedbackInput);
-        layout.addView(feedbackInput, matchWrap());
-
-        TextView hint = new TextView(this);
-        hint.setText(isEnglish() ? "Diagnostics will be attached automatically." : "发送时会自动附带诊断信息。");
-        hint.setTextSize(12);
-        hint.setTextColor(textSecondary());
-        hint.setPadding(0, dp(8), 0, 0);
-        layout.addView(hint, matchWrap());
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(t("diagnostics"))
-                .setView(layout)
-                .setNegativeButton(t("close"), null)
-                .setNeutralButton(t("copy"), null)
-                .setPositiveButton(t("send_feedback"), null)
-                .create();
-        dialog.setOnShowListener(d -> {
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> copyDiagnostics(feedbackInput.getText().toString()));
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                sendFeedback(feedbackInput.getText().toString());
-                dialog.dismiss();
-            });
-        });
-        dialog.show();
-    }
-
-    private void copyDiagnostics(String feedback) {
-        String diagnostics = diagnosticsText(feedback);
-        copyText(appDisplayName() + " diagnostics", diagnostics);
-        statusText.setText(t("diagnostics_copied"));
-    }
-
-    private void sendFeedback(String feedback) {
-        String body = diagnosticsText(feedback);
-        Intent intent = new Intent(Intent.ACTION_SENDTO);
-        intent.setData(Uri.parse("mailto:hsg13312031676@gmail.com"));
-        intent.putExtra(Intent.EXTRA_SUBJECT, appDisplayName() + " " + t("feedback"));
-        intent.putExtra(Intent.EXTRA_TEXT, body);
-        try {
-            startActivity(intent);
-            statusText.setText(isEnglish() ? "Choose an app to send feedback." : "请选择应用发送反馈。");
-            return;
-        } catch (ActivityNotFoundException ignored) {
-        }
-
-        Intent share = new Intent(Intent.ACTION_SEND);
-        share.setType("text/plain");
-        share.putExtra(Intent.EXTRA_SUBJECT, appDisplayName() + " " + t("feedback"));
-        share.putExtra(Intent.EXTRA_TEXT, body);
-        try {
-            startActivity(Intent.createChooser(share, t("send_feedback")));
-            statusText.setText(isEnglish() ? "Choose an app to send feedback." : "请选择应用发送反馈。");
-        } catch (ActivityNotFoundException e) {
-            copyDiagnostics(feedback);
-            statusText.setText(isEnglish() ? "No mail app found. Diagnostics copied." : "没有可用邮件应用，诊断信息已复制。");
-        }
-    }
-
     private void copyText(String label, String text) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (clipboard != null) {
@@ -2324,6 +2376,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         text.append(appDisplayName()).append(" diagnostics\n");
         text.append("Version: ").append(currentVersionName()).append(" (").append(currentVersionCode()).append(")\n");
+        String latestCli = prefs.getString("latest_cli_version", "");
+        if (!latestCli.isEmpty()) {
+            text.append("CLI: ").append(latestCli).append("\n");
+        }
         text.append("Server: ").append(normalizedServerUrl()).append("\n");
         text.append("Account: ").append(prefs.getString("paired_account", "")).append("\n");
         text.append("Device: ").append(prefs.getString("paired_device_name", "")).append("\n");
@@ -2431,7 +2487,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         tabs.addView(tabButton("settings", "⚙", t("settings")), new LinearLayout.LayoutParams(0, dp(54), 1));
         shell.addView(tabs, matchWrap());
         LinearLayout.LayoutParams params = matchWrap();
-        params.setMargins(dp(4), dp(8), dp(4), dp(4));
+        params.setMargins(dp(4), dp(10), dp(4), dp(2));
         shell.setLayoutParams(params);
         return shell;
     }
@@ -2480,12 +2536,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshRuns(boolean manual) {
-        if (!manual) {
-            if (!runsRefreshInFlight.compareAndSet(false, true)) {
-                return;
-            }
-        } else {
-            runsRefreshInFlight.set(true);
+        if (manual || !hasCachedRuns()) {
+            statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
         }
         String url = normalizedServerUrl() + "/api/runs?limit=50";
         if (selectedDeviceId != null && !selectedDeviceId.isEmpty() && !"all".equals(selectedDeviceId)) {
@@ -2498,14 +2550,20 @@ public class MainActivity extends Activity implements LifecycleOwner {
             url += "&project=" + Uri.encode(selectedProjectFilter);
         }
         final String requestUrl = url;
-        if (manual || !hasCachedRuns()) {
-            statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
-        }
+        // Capture the device selection at the time this refresh was requested.
+        // Later completions for old selections will be ignored to prevent
+        // showing stale device data when user switches quickly.
+        final String targetDevice = (selectedDeviceId == null || "all".equals(selectedDeviceId)) ? "all" : selectedDeviceId;
         executor.submit(() -> {
             try {
                 String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
                 final JSONArray runs = decryptRuns(new JSONObject(body).getJSONArray("runs"));
                 handler.post(() -> {
+                    String current = (selectedDeviceId == null || "all".equals(selectedDeviceId)) ? "all" : selectedDeviceId;
+                    if (!targetDevice.equals(current)) {
+                        // stale refresh for a previous device selection, ignore
+                        return;
+                    }
                     if ("devices".equals(currentTab)) {
                         loadCachedDevices();
                         updateDeviceSummary();
@@ -2528,8 +2586,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         statusText.setText(cloudFailureMessage(e));
                     }
                 });
-            } finally {
-                runsRefreshInFlight.set(false);
             }
         });
     }
@@ -2539,13 +2595,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshDevices(boolean manual) {
-        if (!manual) {
-            if (!devicesRefreshInFlight.compareAndSet(false, true)) {
-                return;
-            }
-        } else {
-            devicesRefreshInFlight.set(true);
-        }
         final String requestUrl = normalizedServerUrl() + "/api/devices";
         executor.submit(() -> {
             try {
@@ -2564,8 +2613,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         }
                     }
                 });
-            } finally {
-                devicesRefreshInFlight.set(false);
             }
         });
     }
@@ -2653,6 +2700,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         devicesContainer.removeAllViews();
         devicesContainer.addView(deviceButton("all", t("all"), false));
+
+        // Collect devices to show, sort by name for stable ordering so buttons don't jump positions
+        // on every refresh (polls etc). Name sort is consistent and infrequent changes.
+        List<JSONObject> toShow = new ArrayList<>();
         for (int i = 0; i < devices.length(); i++) {
             JSONObject device = devices.optJSONObject(i);
             if (device == null) {
@@ -2664,8 +2715,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
             boolean online = device.optBoolean("online", false);
             if (showOffline || online || id.equals(selectedDeviceId)) {
-                devicesContainer.addView(deviceButton(id, device.optString("name", id), online));
+                toShow.add(device);
             }
+        }
+        Collections.sort(toShow, (a, b) -> {
+            String na = a.optString("name", a.optString("id", "")).toLowerCase(Locale.US);
+            String nb = b.optString("name", b.optString("id", "")).toLowerCase(Locale.US);
+            return na.compareTo(nb);
+        });
+        for (JSONObject device : toShow) {
+            String id = device.optString("id", "");
+            boolean online = device.optBoolean("online", false);
+            devicesContainer.addView(deviceButton(id, device.optString("name", id), online));
         }
         if (!hasSelected && devices.length() > 0) {
             selectedDeviceId = "all";
@@ -2815,7 +2876,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 : (isEnglish() ? "Show Offline Devices" : "显示离线设备"));
         actions.add(3);
         String label = selectedDeviceName();
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(deviceSelected ? label : t("devices"))
                 .setItems(labels.toArray(new String[0]), (dialog, which) -> {
                     int action = actions.get(which);
@@ -2829,7 +2890,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         toggleOfflineDevicesVisible();
                     }
                 })
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private boolean showOfflineDevicesEnabled() {
@@ -2877,6 +2940,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         if (selectedDeviceId == null || "all".equals(selectedDeviceId)) {
             deviceSummaryText.setText(isEnglish() ? "All active devices" : "全部活跃设备");
+            if (deviceGpuContainer != null) {
+                deviceGpuContainer.setVisibility(View.GONE);
+            }
             return;
         }
         String lastSeen = formatDeviceTimestamp(deviceLastSeen.get(selectedDeviceId));
@@ -2895,68 +2961,104 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void updateDeviceGpu() {
-        if (deviceGpuText == null) {
+        if (deviceGpuContainer == null) {
             return;
         }
+        deviceGpuContainer.removeAllViews();
         boolean all = selectedDeviceId == null || "all".equals(selectedDeviceId);
+        if (all) {
+            deviceGpuContainer.setVisibility(View.GONE);
+            return;
+        }
         JSONArray devices = cachedDevicesArray();
-        StringBuilder out = new StringBuilder();
+        List<JSONObject> deviceGpus = new ArrayList<>();
         for (int i = 0; i < devices.length(); i++) {
             JSONObject device = devices.optJSONObject(i);
-            if (device == null) {
-                continue;
-            }
+            if (device == null) continue;
             String id = device.optString("id", "");
-            if (!all && !id.equals(selectedDeviceId)) {
-                continue;
+            if (id.equals(selectedDeviceId)) {
+                JSONArray gpus = device.optJSONArray("gpus");
+                if (gpus != null) {
+                    for (int g = 0; g < gpus.length(); g++) {
+                        JSONObject gpu = gpus.optJSONObject(g);
+                        if (gpu != null) deviceGpus.add(gpu);
+                    }
+                }
+                break;
             }
-            JSONArray gpus = device.optJSONArray("gpus");
-            if (gpus == null || gpus.length() == 0) {
-                continue;
-            }
-            if (out.length() > 0) {
-                out.append("\n");
-            }
-            if (all) {
-                out.append(device.optString("name", id)).append("\n");
-            }
-            for (int g = 0; g < gpus.length(); g++) {
-                JSONObject gpu = gpus.optJSONObject(g);
-                if (gpu == null) {
+        }
+        if (deviceGpus.isEmpty()) {
+            deviceGpuContainer.setVisibility(View.GONE);
+            return;
+        }
+
+        int gpusPerRow = 4;
+        int total = deviceGpus.size();
+        int rows = (total + gpusPerRow - 1) / gpusPerRow;
+
+        for (int r = 0; r < rows; r++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(1), 0, dp(1));
+
+            for (int c = 0; c < gpusPerRow; c++) {
+                int gidx = r * gpusPerRow + c;
+                if (gidx >= total) {
+                    // filler
+                    View filler = new View(this);
+                    filler.setLayoutParams(new LinearLayout.LayoutParams(0, dp(20), 1));
+                    row.addView(filler);
                     continue;
                 }
-                if (g > 0) {
-                    out.append("\n");
+
+                JSONObject gpu = deviceGpus.get(gidx);
+                int idx = gpu.optInt("index", gidx);
+                int util = Math.max(0, Math.min(100, gpu.optInt("utilization", 0)));
+
+                LinearLayout item = new LinearLayout(this);
+                item.setOrientation(LinearLayout.VERTICAL);
+                item.setGravity(Gravity.CENTER_HORIZONTAL);
+                item.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+                TextView label = new TextView(this);
+                label.setText("G" + idx);
+                label.setTextSize(8f);
+                label.setTextColor(textSecondary());
+                label.setGravity(Gravity.CENTER);
+                label.setPadding(0, 0, 0, 0);
+                item.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+                ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+                bar.setMax(100);
+                bar.setProgress(util);
+                LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(dp(38), dp(6));
+                barLp.setMargins(dp(1), dp(1), dp(1), dp(1));
+                bar.setLayoutParams(barLp);
+
+                int barColor = color("#22C55E"); // green
+                if (util >= 95) {
+                    barColor = color("#EF4444"); // red full
+                } else if (util >= 75) {
+                    barColor = color("#EAB308"); // yellow high
                 }
-                int idx = gpu.optInt("index", g);
-                out.append("GPU").append(idx);
-                String name = gpu.optString("name", "").trim();
-                if (!name.isEmpty()) {
-                    out.append(" ").append(name);
-                }
-                int util = gpu.optInt("utilization", -1);
-                if (util >= 0) {
-                    out.append("  ").append(isEnglish() ? "util " : "占用 ").append(util).append("%");
-                }
-                int memUsed = gpu.optInt("memoryUsed", -1);
-                int memTotal = gpu.optInt("memoryTotal", -1);
-                if (memUsed >= 0 && memTotal > 0) {
-                    out.append("  ").append(isEnglish() ? "mem " : "显存 ")
-                            .append(memUsed).append("/").append(memTotal).append(" MB");
-                }
-                int temp = gpu.optInt("temperature", -1);
-                if (temp >= 0) {
-                    out.append("  ").append(temp).append("°C");
-                }
+                bar.setProgressTintList(ColorStateList.valueOf(barColor));
+                bar.setProgressBackgroundTintList(ColorStateList.valueOf(gpuTrackColor()));
+
+                item.addView(bar);
+
+                TextView pct = new TextView(this);
+                pct.setText(util + "%");
+                pct.setTextSize(7f);
+                pct.setTextColor(textSecondary());
+                pct.setGravity(Gravity.CENTER);
+                item.addView(pct, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+                row.addView(item);
             }
+            deviceGpuContainer.addView(row, matchWrap());
         }
-        if (out.length() == 0) {
-            deviceGpuText.setVisibility(View.GONE);
-        } else {
-            String header = isEnglish() ? "GPU\n" : "显卡\n";
-            deviceGpuText.setText(header + out);
-            deviceGpuText.setVisibility(View.VISIBLE);
-        }
+        deviceGpuContainer.setVisibility(View.VISIBLE);
     }
 
     private void showClearDeviceRunsDialog(String deviceId, String currentName) {
@@ -2964,12 +3066,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         String label = currentName == null || currentName.trim().isEmpty() ? (isEnglish() ? "this device" : "这台设备") : currentName.trim();
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(isEnglish() ? "Clear history" : "清空历史")
                 .setMessage(isEnglish() ? "Delete all run history for " + label + "? The device stays paired." : "删除 " + label + " 的全部运行历史？设备会保持配对。")
                 .setNegativeButton(t("cancel"), null)
                 .setPositiveButton(t("clear"), (dialog, which) -> clearDeviceRuns(deviceId, label))
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void clearDeviceRuns(String deviceId, String label) {
@@ -3002,7 +3106,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 break;
             }
         }
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("status"))
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
                     selectedStatusFilter = values[which];
@@ -3012,7 +3116,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     refreshRuns();
                 })
                 .setNegativeButton(t("cancel"), null)
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void showProjectFilterDialog() {
@@ -3026,7 +3132,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 selected = i;
             }
         }
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("project"))
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
                     selectedProjectFilter = values.get(which);
@@ -3036,7 +3142,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     refreshRuns();
                 })
                 .setNegativeButton(t("cancel"), null)
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private List<String> availableProjectFilters() {
@@ -3108,13 +3216,22 @@ public class MainActivity extends Activity implements LifecycleOwner {
         input.setSelectAllOnFocus(true);
         input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(80)});
         styleInput(input);
+        input.setMinHeight(dp(46));
+        input.setMinimumWidth(dp(280));
 
-        new AlertDialog.Builder(this)
+        LinearLayout renameWrap = new LinearLayout(this);
+        renameWrap.setPadding(dp(20), dp(10), dp(20), dp(6));
+        renameWrap.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog d = dialogBuilder()
                 .setTitle(isEnglish() ? "Rename device" : "重命名设备")
-                .setView(input)
+                .setView(renameWrap)
                 .setNegativeButton(t("cancel"), null)
                 .setPositiveButton(isEnglish() ? "Save" : "保存", (dialog, which) -> renameDevice(deviceId, input.getText().toString()))
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void renameDevice(String deviceId, String newName) {
@@ -3157,12 +3274,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         String label = currentName == null || currentName.trim().isEmpty() ? (isEnglish() ? "this device" : "这台设备") : currentName.trim();
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(isEnglish() ? "Revoke device" : "撤销设备")
                 .setMessage(isEnglish() ? "Stop " + label + " from uploading new runs?" : "阻止 " + label + " 继续上传新运行？")
                 .setNegativeButton(t("cancel"), null)
                 .setPositiveButton(isEnglish() ? "Revoke" : "撤销", (dialog, which) -> revokeDevice(deviceId, label))
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void revokeDevice(String deviceId, String label) {
@@ -3197,13 +3316,24 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void renderRuns(JSONArray runs, boolean fromCache) {
         JSONArray visibleRuns = filterRuns(runs);
+        int failedCount = 0;
+        for (int i = 0; i < visibleRuns.length(); i++) {
+            JSONObject run = visibleRuns.optJSONObject(i);
+            if (run != null && "failed".equals(run.optString("status", ""))) {
+                failedCount++;
+            }
+        }
         String scope = "all".equals(selectedProjectFilter)
                 ? ""
                 : (isEnglish() ? " in " : "，项目 ") + projectFilterLabel(selectedProjectFilter);
         String suffix = "all".equals(selectedStatusFilter)
                 ? (isEnglish() ? visibleRuns.length() + " run(s)" + scope + "." : visibleRuns.length() + " 条运行" + scope + "。")
                 : (isEnglish() ? visibleRuns.length() + " " + selectedStatusFilter + " run(s)" + scope + "." : visibleRuns.length() + " 条" + statusFilterLabel(selectedStatusFilter) + "运行" + scope + "。");
-        statusText.setText((fromCache ? (isEnglish() ? "Saved. " : "已保存。") : (isEnglish() ? "Updated. " : "已更新。")) + suffix);
+        String prefix = fromCache ? (isEnglish() ? "Saved. " : "已保存。") : (isEnglish() ? "Updated. " : "已更新。");
+        String failedPart = failedCount > 0
+                ? (isEnglish() ? failedCount + " failed run(s). " : failedCount + " 条失败运行。")
+                : "";
+        statusText.setText(prefix + failedPart + suffix);
         if (runsContainer == null) {
             return;
         }
@@ -3278,9 +3408,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String cacheKey = runsCacheKey();
         String cacheAtKey = runsCacheAtKey();
         String cached = prefs.getString(cacheKey, "");
-        if ((cached == null || cached.isEmpty()) && "all".equals(selectedDeviceId) && "all".equals(selectedStatusFilter) && "all".equals(selectedProjectFilter)) {
+        if (cached == null || cached.isEmpty()) {
+            // No cache yet for this exact filter combination (e.g. just chose a new project).
+            // Fall back to the full cached runs so client-side filter can apply immediately.
+            // This makes project/status filter selection instant from local data,
+            // without waiting for a network refresh to populate the specific cache.
             cached = prefs.getString(CACHE_RUNS, "");
             cacheAtKey = CACHE_RUNS_AT;
+            if (cached == null || cached.isEmpty()) {
+                // try the current device/status specific if exists
+                String broadKey = CACHE_RUNS_PREFIX + cachePart(selectedDeviceId) + "_" + cachePart(selectedStatusFilter) + "_all";
+                cached = prefs.getString(broadKey, "");
+                // cacheAtKey would be approximate
+            }
         }
         if (cached == null || cached.isEmpty() || runsContainer == null) {
             return;
@@ -3590,7 +3730,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         buildConsoleUi();
         loadCachedRunDetail(id);
         refreshRunDetail(id, true);
-        // Re-arm the auto-refresh loop so the console starts polling within ~1s
+        // Re-arm the auto-refresh loop so the console starts polling within ~800ms
         // (not up to one list-cadence later) and is guaranteed running.
         handler.removeCallbacks(pollRunnable);
         handler.postDelayed(pollRunnable, CONSOLE_RUNNING_POLL_MS);
@@ -3820,12 +3960,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (selectedRunId == null || selectedRunId.isEmpty()) {
             return;
         }
-        new AlertDialog.Builder(this)
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("interrupt"))
                 .setMessage(t("interrupt_confirm"))
                 .setNegativeButton(t("cancel"), null)
                 .setPositiveButton(t("interrupt"), (dialog, which) -> interruptRun(selectedRunId))
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void interruptRun(String id) {
@@ -3865,13 +4007,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshRunDetail(String id, boolean showLoading) {
-        // Auto-poll refreshes must not pile up on the single-thread executor: if a
-        // poll fetch is still running, skip this tick. Otherwise slow networks /
-        // large output make the queue grow and the console renders ever-staler data
-        // (looking frozen). Explicit opens (showLoading) always run.
-        if (!showLoading && !consoleRefreshInFlight.compareAndSet(false, true)) {
-            return;
-        }
         if (showLoading && statusText != null) {
             statusText.setText(isEnglish() ? "Loading console..." : "正在加载控制台...");
         }
@@ -3906,10 +4041,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         statusText.setText((isEnglish() ? "Cannot load console: " : "无法加载控制台：") + e.getMessage());
                     }
                 });
-            } finally {
-                if (!showLoading) {
-                    consoleRefreshInFlight.set(false);
-                }
             }
         });
     }
@@ -4399,7 +4530,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
             connection.setReadTimeout(readTimeoutMs);
             connection.setRequestMethod(method);
             connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("Connection", "close");
+            // Prevent any intermediate or local caching for things like update manifests
+            connection.setRequestProperty("Cache-Control", "no-cache");
+            connection.setRequestProperty("Pragma", "no-cache");
             if (bodyJson != null) {
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
@@ -4623,10 +4756,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 return isEnglish() ? "Sync failed: this app is too old. Update first." : "同步失败：当前 App 版本太旧，请先更新。";
             }
             if ("space_code_expired".equals(errorCode) || http.statusCode == 404) {
-                return isEnglish() ? "Sync failed: code expired or does not exist." : "同步失败：同步空间码已过期或不存在。";
+                return isEnglish() ? "Sync failed: code expired or does not exist." : "同步失败：共享空间码已过期或不存在。";
             }
             if ("space_code_used".equals(errorCode) || http.statusCode == 409) {
-                return isEnglish() ? "Sync failed: this code was already used." : "同步失败：这个同步空间码已经使用过。";
+                return isEnglish() ? "Sync failed: this code was already used." : "同步失败：这个共享空间码已经使用过。";
             }
             if ("space_share_token_invalid".equals(errorCode) || http.statusCode == 403) {
                 return isEnglish() ? "Sync failed: QR token is invalid. Generate a new code." : "同步失败：二维码令牌无效，请重新生成。";
@@ -5026,10 +5159,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String code = uri.getQueryParameter("code");
         String shareToken = uri.getQueryParameter("share");
         String server = uri.getQueryParameter("server");
+        String deviceId = uri.getQueryParameter("deviceId");
         if (server == null || server.trim().isEmpty()) {
             server = normalizedServerUrl();
         }
-        joinSyncSpaceCode(code, shareToken, server);
+        joinSyncSpaceCode(code, shareToken, server, deviceId);
     }
 
     private void checkForUpdates(boolean showStatus) {
@@ -5039,6 +5173,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 statusText.setText(isEnglish() ? "Update source unavailable." : "更新源不可用。");
             }
             return;
+        }
+
+        // Always bust cache for update manifest so manual check from settings sees the latest
+        // server version immediately, instead of possibly hitting a stale cached response
+        // that only gets refreshed on app restart.
+        long cacheBust = System.currentTimeMillis();
+        List<String> urlsToTry = new ArrayList<>();
+        for (String u : updateUrls) {
+            String sep = u.contains("?") ? "&" : "?";
+            urlsToTry.add(u + sep + "_t=" + cacheBust);
         }
 
         if (showStatus) {
@@ -5056,7 +5200,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 String body = "";
                 String usedUrl = "";
                 Exception lastError = null;
-                for (String updateUrl : updateUrls) {
+                for (String updateUrl : urlsToTry) {
                     try {
                         body = httpGetPublic(updateUrl);
                         usedUrl = updateUrl;
@@ -5084,6 +5228,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 String apkUrl = downloadCandidates.isEmpty() ? "" : downloadCandidates.get(0);
                 int currentCode = currentVersionCode();
                 String currentName = currentVersionName();
+
+                // Also sync latest CLI (python) version from the same manifest
+                JSONObject pythonUpdate = payload.optJSONObject("python");
+                String latestCliVersion = pythonUpdate != null ? pythonUpdate.optString("version", "") : "";
+                if (!latestCliVersion.isEmpty()) {
+                    prefs.edit().putString("latest_cli_version", latestCliVersion).apply();
+                }
 
                 handler.post(() -> {
                     if (latestCode > currentCode) {
@@ -5140,6 +5291,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void startUpdateDownload() {
         if (updateDownloading) {
+            return;
+        }
+        if (!ensureCanInstallPackages()) {
             return;
         }
         String url = latestDownloadUrl == null || latestDownloadUrl.isEmpty()
@@ -5303,6 +5457,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
             checkForUpdates(true);
             return;
         }
+        // Proactively guide for install permission so self-update can complete
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && !getPackageManager().canRequestPackageInstalls()) {
+            ensureCanInstallPackages();
+            return;
+        }
         String target = prefs.getString("latest_version_name", "");
         if (target == null || target.trim().isEmpty()) {
             target = isEnglish() ? "latest" : "最新版本";
@@ -5318,14 +5478,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
             extra += isEnglish() ? "\n\nThis update is recommended before pairing new devices." : "\n\n建议先更新后再配对新设备。";
         }
         extra += isEnglish() ? "\n\nThe APK signature and checksum will be verified before install." : "\n\n安装前会校验 APK 签名和校验和。";
-        new AlertDialog.Builder(this)
+        String sigNoteEn = "\n\nIMPORTANT: If your currently installed Haoleme uses a different signing certificate (older dev builds), Android treats the new APK as a different app. You must uninstall the old app once via system Settings. After installing any fixed-key build (0.7.22+), all future updates will be seamless.";
+        String sigNoteCn = "\n\n重要：如果你当前安装的版本签名与新版不同，系统会认为这是另一个 App。需要在手机「设置-应用」里先完全卸载旧版 Haoleme。安装过使用固定签名的版本后，以后更新可直接覆盖，无需再卸载。";
+        AlertDialog d = dialogBuilder()
                 .setTitle(t("update") + " " + appDisplayName())
                 .setMessage(isEnglish()
-                        ? "Download and install Haoleme " + target.trim() + "?\n\nCurrent version: " + current + "\nThe old app will stay installed if the download fails." + extra
-                        : "下载并安装好了么 " + target.trim() + "？\n\n当前版本：" + current + "\n如果下载失败，旧版会保持可用。" + extra)
+                        ? "Download and install Haoleme " + target.trim() + "?\n\nCurrent version: " + current + sigNoteEn + extra
+                        : "下载并安装 Haoleme " + target.trim() + "？\n\n当前版本：" + current + sigNoteCn + extra)
                 .setNegativeButton(t("cancel"), null)
                 .setPositiveButton(t("update"), (dialog, which) -> startUpdateDownload())
-                .show();
+                .create();
+        applyDialogStyle(d);
+        d.show();
     }
 
     private void pollUpdateDownload(DownloadManager manager, long downloadId) {
@@ -5397,6 +5561,26 @@ public class MainActivity extends Activity implements LifecycleOwner {
         } catch (ActivityNotFoundException | SecurityException e) {
             statusText.setText(isEnglish() ? "Update downloaded. Enable APK installs and try again." : "更新已下载。请允许安装 APK 后重试。");
         }
+    }
+
+    private boolean ensureCanInstallPackages() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (!getPackageManager().canRequestPackageInstalls()) {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:" + getPackageName()));
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                    statusText.setText(isEnglish()
+                            ? "Allow 'install unknown apps' for Haoleme, then tap Update again."
+                            : "请在设置中允许「好了么」安装未知应用，然后再点更新。");
+                    return false;
+                } catch (Exception ignored) {
+                    // fall through to generic guidance
+                }
+            }
+        }
+        return true;
     }
 
     private String expectedApkSha256() {
@@ -5845,6 +6029,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 urls.add(url);
             }
         }
+        // Always ensure a reliable public fallback so the app can self-update from GitHub
+        // manifest even if primary server is unreachable or has stale data.
+        String gh = "https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json";
+        if (!urls.contains(gh)) {
+            urls.add(gh);
+        }
         return urls;
     }
 
@@ -6149,6 +6339,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return isDarkTheme() ? color("#3A3A40") : color("#DCE2EC");
     }
 
+    private int gpuTrackColor() {
+        return isDarkTheme() ? color("#9CA3AF") : color("#6B7280");
+    }
+
     private void styleActionButton(Button button) {
         button.setTextColor(textPrimary());
         button.setBackground(roundedBg(buttonBg(), 10, surfaceStroke()));
@@ -6182,6 +6376,55 @@ public class MainActivity extends Activity implements LifecycleOwner {
             bg.setStroke(Math.max(1, dp(1)), stroke);
         }
         return bg;
+    }
+
+    private void applyDialogStyle(AlertDialog dialog) {
+        if (dialog == null) return;
+        Window w = dialog.getWindow();
+        if (w != null) {
+            // Give the popup a nice rounded card look with our theme's surface color and subtle border for "质感"
+            w.setBackgroundDrawable(roundedBg(cardBg(), 16, cardStroke()));
+            // Slight dim for depth
+            w.setDimAmount(0.5f);
+        }
+
+        // Ensure text is readable in dark mode (title, message, list items, buttons)
+        dialog.setOnShowListener(dlg -> {
+            int titleId = getResources().getIdentifier("alertTitle", "id", "android");
+            if (titleId != 0) {
+                TextView tv = dialog.findViewById(titleId);
+                if (tv != null) tv.setTextColor(textPrimary());
+            }
+            int msgId = getResources().getIdentifier("message", "id", "android");
+            if (msgId != 0) {
+                TextView tv = dialog.findViewById(msgId);
+                if (tv != null) tv.setTextColor(textPrimary());
+            }
+            // List items (for SingleChoice / setItems)
+            ListView lv = dialog.getListView();
+            if (lv != null) {
+                for (int i = 0; i < lv.getChildCount(); i++) {
+                    View child = lv.getChildAt(i);
+                    if (child instanceof CheckedTextView) {
+                        ((CheckedTextView) child).setTextColor(textPrimary());
+                    } else if (child instanceof TextView) {
+                        ((TextView) child).setTextColor(textPrimary());
+                    }
+                }
+            }
+            // Buttons
+            Button pos = dialog.getButton(DialogInterface.BUTTON_POSITIVE);
+            if (pos != null) pos.setTextColor(textPrimary());
+            Button neg = dialog.getButton(DialogInterface.BUTTON_NEGATIVE);
+            if (neg != null) neg.setTextColor(textPrimary());
+            Button neu = dialog.getButton(DialogInterface.BUTTON_NEUTRAL);
+            if (neu != null) neu.setTextColor(textPrimary());
+        });
+    }
+
+    private AlertDialog.Builder dialogBuilder() {
+        int style = isDarkTheme() ? R.style.AppDialog_Dark : R.style.AppDialog;
+        return new AlertDialog.Builder(this, style);
     }
 
     private static class ComputerIconView extends View {

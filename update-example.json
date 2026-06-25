@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 124,
-    "versionName": "0.7.25",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.7.25/Haoleme-0.7.25.apk",
+    "versionCode": 125,
+    "versionName": "0.8.0",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.0/Haoleme-0.8.0.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.7.25/Haoleme-0.7.25.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.7.25.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.0/Haoleme-0.8.0.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.8.0.apk"
     ],
-    "sha256": "3376aaddb588f25ad01caefff7fbc86e8576f71ee2cf0b9ccdd926205526c04e",
+    "sha256": "45b7893f5fa859b927e184cd9bcd971a9b7524fafca82b68b157fca6c087083f",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.7.25：签名密钥已锁定并提交进仓库（android/legacy/debug.keystore），以后版本签名一致、可直接在 App 内更新。注意：从 0.7.19 升级需先卸载旧版再装一次（旧签名密钥已丢失，无法原地覆盖），此后更新都不再需要卸载。"
+    "notes": "0.8.0：设备重命名输入框加宽更好用；签名沿用已锁定的密钥，0.7.25 起可直接 App 内更新。"
   },
   "python": {
     "version": "0.4.5",
