@@ -9,15 +9,22 @@ def releaseKeyPassword = System.getenv("HAOLEME_ANDROID_KEY_PASSWORD") ?: ""
 // Defaults use the raw IP because api.haoleme.cloud is not ICP-filed yet and is
 // unreachable. Override with -PHAOLEME_DEFAULT_SERVER_URL / -PHAOLEME_UPDATE_URLS
 // (or env vars) once the domain is filed.
+// Update URLs support comma or space separated list. GitHub raw is included as
+// reliable public fallback so the app can always discover new versions for self-update
+// even if the server manifest is temporarily stale or unreachable.
 def defaultServerUrl = (project.findProperty("HAOLEME_DEFAULT_SERVER_URL") ?: System.getenv("HAOLEME_DEFAULT_SERVER_URL") ?: "http://39.96.50.42").toString()
-def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "http://39.96.50.42/downloads/update.json").toString()
-def legacyCompatStorePath = "build/manual/debug.keystore"
+def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "http://39.96.50.42/downloads/update.json https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json").toString()
+
+// Robust paths for legacy fixed debug signing key (committed so all builds have identical cert).
+// This ensures consistent developer signature across machines/builds for seamless updates.
+def legacyKeystore = rootProject.file("legacy/debug.keystore")
+def manualKeystore = rootProject.file("build/manual/debug.keystore")
 def hasReleaseSigning = releaseStorePath
         && releaseStorePassword
         && releaseKeyAlias
         && releaseKeyPassword
         && file(releaseStorePath).isFile()
-def hasLegacyCompatSigning = file(legacyCompatStorePath).isFile()
+def hasLegacyCompatSigning = legacyKeystore.isFile() || manualKeystore.isFile()
 
 android {
     namespace "com.haoleme.app"
@@ -35,12 +42,16 @@ android {
                 storePassword releaseStorePassword
                 keyAlias releaseKeyAlias
                 keyPassword releaseKeyPassword
+                println "Haoleme signing: using RELEASE keystore from env"
             } else if (hasLegacyCompatSigning) {
-                storeFile file(legacyCompatStorePath)
+                def ksFile = legacyKeystore.isFile() ? legacyKeystore : manualKeystore
+                storeFile ksFile
                 storePassword "android"
                 keyAlias "androiddebugkey"
                 keyPassword "android"
+                println "Haoleme signing: using LEGACY compat keystore for consistent signature: ${ksFile}"
             } else {
+                println "Haoleme signing: FALLBACK to debug (no legacy/release available) -- signature will be inconsistent!"
                 initWith signingConfigs.debug
             }
         }
@@ -50,8 +61,8 @@ android {
         applicationId "com.haoleme.app"
         minSdk 23
         targetSdk 35
-        versionCode 94
-        versionName "0.6.83"
+        versionCode 124
+        versionName "0.7.25"
         buildConfigField "String", "HAOLEME_DEFAULT_SERVER_URL", "\"${defaultServerUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\""
         buildConfigField "String", "HAOLEME_UPDATE_URLS", "\"${defaultUpdateUrls.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")}\""
 

@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 93,
-    "versionName": "0.6.82",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.82.apk",
+    "versionCode": 124,
+    "versionName": "0.7.25",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.7.25/Haoleme-0.7.25.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-0.6.82.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.6.82.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.7.25/Haoleme-0.7.25.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.7.25.apk"
     ],
-    "sha256": "523ae270d3e9df227652355a24f2fa8114854256cbb3d93cf5415d03565cc355",
+    "sha256": "3376aaddb588f25ad01caefff7fbc86e8576f71ee2cf0b9ccdd926205526c04e",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Settings icons: smaller theme/language/mask/donation/diagnostics; new quiet-hours bell icon."
+    "notes": "0.7.25：签名密钥已锁定并提交进仓库（android/legacy/debug.keystore），以后版本签名一致、可直接在 App 内更新。注意：从 0.7.19 升级需先卸载旧版再装一次（旧签名密钥已丢失，无法原地覆盖），此后更新都不再需要卸载。"
   },
   "python": {
-    "version": "0.3.25",
+    "version": "0.4.5",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.3.25-py3-none-any.whl",
-    "notes": "Add /stats admin endpoint (browser-viewable online/DAU/MAU) + haoleme-cloud stats."
+    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.4.5-py3-none-any.whl",
+    "notes": "0.4.5: 同步版本，自更新支持。"
   }
 }
