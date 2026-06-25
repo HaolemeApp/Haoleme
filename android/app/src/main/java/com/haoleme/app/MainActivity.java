@@ -380,7 +380,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), statusBarHeight() + dp(12), dp(18), navigationBarHeight() + dp(8));
+        root.setPadding(dp(18), statusBarHeight() + dp(12), dp(18), navigationBarHeight() + dp(2));
         root.setBackgroundColor(appBg());
         getWindow().setStatusBarColor(appBg());
         getWindow().setNavigationBarColor(appBg());
@@ -2487,7 +2487,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         tabs.addView(tabButton("settings", "⚙", t("settings")), new LinearLayout.LayoutParams(0, dp(54), 1));
         shell.addView(tabs, matchWrap());
         LinearLayout.LayoutParams params = matchWrap();
-        params.setMargins(dp(4), dp(10), dp(4), dp(2));
+        params.setMargins(dp(4), dp(4), dp(4), dp(0));
         shell.setLayoutParams(params);
         return shell;
     }

@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 125,
-    "versionName": "0.8.0",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.0/Haoleme-0.8.0.apk",
+    "versionCode": 126,
+    "versionName": "0.8.1",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.1/Haoleme-0.8.1.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.0/Haoleme-0.8.0.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.8.0.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.1/Haoleme-0.8.1.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.8.1.apk"
     ],
-    "sha256": "45b7893f5fa859b927e184cd9bcd971a9b7524fafca82b68b157fca6c087083f",
+    "sha256": "ab4230014a660e393ff04a53b76ba6675b6844e39525bb8669c9742f4633c2df",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.8.0：设备重命名输入框加宽更好用；签名沿用已锁定的密钥，0.7.25 起可直接 App 内更新。"
+    "notes": "0.8.1：底部导航栏下移，内容视窗更大。"
   },
   "python": {
     "version": "0.4.5",
