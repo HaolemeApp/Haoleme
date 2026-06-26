@@ -1,22 +1,22 @@
 {
   "android": {
-    "versionCode": 127,
-    "versionName": "0.8.2",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.2.apk",
+    "versionCode": 128,
+    "versionName": "0.8.3",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.3.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.8.2.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.8.2.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.2/Haoleme-0.8.2.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.8.3.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.8.3.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.3/Haoleme-0.8.3.apk"
     ],
-    "sha256": "9d47299bef5c96f7ab11ea45278d03dc68dd8184069080f205d9a7b372198ba1",
+    "sha256": "e79c1c8491d6c30404f7eee85a776cbceb65401ba94a369608f7c21abc912d6c",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.8.2：默认改用 https://api.haoleme.cloud（HTTPS 域名），并保留 IP 直连作为后备。"
+    "notes": "0.8.3：控制台进度条支持——CLI 正常显示进度条；App 控制台底部实时显示进度条，结束后收为一行，不再刷屏。"
   },
   "python": {
-    "version": "0.4.7",
+    "version": "0.4.8",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.7-py3-none-any.whl",
-    "notes": "0.4.7: default to https://api.haoleme.cloud; IP fallback kept."
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.8-py3-none-any.whl",
+    "notes": "0.4.8: PTY sized to terminal so progress bars render in the CLI."
   }
 }

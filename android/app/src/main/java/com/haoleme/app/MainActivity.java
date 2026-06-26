@@ -3941,7 +3941,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void copyConsoleOutput() {
-        String output = currentConsoleOutput == null || currentConsoleOutput.isEmpty() ? (isEnglish() ? "No output yet." : "还没有输出。") : displayText(currentConsoleOutput);
+        String output = currentConsoleOutput == null || currentConsoleOutput.isEmpty() ? (isEnglish() ? "No output yet." : "还没有输出。") : displayText(collapseCarriageReturns(currentConsoleOutput));
         copyText(appDisplayName() + " console", output);
         if (statusText != null) {
             statusText.setText(isEnglish() ? "Console copied." : "控制台已复制。");
@@ -4140,7 +4140,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
 
         String lowerQuery = query.toLowerCase(Locale.US);
-        String searchable = consoleWindowRaw();
+        String searchable = collapseCarriageReturns(consoleWindowRaw());
         String[] lines = searchable.split("\\r?\\n", -1);
         StringBuilder matches = new StringBuilder();
         int count = 0;
@@ -4164,8 +4164,37 @@ public class MainActivity extends Activity implements LifecycleOwner {
         updateConsoleMoreButton();
     }
 
+    // Render carriage-return progress frames the way a terminal would: each '\r'
+    // rewrites the current line in place, so an updating progress bar collapses to
+    // its latest frame instead of spamming a new line per update. While the bar is
+    // still running it is simply the last (un-terminated) line, which sits at the
+    // bottom of the console; once it finishes (a '\n' arrives) it stays as one line
+    // in the history.
+    private String collapseCarriageReturns(String s) {
+        if (s == null) {
+            return "";
+        }
+        if (s.indexOf('\r') < 0) {
+            return s;
+        }
+        StringBuilder out = new StringBuilder(s.length());
+        int lineStart = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (ch == '\n') {
+                out.append('\n');
+                lineStart = out.length();
+            } else if (ch == '\r') {
+                out.setLength(lineStart);
+            } else {
+                out.append(ch);
+            }
+        }
+        return out.toString();
+    }
+
     private String displayConsoleOutput() {
-        String output = consoleWindowRaw();
+        String output = collapseCarriageReturns(consoleWindowRaw());
         if (output.isEmpty()) {
             return "";
         }

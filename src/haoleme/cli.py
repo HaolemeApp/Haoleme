@@ -25,11 +25,10 @@ from ._compat import remove_prefix, shlex_join, unlink_missing
 from .cloud import DEFAULT_CLOUD_URL, CloudClient, CloudConfig, CloudSyncer, InterruptWatcher, PairingClient, default_config_path, describe_cloud_error, generate_account_token, generate_device_id, get_or_create_machine_id
 from .crypto import decrypt_account_key, generate_pair_keypair
 from .server import serve
-from .store import RunStore, default_db_path
+from .store import RunRecord, RunStore, default_db_path
 
 
 RESERVED_COMMANDS = {
-    "run",
     "server",
     "status",
     "public",
@@ -42,7 +41,6 @@ RESERVED_COMMANDS = {
     "project",
     "doctor",
     "sync",
-    "version",
     "update",
 }
 PUBLIC_URL_RE = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
@@ -53,7 +51,16 @@ INTERRUPT_NOTE = "\n[好了么] Interrupted from mobile app.\n"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if not raw_args:
+        print_help()
+        return 2
+
+    # Extract any leading project flags so that
+    # "hao --project foo status" still dispatches to status subcommand
+    # (instead of treating "status" as a command to run).
+    project_from_leading, args = _extract_leading_project(raw_args)
+
     if not args:
         print_help()
         return 2
@@ -62,6 +69,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if first in {"-h", "--help"}:
         print_help()
         return 0
+    if first in {"-v", "-V", "--version"}:
+        return version_command(args[1:])
     if first == "server":
         return server_command(args[1:])
     if first == "public":
@@ -86,15 +95,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return doctor_command(args[1:])
     if first == "sync":
         return sync_command(args[1:])
-    if first == "version":
-        return version_command(args[1:])
     if first == "update":
         return update_command(args[1:])
-    if first == "run":
-        command, project_override = parse_run_args(args[1:])
-        return run_command(command, project_override=project_override)
+    if first == "devices":
+        return devices_command(args[1:])
+    if first == "clear":
+        return clear_command(args[1:])
+    if first == "cancel":
+        return cancel_command(args[1:])
 
-    command, project_override = parse_run_args(args)
+    # Implicit run: use leading project if present, else let parse_run_args handle
+    # (parse_run_args supports the old style with flags before the command too)
+    if project_from_leading is not None:
+        command = args[:]
+        project_override = project_from_leading
+    else:
+        command, project_override = parse_run_args(args)
     return run_command(command, project_override=project_override)
 
 
@@ -321,6 +337,34 @@ def parse_run_args(argv: Sequence[str]) -> tuple[list[str], str | None]:
     return command, project_override
 
 
+def _extract_leading_project(args: Sequence[str]) -> tuple[str | None, list[str]]:
+    """Strip leading --project / --no-project flags (for use before subcommand dispatch).
+    Returns (project_override or None, remaining_args)
+    """
+    args = list(args)
+    project_override: str | None = None
+    i = 0
+    while i < len(args):
+        item = args[i]
+        if item in {"--project", "-p"}:
+            if i + 1 >= len(args):
+                print("hao: --project requires a name", file=sys.stderr)
+                return None, args
+            project_override = normalize_project_name(args[i + 1])
+            del args[i:i+2]
+            continue
+        if item.startswith("--project="):
+            project_override = normalize_project_name(item.split("=", 1)[1])
+            del args[i]
+            continue
+        if item == "--no-project":
+            project_override = ""
+            del args[i]
+            continue
+        break
+    return project_override, args
+
+
 def normalize_project_name(value: str | None) -> str:
     return (value or "").strip()[:80]
 
@@ -395,16 +439,293 @@ def save_default_project(project: str) -> None:
 
 def status_command(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="hao status")
-    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--project", default="", help="Filter by project")
+    parser.add_argument("--status", default="", help="Filter by status (running|created|succeeded|failed|cancelled)")
+    parser.add_argument("--active", action="store_true", help="Only show non-terminal runs")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
     ns = parser.parse_args(argv)
-    runs = RunStore().list_runs(limit=ns.limit)
-    if not runs:
-        print("No runs yet.")
+
+    store = RunStore()
+    runs = store.list_runs(limit=max(ns.limit, 1))
+
+    def matches(r: RunRecord) -> bool:
+        if ns.project and r.project != ns.project:
+            return False
+        if ns.active and r.status not in ("created", "running"):
+            return False
+        if ns.status:
+            s = ns.status.lower()
+            if s == "running":
+                if r.status not in ("created", "running"):
+                    return False
+            elif r.status != s:
+                return False
+        return True
+
+    filtered = [r for r in runs if matches(r)]
+
+    if ns.json:
+        import json as _json
+        data = [r.to_dict() for r in filtered]
+        print(_json.dumps({"runs": data}, indent=2, ensure_ascii=False))
         return 0
-    for run in runs:
-        exit_code = "" if run.exit_code is None else f" exit={run.exit_code}"
-        project = f" [{run.project}]" if run.project else ""
-        print(f"{run.id[:8]} {run.status:9} {run.started_at}{project} {run.commandText}{exit_code}")
+
+    if not filtered:
+        print("No matching runs.")
+        return 0
+
+    print(f"Showing {len(filtered)} run(s):")
+    for run in filtered:
+        ec = "" if run.exit_code is None else f" exit={run.exit_code}"
+        proj = f" [{run.project}]" if run.project else ""
+        # simple duration
+        dur = ""
+        try:
+            from datetime import datetime, timezone
+            start = datetime.fromisoformat(run.started_at.replace("Z", "+00:00"))
+            if run.ended_at:
+                end = datetime.fromisoformat(run.ended_at.replace("Z", "+00:00"))
+            else:
+                end = datetime.now(timezone.utc)
+            secs = max(0, int((end - start).total_seconds()))
+            dur = f" {secs}s"
+        except Exception:
+            pass
+        last_out = ""
+        tail = (run.output_tail or run.stderr_tail or run.stdout_tail or "").strip()
+        if tail:
+            last_out = " | " + (tail.splitlines()[-1][:70] if tail else "")
+        sync_mark = "" if run.cloud_synced_at else " (pending sync)"
+        print(f"{run.id[:8]} {run.status:9}{dur}{proj} {run.commandText}{ec}{last_out}{sync_mark}")
+    return 0
+
+
+def devices_command(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="hao devices")
+    subparsers = parser.add_subparsers(dest="action")
+    subparsers.add_parser("list", help="List paired devices and their status.")
+    rename_p = subparsers.add_parser("rename", help="Rename a device.")
+    rename_p.add_argument("device_id", help="Device ID (or use current if 'self' or omitted in some flows)")
+    rename_p.add_argument("name", help="New display name")
+    revoke_p = subparsers.add_parser("revoke", help="Revoke (disconnect) a device. This device will stop syncing.")
+    revoke_p.add_argument("device_id", help="Device ID to revoke")
+    ns = parser.parse_args(argv)
+
+    config = CloudConfig.load()
+    if config is None:
+        print("hao devices: cloud is not configured. Run: hao login or hao cloud-login", file=sys.stderr)
+        return 1
+
+    client = CloudClient(config, timeout=10.0)
+
+    action = ns.action or "list"
+    if action == "list":
+        try:
+            devices = client.list_devices()
+        except Exception as exc:
+            print(f"hao devices list failed: {describe_cloud_error(exc)}", file=sys.stderr)
+            return 1
+        if not devices:
+            print("No devices.")
+            return 0
+        print("Devices:")
+        for d in devices:
+            did = d.get("id", "")
+            name = d.get("name", did)
+            online = "online" if d.get("online") else "offline"
+            last = d.get("lastSeenAt", "") or d.get("tokenLastUsedAt", "")
+            gpus = d.get("gpus") or []
+            gpu_info = f" GPUs={len(gpus)}" if gpus else ""
+            print(f"  {did}  {name}  [{online}]{gpu_info}  last={last}")
+        return 0
+
+    if action == "rename":
+        did = ns.device_id
+        if did in ("self", ".", ""):
+            did = config.device_id or ""
+        if not did:
+            print("hao devices rename: device_id required (or configure one)", file=sys.stderr)
+            return 2
+        name = ns.name.strip()
+        if not name:
+            print("hao devices rename: name required", file=sys.stderr)
+            return 2
+        try:
+            dev = client.rename_device(did, name)
+            print(f"Renamed device {did} -> {dev.get('name', name)}")
+            return 0
+        except Exception as exc:
+            print(f"hao devices rename failed: {describe_cloud_error(exc)}", file=sys.stderr)
+            return 1
+
+    if action == "revoke":
+        did = ns.device_id
+        if not did:
+            print("hao devices revoke: device_id required", file=sys.stderr)
+            return 2
+        if did == config.device_id:
+            print("Warning: revoking the current device. You may need to re-login.", file=sys.stderr)
+        try:
+            ok = client.revoke_device(did)
+            if ok:
+                print(f"Revoked device {did}")
+                return 0
+            else:
+                print(f"Revoke may have failed for {did}")
+                return 1
+        except Exception as exc:
+            print(f"hao devices revoke failed: {describe_cloud_error(exc)}", file=sys.stderr)
+            return 1
+
+    print("Unknown devices action. Use: list | rename | revoke")
+    return 2
+
+
+def clear_command(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="hao clear")
+    parser.add_argument("--all", action="store_true", help="Delete all local runs (including running).")
+    parser.add_argument("--completed", action="store_true", help="Delete only terminal runs (succeeded/failed/cancelled).")
+    parser.add_argument("--project", default="", help="Only runs in this project.")
+    parser.add_argument("--older-than", type=int, default=0, help="Delete runs older than N days (based on started_at).")
+    parser.add_argument("--yes", "-y", action="store_true", help="Do not prompt for confirmation.")
+    parser.add_argument("--cloud", action="store_true", help="Also clear runs from the cloud server (irreversible).")
+    ns = parser.parse_args(argv)
+
+    store = RunStore()
+    all_runs = store.list_runs(limit=10_000)
+
+    def is_old(r: RunRecord) -> bool:
+        if ns.older_than <= 0:
+            return True
+        try:
+            from datetime import datetime, timezone, timedelta
+            dt = datetime.fromisoformat(r.started_at.replace("Z", "+00:00"))
+            cutoff = datetime.now(timezone.utc) - timedelta(days=ns.older_than)
+            return dt < cutoff
+        except Exception:
+            return False
+
+    to_delete = []
+    for r in all_runs:
+        if ns.project and r.project != ns.project:
+            continue
+        if not is_old(r):
+            continue
+        status = r.status
+        if ns.all:
+            to_delete.append(r)
+        elif ns.completed:
+            if status in ("succeeded", "failed", "cancelled"):
+                to_delete.append(r)
+        else:
+            # default: clear completed
+            if status in ("succeeded", "failed", "cancelled"):
+                to_delete.append(r)
+
+    if not to_delete:
+        print("No matching local runs to clear.")
+        # still allow cloud clear below
+    else:
+        print(f"Will delete {len(to_delete)} local run(s).")
+        for r in to_delete[:5]:
+            print(f"  {r.id[:8]} {r.status} {r.project or ''} {r.commandText[:60]}")
+        if len(to_delete) > 5:
+            print(f"  ... and {len(to_delete)-5} more")
+
+    if not ns.yes and to_delete:
+        ans = input("Proceed with local clear? [y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("Aborted local clear.")
+            # still consider cloud
+            to_delete = []
+
+    deleted_local = 0
+    for r in to_delete:
+        if store.delete_run(r.id):
+            deleted_local += 1
+    if deleted_local:
+        print(f"Deleted {deleted_local} local run(s).")
+
+    if ns.cloud:
+        config = CloudConfig.load()
+        if config is None:
+            print("No cloud configured; skipping cloud clear. (Run hao login)", file=sys.stderr)
+        else:
+            if not ns.yes:
+                ans = input("Also CLEAR ALL runs on the CLOUD? This is irreversible. [y/N] ").strip().lower()
+                if ans not in ("y", "yes"):
+                    print("Skipping cloud clear.")
+                else:
+                    client = CloudClient(config, timeout=15.0)
+                    try:
+                        cnt = client.clear_all_runs()
+                        print(f"Cloud clear requested (deleted ~{cnt if cnt >= 0 else 'unknown'}).")
+                    except Exception as exc:
+                        print(f"Cloud clear failed: {describe_cloud_error(exc)}", file=sys.stderr)
+                        return 1
+    return 0
+
+
+def cancel_command(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="hao cancel")
+    parser.add_argument("run_id", help="Run ID (full or prefix)")
+    parser.add_argument("--force", action="store_true", help="Kill even if not found locally (try cloud interrupt).")
+    ns = parser.parse_args(argv)
+
+    rid = ns.run_id.strip()
+    store = RunStore()
+    run = None
+    for r in store.list_runs(limit=500):
+        if r.id == rid or r.id.startswith(rid):
+            run = r
+            break
+
+    client = None
+    config = CloudConfig.load()
+    if config:
+        client = CloudClient(config, timeout=10.0)
+
+    if run is None:
+        if ns.force and client:
+            print(f"Run {rid} not in local DB; requesting interrupt on cloud...")
+            try:
+                client.request_interrupt(rid)
+                print("Interrupt requested via cloud.")
+                return 0
+            except Exception as exc:
+                print(f"Interrupt request failed: {describe_cloud_error(exc)}", file=sys.stderr)
+                return 1
+        print(f"Run not found locally: {rid}. Use --force to attempt cloud interrupt.", file=sys.stderr)
+        return 2
+
+    print(f"Cancelling: {run.id[:8]} {run.status} {run.commandText[:50]}")
+
+    interrupted = False
+    if run.pid and is_process_running(run.pid):
+        print(f"Killing PID {run.pid} ...")
+        kill_process_tree(run.pid)
+        interrupted = True
+
+    note = "\n[hao] Cancelled from CLI.\n"
+    store.cancel_run(run.id, note)
+
+    if client:
+        try:
+            # Prefer the interrupt endpoint (will be picked by heartbeat if active)
+            resp = client.request_interrupt(run.id)
+            print(f"Cloud interrupt requested: {resp}")
+        except Exception as exc:
+            # Fallback: push the cancelled state directly
+            print(f"Direct interrupt failed ({exc}); pushing cancelled state...")
+            try:
+                updated = store.get_run(run.id)
+                if updated:
+                    client.upsert_run(updated)
+            except Exception as e2:
+                print(f"Cloud sync warning: {describe_cloud_error(e2)}", file=sys.stderr)
+
+    print(f"Marked cancelled locally: {run.id[:8]}")
     return 0
 
 
@@ -1025,16 +1346,42 @@ def fetch_update_manifest(timeout: float = 8.0) -> tuple[dict[str, object], str]
 
 def latest_python_release(manifest: dict[str, object]) -> dict[str, str]:
     python = manifest.get("python")
-    if not isinstance(python, dict):
-        return {}
-    version = str(python.get("version") or "").strip()
-    package_url = str(python.get("packageUrl") or "").strip()
-    wheel_url = str(python.get("wheelUrl") or "").strip()
+    version = ""
+    package_url = ""
+    wheel_url = ""
+    if isinstance(python, dict):
+        version = str(python.get("version") or "").strip()
+        package_url = str(python.get("packageUrl") or "").strip()
+        wheel_url = str(python.get("wheelUrl") or "").strip()
+
+    # Fallback / override with actual latest from PyPI to keep "hao --version" accurate
+    # even if the project's update.json on server is slightly behind.
+    pypi_version = _fetch_pypi_latest_version()
+    if pypi_version and (not version or compare_versions(pypi_version, version) > 0):
+        version = pypi_version
+        if not package_url:
+            package_url = "https://pypi.org/project/haoleme/"
+
     return {
         "version": version,
-        "packageUrl": package_url,
+        "packageUrl": package_url or "https://pypi.org/project/haoleme/",
         "wheelUrl": wheel_url,
     }
+
+
+def _fetch_pypi_latest_version() -> str:
+    try:
+        req = urllib.request.Request(
+            "https://pypi.org/pypi/haoleme/json",
+            headers={"Accept": "application/json", "User-Agent": f"haoleme/{__version__}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        info = data.get("info") or {}
+        return str(info.get("version") or "").strip()
+    except Exception:
+        return ""
 
 
 def python_wheel_candidates(release: dict[str, str], manifest_source: str) -> list[str]:
@@ -1066,7 +1413,7 @@ def python_wheel_candidates(release: dict[str, str], manifest_source: str) -> li
 
 
 def version_command(argv: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog="hao version")
+    parser = argparse.ArgumentParser(prog="hao --version")
     parser.add_argument("--check", action="store_true", help="Exit 1 when a newer release is available.")
     ns = parser.parse_args(argv)
 
@@ -1146,9 +1493,10 @@ def update_command(argv: Sequence[str]) -> int:
         return 1
 
     try:
-        import haoleme
-
-        installed = haoleme.__version__
+        installed = subprocess.check_output(
+            [sys.executable, "-c", "import haoleme; print(haoleme.__version__)"],
+            text=True,
+        ).strip()
     except Exception:
         installed = latest
     print(f"Installed haoleme {installed}.")
@@ -1261,6 +1609,10 @@ def doctor_command(argv: Sequence[str]) -> int:
     else:
         report("pending cloud sync", "OK")
 
+    all_local = store.list_runs(limit=1000)
+    active_local = [r for r in all_local if r.status in ("created", "running")]
+    report("local runs", "OK", f"{len(all_local)} total, {len(active_local)} active")
+
     configured_project = configured_default_project()
     git_project = auto_git_project()
     if configured_project:
@@ -1290,6 +1642,14 @@ def doctor_command(argv: Sequence[str]) -> int:
                 report("pending sync retry", "OK", f"uploaded {synced} run(s)")
             elif pending:
                 report("pending sync retry", "WARN", "nothing uploaded")
+
+            # Device summary (bonus for doctor)
+            try:
+                devs = client.list_devices()
+                active_devs = sum(1 for d in devs if d.get("online"))
+                report("cloud devices", "OK", f"{len(devs)} total ({active_devs} online)")
+            except Exception:
+                report("cloud devices", "WARN", "could not list")
         except Exception as exc:
             report("cloud health", "FAIL", describe_cloud_error(exc))
 
@@ -1500,6 +1860,7 @@ def run_command_with_pty(
 ) -> tuple[int, bool]:
     previous_sighup = ignore_sighup()
     master_fd, slave_fd = os.openpty()
+    set_pty_winsize(master_fd)
     proc: subprocess.Popen[bytes] | None = None
     try:
         try:
@@ -1525,6 +1886,16 @@ def run_command_with_pty(
 
     previous_sigint = signal.signal(signal.SIGINT, forward_signal)
     previous_sigterm = signal.signal(signal.SIGTERM, forward_signal)
+
+    def forward_winsize(_signum: int, _frame: object) -> None:
+        set_pty_winsize(master_fd)
+
+    previous_sigwinch = None
+    if hasattr(signal, "SIGWINCH"):
+        try:
+            previous_sigwinch = signal.signal(signal.SIGWINCH, forward_winsize)
+        except (ValueError, OSError):
+            previous_sigwinch = None
     stdin_fd = sys.stdin.fileno() if sys.stdin is not None and sys.stdin.isatty() else None
     output = bytearray()
 
@@ -1569,12 +1940,44 @@ def run_command_with_pty(
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)
+        if previous_sigwinch is not None and hasattr(signal, "SIGWINCH"):
+            signal.signal(signal.SIGWINCH, previous_sigwinch)
         restore_sighup(previous_sighup)
         flush_pty_output(output, store, run_id, syncer, force=True)
         os.close(master_fd)
 
     exit_code = proc.wait()
     return exit_code, interrupted
+
+
+def set_pty_winsize(master_fd: int) -> None:
+    """Size the PTY to the real terminal so child progress bars (tqdm, etc.)
+    render at the correct width. Without this the PTY defaults to 0 columns and
+    progress bars either don't draw or wrap into endless new lines."""
+    try:
+        import fcntl
+        import struct
+        import termios
+    except Exception:
+        return
+    size = None
+    for stream in (sys.stdout, sys.stderr, sys.stdin):
+        try:
+            if stream is not None and stream.isatty():
+                size = fcntl.ioctl(stream.fileno(), termios.TIOCGWINSZ, b"\x00" * 8)
+                break
+        except Exception:
+            continue
+    if size is None:
+        try:
+            cols, rows = os.get_terminal_size()
+        except Exception:
+            cols, rows = 100, 30
+        size = struct.pack("HHHH", rows, cols, 0, 0)
+    try:
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, size)
+    except Exception:
+        pass
 
 
 def read_pty_chunk(master_fd: int) -> bytes:
@@ -1734,30 +2137,58 @@ def print_help() -> None:
         """好了么 command runner
 
 Usage:
-  hao server [--host 0.0.0.0] [--port 8765] [--token TOKEN]
-  hao public [--port 8765] [--token TOKEN]
-  hao ngrok --domain YOUR_DOMAIN.ngrok-free.dev [--token TOKEN]
-  hao login [--api-url URL]
-  hao login --new-device
-  hao login --reuse-saved-device
-  hao heartbeat [start|stop|status]
-  hao project use NAME
-  hao project clear
-  hao project status
-  hao cloud-login --api-url URL [--account NAME] [--token TOKEN]
-  hao cloud-status
-  hao cloud-logout
-  hao doctor [--no-network]
-  hao sync [--limit 500]
-  hao version [--check]
-  hao update [--check] [--yes]
-  hao status [--limit 10]
+  hao [options] <command> [args...]
+
+Options:
+  -h, --help            Show this help message and exit.
+  -V, --version         Show version and exit.
+
+Commands:
+  login                 Pair this device with the Android app
+  status                Show recent command runs (local)
+  doctor                Diagnose configuration, connectivity and heartbeat
+  sync                  Manually sync pending runs to cloud
+  update                Update hao CLI to latest version
+
+  project use NAME      Set default project for future runs
+  project clear         Clear default project
+  project status        Show current default project
+
+  cloud-login           Configure cloud token directly (for CI/scripts)
+  cloud-status          Show current cloud configuration
+  cloud-logout          Remove cloud configuration
+
+  devices list          List paired devices
+  devices rename <id> <name>
+                        Rename a device
+  devices revoke <id>   Revoke a device
+
+  status                (with filters) List/filter runs
+  clear                 Clear local (and optionally cloud) run history
+  cancel <run-id>       Cancel a running command
+
+  server                Run local cloud server
+  public                Run local server + Cloudflare tunnel
+  ngrok                 Run local server + ngrok tunnel
+  heartbeat             Manage local heartbeat daemon
+
+Run commands (primary usage):
   hao <command> [args...]
-  hao [--project NAME|--no-project] <command> [args...]
-  hao run [--project NAME|--no-project] -- <command> [args...]
+  hao --project NAME <command> [args...]
+  hao --no-project <command> [args...]
+  hao 'shell | pipeline | with | metachars'
 
 After login or cloud-login, normal hao commands sync status to cloud automatically.
 Set a default project once with `hao project use NAME`; otherwise git repo names are used automatically.
 Override one run with --project or --no-project.
+(Explicit `hao run ...` is no longer supported; use `hao <command>` directly.)
+
+Notes:
+- Subcommand names take precedence over running commands with the same name.
+  Use `hao -- <command>` or full path to bypass.
+- Shell features (|, &&, redirects, etc.) must be quoted as a single argument
+  to hao, e.g. `hao 'echo a | grep b'`. hao will wrap with sh -c when needed.
+
+New: hao devices, hao clear, hao cancel, improved hao status.
 """
     )
