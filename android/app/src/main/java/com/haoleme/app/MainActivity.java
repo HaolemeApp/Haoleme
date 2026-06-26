@@ -380,15 +380,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), statusBarHeight() + dp(12), dp(18), navigationBarHeight() + dp(2));
+        root.setPadding(dp(18), statusBarHeight() + dp(8), dp(18), navigationBarHeight() + dp(2));
         root.setBackgroundColor(appBg());
         getWindow().setStatusBarColor(appBg());
         getWindow().setNavigationBarColor(appBg());
 
         FrameLayout header = new FrameLayout(this);
-        header.setMinimumHeight(dp(48));
+        header.setMinimumHeight(dp(40));
 
-        FrameLayout.LayoutParams iconParams = new FrameLayout.LayoutParams(dp(44), dp(44), Gravity.START | Gravity.CENTER_VERTICAL);
+        FrameLayout.LayoutParams iconParams = new FrameLayout.LayoutParams(dp(38), dp(38), Gravity.START | Gravity.CENTER_VERTICAL);
         header.addView(appIconView(), iconParams);
 
         LinearLayout headerText = new LinearLayout(this);
@@ -396,14 +396,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         headerText.setGravity(Gravity.CENTER);
         TextView title = new TextView(this);
         title.setText(screenTitle());
-        title.setTextSize(22);
+        title.setTextSize(18);
         title.setTextColor(textPrimary());
         title.setGravity(Gravity.CENTER);
         title.setTypeface(null, Typeface.BOLD);
         headerText.addView(title, matchWrap());
 
         connectionSubtitleText = new TextView(this);
-        connectionSubtitleText.setTextSize(13);
+        connectionSubtitleText.setTextSize(11);
         connectionSubtitleText.setGravity(Gravity.CENTER);
         updateConnectionSubtitle();
         headerText.addView(connectionSubtitleText, matchWrap());
@@ -415,7 +415,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         header.addView(headerText, headerTextParams);
 
         updateBadgeButton = new TextView(this);
-        updateBadgeButton.setTextSize(13);
+        updateBadgeButton.setTextSize(12);
         updateBadgeButton.setGravity(Gravity.CENTER);
         updateBadgeButton.setTextColor(updateAccent());
         updateBadgeButton.setTypeface(null, Typeface.BOLD);
@@ -434,10 +434,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         statusText = new TextView(this);
         statusText.setText(t("connecting"));
-        statusText.setTextSize(13);
+        statusText.setTextSize(11);
         statusText.setTextColor(textSecondary());
         statusText.setGravity(Gravity.CENTER);
-        statusText.setPadding(0, dp(6), 0, dp(10));
+        statusText.setPadding(0, dp(4), 0, dp(7));
         root.addView(statusText, matchWrap());
 
         String rawSavedServerUrl = prefs.getString("server_url", "").trim();

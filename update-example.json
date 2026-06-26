@@ -1,17 +1,17 @@
 {
   "android": {
-    "versionCode": 132,
-    "versionName": "0.8.7",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.7.apk",
+    "versionCode": 133,
+    "versionName": "0.8.8",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.8.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.8.7.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.8.7.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.7/Haoleme-0.8.7.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.8.8.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.8.8.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.8/Haoleme-0.8.8.apk"
     ],
-    "sha256": "2165d8f4b182ec7e280b6eef51368091202f08257d8257d0ba8a06905812cd9e",
+    "sha256": "20069ae548c34657d4094e4f38e7b35a0fddeebc7847e9e9db8492e14e183641",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.8.7：设置页也跟着收紧——标题、设置项行高、图标、字体、间距都缩小，整体风格与运行/设备页一致。"
+    "notes": "0.8.8：三页顶部更紧凑——大标题、刷新状态、在线/连接状态字号和图标都缩小，顶栏更矮。"
   },
   "python": {
     "version": "0.4.9",
