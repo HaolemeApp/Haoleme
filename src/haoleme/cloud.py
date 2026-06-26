@@ -18,7 +18,7 @@ from . import __version__
 from .crypto import encrypt_output_chunk, encrypt_run_payload, is_valid_account_key
 
 
-DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "http://39.96.50.42").rstrip("/")
+DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "https://api.haoleme.cloud").rstrip("/")
 USER_AGENT = f"haoleme/{__version__}"
 # Console sync cadence is tiered by run age (see CloudSyncer._running_sync_interval):
 # fast (MIN) for fresh runs, easing to MAX for long-lived ones.
@@ -299,6 +299,41 @@ class CloudClient:
         if not isinstance(interrupts, list):
             return []
         return [item for item in interrupts if isinstance(item, dict)]
+
+    def list_devices(self) -> list[dict[str, Any]]:
+        payload = self.request("GET", "/api/devices")
+        devices = payload.get("devices", [])
+        return devices if isinstance(devices, list) else []
+
+    def rename_device(self, device_id: str, name: str) -> dict[str, Any]:
+        payload = self.request("POST", f"/api/devices/{device_id}/rename", {"name": name})
+        if isinstance(payload, dict):
+            return payload.get("device") or payload
+        return {}
+
+    def revoke_device(self, device_id: str) -> bool:
+        try:
+            self.request("DELETE", f"/api/devices/{device_id}")
+            return True
+        except Exception:
+            return False
+
+    def request_interrupt(self, run_id: str) -> dict[str, Any]:
+        try:
+            return self.request("POST", f"/api/runs/{run_id}/interrupt")
+        except Exception as exc:
+            raise RuntimeError(f"interrupt request failed: {exc}") from exc
+
+    def clear_all_runs(self) -> int:
+        """Delete all runs on the cloud for this account. Returns deleted count if available."""
+        try:
+            payload = self.request("DELETE", "/api/runs")
+            if isinstance(payload, dict):
+                return int(payload.get("deleted", 0) or 0)
+            return 0
+        except Exception:
+            # Some deployments may not return count; assume success if no exception on 2xx
+            return -1
 
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         body = None

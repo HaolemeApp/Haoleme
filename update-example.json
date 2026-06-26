@@ -1,21 +1,22 @@
 {
   "android": {
-    "versionCode": 126,
-    "versionName": "0.8.1",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.1/Haoleme-0.8.1.apk",
+    "versionCode": 127,
+    "versionName": "0.8.2",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.2.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.1/Haoleme-0.8.1.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.8.1.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.8.2.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.8.2.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.2/Haoleme-0.8.2.apk"
     ],
-    "sha256": "ab4230014a660e393ff04a53b76ba6675b6844e39525bb8669c9742f4633c2df",
+    "sha256": "9d47299bef5c96f7ab11ea45278d03dc68dd8184069080f205d9a7b372198ba1",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.8.1：底部导航栏下移，内容视窗更大。"
+    "notes": "0.8.2：默认改用 https://api.haoleme.cloud（HTTPS 域名），并保留 IP 直连作为后备。"
   },
   "python": {
-    "version": "0.4.5",
+    "version": "0.4.7",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "http://39.96.50.42/downloads/haoleme-0.4.5-py3-none-any.whl",
-    "notes": "0.4.5: 同步版本，自更新支持。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.7-py3-none-any.whl",
+    "notes": "0.4.7: default to https://api.haoleme.cloud; IP fallback kept."
   }
 }
