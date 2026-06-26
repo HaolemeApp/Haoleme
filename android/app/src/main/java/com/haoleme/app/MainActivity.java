@@ -576,7 +576,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         TextView selectedText = new TextView(this);
         selectedText.setText(t("device") + ": " + ("all".equals(selectedDeviceId) ? t("all") : selectedDeviceName())
                 + " · " + t("project") + ": " + projectFilterLabel(selectedProjectFilter));
-        selectedText.setTextSize(12);
+        selectedText.setTextSize(11);
         selectedText.setTextColor(textSecondary());
         selectedText.setPadding(0, dp(4), 0, dp(6));
         content.addView(selectedText, matchWrap());
@@ -641,7 +641,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         deviceSummaryText = new TextView(this);
         deviceSummaryText.setText("");
-        deviceSummaryText.setTextSize(12);
+        deviceSummaryText.setTextSize(11);
         deviceSummaryText.setTextColor(textSecondary());
         deviceSummaryText.setPadding(0, dp(4), dp(8), dp(10));
         infoRow.addView(deviceSummaryText, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -2795,9 +2795,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout button = new LinearLayout(this);
         button.setOrientation(LinearLayout.HORIZONTAL);
         button.setGravity(Gravity.CENTER_VERTICAL);
-        button.setMinimumHeight(dp(42));
-        button.setPadding(dp(13), 0, dp(14), 0);
-        button.setBackground(roundedBg(selected ? tabSelectedBg() : cardBg(), 18, selected ? tabSelectedBg() : cardStroke()));
+        button.setMinimumHeight(dp(34));
+        button.setPadding(dp(10), 0, dp(11), 0);
+        button.setBackground(roundedBg(selected ? tabSelectedBg() : cardBg(), 14, selected ? tabSelectedBg() : cardStroke()));
         button.setClickable(true);
         button.setElevation(0);
 
@@ -2809,14 +2809,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
 
         ComputerIconView icon = new ComputerIconView(this, selected ? tabSelectedText() : textPrimary());
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(26), dp(24));
-        iconParams.setMargins(0, 0, dp(9), 0);
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(20), dp(18));
+        iconParams.setMargins(0, 0, dp(7), 0);
         button.addView(icon, iconParams);
 
         TextView name = new TextView(this);
         name.setText(label == null || label.trim().isEmpty() ? ("all".equals(id) ? "All" : "Device") : label.trim());
         name.setSingleLine(true);
-        name.setTextSize(15);
+        name.setTextSize(13);
         name.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
         name.setTextColor(selected ? tabSelectedText() : textPrimary());
         name.setGravity(Gravity.CENTER_VERTICAL);
@@ -3586,8 +3586,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String runId = run.optString("id", "");
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(14), dp(12), dp(14), dp(12));
-        card.setBackground(roundedBg(cardBg(), 14, cardStroke()));
+        card.setPadding(dp(11), dp(8), dp(11), dp(8));
+        card.setBackground(roundedBg(cardBg(), 11, cardStroke()));
         card.setElevation(0);
         card.setClickable(true);
         card.setOnClickListener(v -> openRunDetail(runId));
@@ -3596,7 +3596,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        cardParams.setMargins(0, 0, 0, dp(10));
+        cardParams.setMargins(0, 0, 0, dp(6));
         card.setLayoutParams(cardParams);
 
         String status = run.optString("status", "unknown");
@@ -3606,13 +3606,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         TextView dot = new TextView(this);
         dot.setText("●");
-        dot.setTextSize(18);
+        dot.setTextSize(12);
         dot.setTextColor(statusColor(status));
         topLine.addView(dot, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         TextView command = new TextView(this);
         command.setText(displayText(run.optString("commandText", isEnglish() ? "(unknown command)" : "（未知命令）")));
-        command.setTextSize(16);
+        command.setTextSize(14);
         command.setTextColor(textPrimary());
         command.setTypeface(null, Typeface.BOLD);
         command.setSingleLine(true);
@@ -3623,11 +3623,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         TextView label = new TextView(this);
         label.setText(statusLabel(status));
-        label.setTextSize(12);
+        label.setTextSize(11);
         label.setTypeface(null, Typeface.BOLD);
         label.setTextColor(statusColor(status));
-        label.setPadding(dp(8), dp(3), dp(8), dp(3));
-        label.setBackground(roundedBg(statusBadgeColor(status), 8, Color.TRANSPARENT));
+        label.setPadding(dp(6), dp(2), dp(6), dp(2));
+        label.setBackground(roundedBg(statusBadgeColor(status), 7, Color.TRANSPARENT));
         topLine.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         card.addView(topLine, matchWrap());
 
@@ -3637,20 +3637,20 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String shownDevice = deviceName.isEmpty() ? appDisplayName() + " CLI" : deviceName;
         String projectPrefix = projectName.isEmpty() ? "" : projectName + " · ";
         meta.setText(durationText(run) + " · " + projectPrefix + shownDevice + statusExitSuffix(run));
-        meta.setTextSize(13);
+        meta.setTextSize(11);
         meta.setTextColor(textSecondary());
-        meta.setPadding(0, dp(5), 0, 0);
+        meta.setPadding(0, dp(3), 0, 0);
         card.addView(meta, matchWrap());
 
         String latest = latestOutputLine(run);
         if (!latest.isEmpty()) {
             TextView output = new TextView(this);
             output.setText(displayText(latest));
-            output.setTextSize(12);
+            output.setTextSize(11);
             output.setTextColor(textPrimary());
             output.setTypeface(android.graphics.Typeface.MONOSPACE);
             output.setSingleLine(true);
-            output.setPadding(0, dp(8), 0, 0);
+            output.setPadding(0, dp(5), 0, 0);
             card.addView(output, matchWrap());
         }
 
@@ -3661,17 +3661,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        actionParams.setMargins(0, dp(8), 0, 0);
+        actionParams.setMargins(0, dp(6), 0, 0);
 
         TextView consoleButton = actionButton(actionLabel("▣", t("console"), 1.12f));
         consoleButton.setOnClickListener(v -> openRunDetail(runId));
-        actions.addView(consoleButton, new LinearLayout.LayoutParams(0, dp(42), 1));
+        actions.addView(consoleButton, new LinearLayout.LayoutParams(0, dp(36), 1));
 
         TextView deleteButton = actionButton(actionLabel("⌫", t("delete"), 1.12f));
         deleteButton.setOnClickListener(v -> deleteRun(runId));
         LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(
                 0,
-                dp(42),
+                dp(36),
                 1
         );
         deleteParams.setMargins(dp(8), 0, 0, 0);

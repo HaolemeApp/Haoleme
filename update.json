@@ -1,17 +1,17 @@
 {
   "android": {
-    "versionCode": 130,
-    "versionName": "0.8.5",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.5.apk",
+    "versionCode": 131,
+    "versionName": "0.8.6",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.6.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.8.5.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.8.5.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.5/Haoleme-0.8.5.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.8.6.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.8.6.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.6/Haoleme-0.8.6.apk"
     ],
-    "sha256": "a4352936c0a23631abb1ff2cd9e01cc25c3de33e984f365a6b276eb532efc4ea",
+    "sha256": "b3b30635f3a14af03b83035f69f890416d4bab91d5c7e3522a901b1a8830e139",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.8.5：超长命令在运行列表里只显示一行、控制台标题最多两行（点一下看完整命令并可复制），不再占满屏幕。"
+    "notes": "0.8.6：运行/设备两页更紧凑——运行卡片与设备芯片字体、边框、间距都缩小（设置页不变）。"
   },
   "python": {
     "version": "0.4.9",
