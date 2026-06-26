@@ -1021,10 +1021,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView sectionTitle(String title) {
         TextView view = new TextView(this);
         view.setText(title);
-        view.setTextSize(16);
+        view.setTextSize(14);
         view.setTypeface(null, Typeface.BOLD);
         view.setTextColor(textPrimary());
-        view.setPadding(0, dp(10), 0, dp(8));
+        view.setPadding(0, dp(8), 0, dp(6));
         return view;
     }
 
@@ -1037,14 +1037,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         TextView title = new TextView(this);
         title.setText(t("or_enter_code"));
-        title.setTextSize(15);
+        title.setTextSize(13);
         title.setTypeface(null, Typeface.BOLD);
         title.setTextColor(textPrimary());
         card.addView(title, matchWrap());
 
         TextView subtitle = new TextView(this);
         subtitle.setText(t("code_instead_qr"));
-        subtitle.setTextSize(12);
+        subtitle.setTextSize(11);
         subtitle.setTextColor(textSecondary());
         subtitle.setPadding(0, dp(2), 0, dp(9));
         card.addView(subtitle, matchWrap());
@@ -1161,42 +1161,42 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setMinimumHeight(dp(64));
-        row.setPadding(dp(12), dp(8), dp(10), dp(8));
-        row.setBackground(roundedBg(cardBg(), 16, cardStroke()));
+        row.setMinimumHeight(dp(52));
+        row.setPadding(dp(10), dp(6), dp(9), dp(6));
+        row.setBackground(roundedBg(cardBg(), 12, cardStroke()));
         row.setElevation(0);
         row.setClickable(listener != null);
         if (listener != null) {
             row.setOnClickListener(listener);
         }
 
-        row.addView(settingsIconView(icon, iconColor), new LinearLayout.LayoutParams(dp(40), dp(40)));
+        row.addView(settingsIconView(icon, iconColor), new LinearLayout.LayoutParams(dp(32), dp(32)));
 
         LinearLayout labels = new LinearLayout(this);
         labels.setOrientation(LinearLayout.VERTICAL);
         TextView titleView = new TextView(this);
         titleView.setText(title);
-        titleView.setTextSize(16);
+        titleView.setTextSize(14);
         titleView.setTextColor(textPrimary());
         titleView.setSingleLine(false);
         labels.addView(titleView, matchWrap());
         if (subtitle != null && !subtitle.trim().isEmpty()) {
             TextView subtitleView = new TextView(this);
             subtitleView.setText(subtitle.trim());
-            subtitleView.setTextSize(12);
+            subtitleView.setTextSize(11);
             subtitleView.setTextColor(textSecondary());
             subtitleView.setPadding(0, dp(2), 0, 0);
             labels.addView(subtitleView, matchWrap());
         }
         LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        labelParams.setMargins(dp(10), 0, dp(8), 0);
+        labelParams.setMargins(dp(9), 0, dp(8), 0);
         row.addView(labels, labelParams);
 
         if (value != null && !value.trim().isEmpty()) {
             TextView valueView = new TextView(this);
             valueView.setTag("settings_value");
             valueView.setText(value.trim());
-            valueView.setTextSize(15);
+            valueView.setTextSize(13);
             valueView.setTextColor(textSecondary());
             valueView.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
             row.addView(valueView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -1204,16 +1204,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (chevron) {
             TextView chevronView = new TextView(this);
             chevronView.setText("›");
-            chevronView.setTextSize(30);
+            chevronView.setTextSize(24);
             chevronView.setTextColor(textSecondary());
             chevronView.setGravity(Gravity.CENTER);
-            LinearLayout.LayoutParams chevronParams = new LinearLayout.LayoutParams(dp(26), LinearLayout.LayoutParams.WRAP_CONTENT);
+            LinearLayout.LayoutParams chevronParams = new LinearLayout.LayoutParams(dp(22), LinearLayout.LayoutParams.WRAP_CONTENT);
             chevronParams.setMargins(dp(4), 0, 0, 0);
             row.addView(chevronView, chevronParams);
         }
 
         LinearLayout.LayoutParams params = matchWrap();
-        params.setMargins(0, 0, 0, dp(12));
+        params.setMargins(0, 0, 0, dp(8));
         row.setLayoutParams(params);
         return row;
     }
