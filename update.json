@@ -1,17 +1,17 @@
 {
   "android": {
-    "versionCode": 129,
-    "versionName": "0.8.4",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.4.apk",
+    "versionCode": 130,
+    "versionName": "0.8.5",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.5.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.8.4.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.8.4.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.4/Haoleme-0.8.4.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.8.5.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.8.5.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.5/Haoleme-0.8.5.apk"
     ],
-    "sha256": "9a5fab5444f3bd3d056fc29005071a6031574dbee3f7a7e2e9ce9de7e9cffe4d",
+    "sha256": "a4352936c0a23631abb1ff2cd9e01cc25c3de33e984f365a6b276eb532efc4ea",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.8.4：修复 0.8.3 控制台输出看不到的问题（\\r\\n 行尾被误清空）。普通输出恢复正常，进度条仍正确折叠。"
+    "notes": "0.8.5：超长命令在运行列表里只显示一行、控制台标题最多两行（点一下看完整命令并可复制），不再占满屏幕。"
   },
   "python": {
     "version": "0.4.8",

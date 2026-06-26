@@ -3615,7 +3615,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         command.setTextSize(16);
         command.setTextColor(textPrimary());
         command.setTypeface(null, Typeface.BOLD);
-        command.setSingleLine(false);
+        command.setSingleLine(true);
+        command.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams commandParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
         commandParams.setMargins(dp(8), 0, dp(8), 0);
         topLine.addView(command, commandParams);
@@ -3808,6 +3809,23 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailCommand.setTextColor(textPrimary());
         detailCommand.setTypeface(null, Typeface.BOLD);
         detailCommand.setPadding(0, dp(12), 0, 0);
+        // Long commands are clamped so they don't crowd the console; tap to see the full command.
+        detailCommand.setMaxLines(2);
+        detailCommand.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        detailCommand.setOnClickListener(v -> {
+            CharSequence full = detailCommand.getText();
+            if (full == null || full.length() == 0) {
+                return;
+            }
+            AlertDialog d = dialogBuilder()
+                    .setTitle(isEnglish() ? "Command" : "命令")
+                    .setMessage(full.toString())
+                    .setPositiveButton(isEnglish() ? "Copy" : "复制", (dialog, which) -> copyText(appDisplayName() + " command", full.toString()))
+                    .setNegativeButton(t("close"), null)
+                    .create();
+            applyDialogStyle(d);
+            d.show();
+        });
         root.addView(detailCommand, matchWrap());
 
         detailMeta = new TextView(this);
