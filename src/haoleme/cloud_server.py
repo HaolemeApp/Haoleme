@@ -717,7 +717,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 })
                 return
         self.send_json(
-            {"error": "could not allocate sync space code", "code": "space_code_unavailable"},
+            {"error": "could not allocate shared space code", "code": "space_code_unavailable"},
             status=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
@@ -748,15 +748,15 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         join = get_space_join_code(self.server.db_path, code)
         if join is None:
             self.send_json(
-                {"error": "sync space code expired or not found", "code": "space_code_expired"},
+                {"error": "shared space code expired or not found", "code": "space_code_expired"},
                 status=HTTPStatus.NOT_FOUND,
             )
             return
         if join["status"] != "pending":
-            self.send_json({"error": "sync space code already used", "code": "space_code_used"}, status=HTTPStatus.CONFLICT)
+            self.send_json({"error": "shared space code already used", "code": "space_code_used"}, status=HTTPStatus.CONFLICT)
             return
         if share_token and not share_token_matches(join["share_token"], share_token):
-            self.send_json({"error": "invalid sync space QR token", "code": "space_share_token_invalid"}, status=HTTPStatus.FORBIDDEN)
+            self.send_json({"error": "invalid shared space QR token", "code": "space_share_token_invalid"}, status=HTTPStatus.FORBIDDEN)
             return
 
         client_token = secrets.token_urlsafe(32)
@@ -764,7 +764,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         client_name = str(payload.get("clientName") or "Haoleme App")[:80]
         joined_at = iso_now()
         if not consume_space_join_code(self.server.db_path, code, joined_at):
-            self.send_json({"error": "sync space code already used", "code": "space_code_used"}, status=HTTPStatus.CONFLICT)
+            self.send_json({"error": "shared space code already used", "code": "space_code_used"}, status=HTTPStatus.CONFLICT)
             return
         store_app_token(
             self.server.db_path,
@@ -789,7 +789,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
 
     def allow_pair_confirm_attempt(self) -> bool:
         now = time.time()
-        remote = self.client_address[0] if self.client_address else "unknown"
+        remote = self.remote_addr()
         cutoff = now - PAIR_CONFIRM_RATE_WINDOW_SECONDS
         with self.server.pair_confirm_attempts_lock:
             attempts = [value for value in self.server.pair_confirm_attempts.get(remote, []) if value >= cutoff]
@@ -801,7 +801,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             return True
 
     def allow_pair_start_attempt(self) -> bool:
-        remote = self.client_address[0] if self.client_address else "unknown"
+        remote = self.remote_addr()
         return allow_rate(
             self.server.pair_start_attempts,
             self.server.pair_start_attempts_lock,
@@ -811,7 +811,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         )
 
     def allow_app_register_attempt(self) -> bool:
-        remote = self.client_address[0] if self.client_address else "unknown"
+        remote = self.remote_addr()
         return allow_rate(
             self.server.app_register_attempts,
             self.server.app_register_attempts_lock,
@@ -821,17 +821,17 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         )
 
     def allow_read_attempt(self, auth: AuthContext) -> bool:
-        remote = self.client_address[0] if self.client_address else "unknown"
+        remote = self.remote_addr()
         key = f"{auth.token_hash}:{remote}"
         return allow_rate(self.server.read_attempts, self.server.read_attempts_lock, key, READ_RATE_LIMIT, READ_RATE_WINDOW_SECONDS)
 
     def allow_write_attempt(self, auth: AuthContext) -> bool:
-        remote = self.client_address[0] if self.client_address else "unknown"
+        remote = self.remote_addr()
         key = f"{auth.token_hash}:{remote}"
         return allow_rate(self.server.write_attempts, self.server.write_attempts_lock, key, WRITE_RATE_LIMIT, READ_RATE_WINDOW_SECONDS)
 
     def send_unauthorized(self) -> None:
-        remote = self.client_address[0] if self.client_address else "unknown"
+        remote = self.remote_addr()
         allowed = allow_rate(
             self.server.auth_failure_attempts,
             self.server.auth_failure_attempts_lock,
@@ -843,6 +843,19 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "too many authentication failures", "code": "auth_rate_limited"}, status=HTTPStatus.TOO_MANY_REQUESTS)
             return
         self.send_json({"error": "unauthorized", "code": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+
+    def remote_addr(self) -> str:
+        peer = self.client_address[0] if self.client_address else ""
+        # Trust forwarded client IP only from the local reverse proxy (nginx on
+        # loopback), so rate limiting and logging see real clients, not 127.0.0.1.
+        if peer in ("127.0.0.1", "::1"):
+            real = (self.headers.get("X-Real-IP") or "").strip()
+            if real:
+                return real
+            xff = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if xff:
+                return xff
+        return peer or "unknown"
 
     def send_stats_page(self, parsed) -> None:
         configured = server_stats_token()
@@ -1020,7 +1033,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         cloud_log({
             "ts": iso_now(),
             "event": "request",
-            "remote": self.client_address[0] if self.client_address else "",
+            "remote": self.remote_addr(),
             "method": self.command,
             "path": path,
             "status": int(code) if str(code).isdigit() else code,
@@ -1032,7 +1045,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         cloud_log({
             "ts": iso_now(),
             "event": "server",
-            "remote": self.client_address[0] if self.client_address else "",
+            "remote": self.remote_addr(),
             "message": fmt % args,
         })
 
@@ -2329,7 +2342,20 @@ def device_names(db: sqlite3.Connection, account_key: str) -> dict[str, str]:
 
 
 def expire_stale_running_runs(db: sqlite3.Connection, account_key: str, now: str | None = None) -> int:
+    # NOTE: We no longer auto-mark running/created runs as 'cancelled' just because
+    # the device last_seen_at is stale (e.g. temporary network drop on the computer).
+    # The command may still be executing locally.
+    # The CLI heartbeat daemon on the device will:
+    #   - locally check PID in reconcile_orphaned_running_runs (using is_process_running)
+    #   - only cancel locally if the pid is truly dead
+    #   - sync the real status (still running, or final succeeded/failed) when network recovers.
+    #
+    # Server should reflect the last reported status from the client.
+    # This supports long-running jobs surviving transient disconnects.
+    # (Previously this function would set cancelled + note "Device went offline...")
     now_value = now or iso_now()
+    # We still query to keep the function, but do no mutations for runs.
+    # If in future we want very-long-time cleanup, we can add a separate slow timeout.
     rows = db.execute(
         """
         SELECT r.id, r.updated_at, r.device_id, r.payload, d.last_seen_at
@@ -2342,36 +2368,8 @@ def expire_stale_running_runs(db: sqlite3.Connection, account_key: str, now: str
         """,
         (account_key,),
     ).fetchall()
-    expired = 0
-    for row in rows:
-        device_id = str(row["device_id"] or "")
-        if not device_id:
-            continue
-        if not row["last_seen_at"]:
-            continue
-        if is_recent_timestamp_at(row["last_seen_at"], STALE_RUNNING_SECONDS, now_value):
-            continue
-        if is_recent_timestamp_at(row["updated_at"], STALE_RUNNING_SECONDS, now_value):
-            continue
-
-        run = normalize_run(json.loads(row["payload"]))
-        run["status"] = "cancelled"
-        run["exitCode"] = -1
-        run["endedAt"] = now_value
-        run["updatedAt"] = now_value
-        note = "\n[好了么] Device went offline before this run reported an exit code. Marked as cancelled.\n"
-        run["stderrTail"] = (str(run.get("stderrTail") or "") + note)[-MAX_OUTPUT_TAIL:]
-        run["outputTail"] = (str(run.get("outputTail") or "") + note)[-MAX_OUTPUT_TAIL:]
-        db.execute(
-            """
-            UPDATE runs
-            SET updated_at = ?, status = ?, payload = ?
-            WHERE account_key = ? AND id = ?
-            """,
-            (now_value, "cancelled", json.dumps(run, ensure_ascii=False), account_key, row["id"]),
-        )
-        expired += 1
-    return expired
+    # Do not cancel here anymore.
+    return 0
 
 
 def decode_run(

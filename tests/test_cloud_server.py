@@ -330,7 +330,10 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertEqual(sync_space_id(account_key)[:3], "sp_")
             self.assertFalse(consume_space_join_code(db_path, "839204", "2026-06-18T01:00:01Z"))
 
-    def test_stale_running_run_is_cancelled_when_device_is_offline(self):
+    def test_offline_device_does_not_cancel_running_run(self):
+        # A stale device last_seen_at must NOT auto-cancel a running run: the
+        # command may still be executing locally and survive a transient network
+        # drop. The CLI heartbeat reconciles real status when it reconnects.
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
             account_key = "account-key"
@@ -344,11 +347,8 @@ class CloudServerDeviceTest(unittest.TestCase):
                 expired = expire_stale_running_runs(db, account_key, "2026-06-18T01:05:00Z")
 
             run = list_runs(db_path, account_key, 10)[0]
-            self.assertEqual(expired, 1)
-            self.assertEqual(run["status"], "cancelled")
-            self.assertEqual(run["exitCode"], -1)
-            self.assertEqual(run["endedAt"], "2026-06-18T01:05:00Z")
-            self.assertIn("Device went offline", run["outputTail"])
+            self.assertEqual(expired, 0)
+            self.assertEqual(run["status"], "running")
 
     def test_online_device_keeps_old_running_run_alive(self):
         with tempfile.TemporaryDirectory() as tmp:
