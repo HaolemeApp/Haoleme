@@ -1,17 +1,17 @@
 {
   "android": {
-    "versionCode": 133,
-    "versionName": "0.8.8",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.8.apk",
+    "versionCode": 134,
+    "versionName": "0.8.9",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.9.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.8.8.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.8.8.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.8/Haoleme-0.8.8.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.8.9.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.8.9.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.9/Haoleme-0.8.9.apk"
     ],
-    "sha256": "20069ae548c34657d4094e4f38e7b35a0fddeebc7847e9e9db8492e14e183641",
+    "sha256": "a7e9da74c26113ae4987bce9ee7507a8d7dc3e7cb80930be033312d98b3c9ca4",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.8.8：三页顶部更紧凑——大标题、刷新状态、在线/连接状态字号和图标都缩小，顶栏更矮。"
+    "notes": "0.8.9：所有运行卡片高度统一——没有输出的运行也显示“（暂无输出）”占位，列表不再忽高忽低。"
   },
   "python": {
     "version": "0.4.9",

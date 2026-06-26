@@ -3643,16 +3643,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
         card.addView(meta, matchWrap());
 
         String latest = latestOutputLine(run);
-        if (!latest.isEmpty()) {
-            TextView output = new TextView(this);
-            output.setText(displayText(latest));
-            output.setTextSize(11);
-            output.setTextColor(textPrimary());
-            output.setTypeface(android.graphics.Typeface.MONOSPACE);
-            output.setSingleLine(true);
-            output.setPadding(0, dp(5), 0, 0);
-            card.addView(output, matchWrap());
-        }
+        boolean hasOutput = !latest.isEmpty();
+        TextView output = new TextView(this);
+        output.setText(hasOutput ? displayText(latest) : (isEnglish() ? "(no output)" : "（暂无输出）"));
+        output.setTextSize(11);
+        output.setTextColor(hasOutput ? textPrimary() : textSecondary());
+        output.setTypeface(android.graphics.Typeface.MONOSPACE);
+        output.setSingleLine(true);
+        output.setPadding(0, dp(5), 0, 0);
+        card.addView(output, matchWrap());
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
