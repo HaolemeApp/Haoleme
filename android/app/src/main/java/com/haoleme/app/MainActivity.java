@@ -711,7 +711,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         TextView pairTitle = sectionTitle(t("pair_device"));
         settingsContent.addView(pairTitle, matchWrap());
-        settingsContent.addView(settingsRow(
+        settingsContent.addView(settingsGroup(settingsRow(
                 "qr",
                 color("#2563EB"),
                 t("scan_qr_auth"),
@@ -719,7 +719,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 "",
                 true,
                 v -> startQrScan()
-        ), matchWrap());
+        )), matchWrap());
 
         LinearLayout pairControls = new LinearLayout(this);
         pairControls.setOrientation(LinearLayout.HORIZONTAL);
@@ -756,7 +756,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout.LayoutParams pairParams = matchWrap();
         pairParams.setMargins(0, 0, 0, dp(8));
         settingsContent.addView(pairCodeCard(pairControls), pairParams);
-        settingsContent.addView(settingsRow(
+        settingsContent.addView(settingsGroup(settingsRow(
                 "⇄",
                 color("#14B8A6"),
                 t("sync_space"),
@@ -764,168 +764,176 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 syncSpaceLabel(),
                 true,
                 v -> showSyncSpaceDialog()
-        ), matchWrap());
+        )), matchWrap());
 
         TextView appearanceTitle = sectionTitle(t("appearance"));
         LinearLayout.LayoutParams appearanceParams = matchWrap();
         appearanceParams.setMargins(0, dp(6), 0, 0);
         settingsContent.addView(appearanceTitle, appearanceParams);
-        settingsContent.addView(settingsRow(
-                "theme_icon",
-                color("#8B5CF6"),
-                t("theme"),
-                t("theme_subtitle"),
-                themeLabel(),
-                true,
-                v -> showThemeDialog()
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "language_icon",
-                color("#0EA5E9"),
-                t("language"),
-                t("language_subtitle"),
-                languageLabel(),
-                true,
-                v -> showLanguageDialog()
+        settingsContent.addView(settingsGroup(
+                settingsRow(
+                        "theme_icon",
+                        color("#8B5CF6"),
+                        t("theme"),
+                        t("theme_subtitle"),
+                        themeLabel(),
+                        true,
+                        v -> showThemeDialog()
+                ),
+                settingsRow(
+                        "language_icon",
+                        color("#0EA5E9"),
+                        t("language"),
+                        t("language_subtitle"),
+                        languageLabel(),
+                        true,
+                        v -> showLanguageDialog()
+                )
         ), matchWrap());
 
         TextView notificationsTitle = sectionTitle(t("notifications"));
         LinearLayout.LayoutParams notificationsParams = matchWrap();
         notificationsParams.setMargins(0, dp(8), 0, 0);
         settingsContent.addView(notificationsTitle, notificationsParams);
-        settingsContent.addView(settingsRow(
-                "✓",
-                color("#16A34A"),
-                t("succeeded_runs"),
-                t("succeeded_runs_subtitle"),
-                onOff(notifySuccessEnabled()),
-                false,
-                v -> togglePreference(PREF_NOTIFY_SUCCESS, true, v)
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "!",
-                color("#DC2626"),
-                t("failed_runs"),
-                t("failed_runs_subtitle"),
-                onOff(notifyFailureEnabled()),
-                false,
-                v -> togglePreference(PREF_NOTIFY_FAILURE, true, v)
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "⏱",
-                color("#2563EB"),
-                t("minimum_run_time"),
-                t("minimum_run_time_subtitle"),
-                notifyMinDurationLabel(),
-                true,
-                v -> showNotifyMinDurationDialog(v)
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "quiet_icon",
-                color("#64748B"),
-                t("quiet_hours"),
-                t("quiet_hours_subtitle"),
-                onOff(quietHoursEnabled()),
-                false,
-                v -> togglePreference(PREF_NOTIFY_QUIET_HOURS, false, v)
+        settingsContent.addView(settingsGroup(
+                settingsRow(
+                        "✓",
+                        color("#16A34A"),
+                        t("succeeded_runs"),
+                        t("succeeded_runs_subtitle"),
+                        onOff(notifySuccessEnabled()),
+                        false,
+                        v -> togglePreference(PREF_NOTIFY_SUCCESS, true, v)
+                ),
+                settingsRow(
+                        "!",
+                        color("#DC2626"),
+                        t("failed_runs"),
+                        t("failed_runs_subtitle"),
+                        onOff(notifyFailureEnabled()),
+                        false,
+                        v -> togglePreference(PREF_NOTIFY_FAILURE, true, v)
+                ),
+                settingsRow(
+                        "⏱",
+                        color("#2563EB"),
+                        t("minimum_run_time"),
+                        t("minimum_run_time_subtitle"),
+                        notifyMinDurationLabel(),
+                        true,
+                        v -> showNotifyMinDurationDialog(v)
+                ),
+                settingsRow(
+                        "quiet_icon",
+                        color("#64748B"),
+                        t("quiet_hours"),
+                        t("quiet_hours_subtitle"),
+                        onOff(quietHoursEnabled()),
+                        false,
+                        v -> togglePreference(PREF_NOTIFY_QUIET_HOURS, false, v)
+                )
         ), matchWrap());
 
         TextView securityTitle = sectionTitle(t("security"));
         LinearLayout.LayoutParams securityParams = matchWrap();
         securityParams.setMargins(0, dp(8), 0, 0);
         settingsContent.addView(securityTitle, securityParams);
-        settingsContent.addView(settingsRow(
-                "mask_icon",
-                color("#7C3AED"),
-                t("mask_sensitive"),
-                t("mask_sensitive_subtitle"),
-                onOff(maskSensitiveEnabled()),
-                false,
-                v -> togglePreference(PREF_MASK_SENSITIVE, true, v)
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "▣",
-                color("#2563EB"),
-                t("device_security"),
-                t("device_security_subtitle"),
-                deviceSecurityLabel(),
-                true,
-                v -> showDeviceSecurityDialog()
+        settingsContent.addView(settingsGroup(
+                settingsRow(
+                        "mask_icon",
+                        color("#7C3AED"),
+                        t("mask_sensitive"),
+                        t("mask_sensitive_subtitle"),
+                        onOff(maskSensitiveEnabled()),
+                        false,
+                        v -> togglePreference(PREF_MASK_SENSITIVE, true, v)
+                ),
+                settingsRow(
+                        "▣",
+                        color("#2563EB"),
+                        t("device_security"),
+                        t("device_security_subtitle"),
+                        deviceSecurityLabel(),
+                        true,
+                        v -> showDeviceSecurityDialog()
+                )
         ), matchWrap());
 
         TextView storageTitle = sectionTitle(t("storage"));
         LinearLayout.LayoutParams storageParams = matchWrap();
         storageParams.setMargins(0, dp(8), 0, 0);
         settingsContent.addView(storageTitle, storageParams);
-        settingsContent.addView(settingsRow(
-                "▤",
-                color("#0EA5E9"),
-                t("saved_data"),
-                t("saved_data_subtitle"),
-                localCacheSizeLabel(),
-                false,
-                null
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "⌫",
-                color("#EF4444"),
-                t("clear_local_cache"),
-                t("clear_local_cache_subtitle"),
-                "",
-                true,
-                v -> confirmClearLocalCache()
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "✓",
-                color("#16A34A"),
-                t("clear_completed_runs"),
-                t("clear_completed_runs_subtitle"),
-                "",
-                true,
-                v -> confirmClearCompletedLocalRuns()
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "⌘",
-                color("#64748B"),
-                t("console_history"),
-                t("console_history_subtitle"),
-                consoleHistoryLabel(),
-                true,
-                v -> showConsoleHistoryDialog(v)
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "⇪",
-                color("#2563EB"),
-                t("export_runs"),
-                t("export_runs_subtitle"),
-                "",
-                true,
-                v -> exportRuns()
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "☁",
-                color("#EF4444"),
-                t("clear_cloud_runs"),
-                t("clear_cloud_runs_subtitle"),
-                "",
-                true,
-                v -> confirmClearCloudRuns()
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "⊘",
-                color("#DC2626"),
-                t("delete_sync_space"),
-                t("delete_sync_space_subtitle"),
-                "",
-                true,
-                v -> confirmDeleteSyncSpace()
+        settingsContent.addView(settingsGroup(
+                settingsRow(
+                        "▤",
+                        color("#0EA5E9"),
+                        t("saved_data"),
+                        t("saved_data_subtitle"),
+                        localCacheSizeLabel(),
+                        false,
+                        null
+                ),
+                settingsRow(
+                        "⌫",
+                        color("#EF4444"),
+                        t("clear_local_cache"),
+                        t("clear_local_cache_subtitle"),
+                        "",
+                        true,
+                        v -> confirmClearLocalCache()
+                ),
+                settingsRow(
+                        "✓",
+                        color("#16A34A"),
+                        t("clear_completed_runs"),
+                        t("clear_completed_runs_subtitle"),
+                        "",
+                        true,
+                        v -> confirmClearCompletedLocalRuns()
+                ),
+                settingsRow(
+                        "⌘",
+                        color("#64748B"),
+                        t("console_history"),
+                        t("console_history_subtitle"),
+                        consoleHistoryLabel(),
+                        true,
+                        v -> showConsoleHistoryDialog(v)
+                ),
+                settingsRow(
+                        "⇪",
+                        color("#2563EB"),
+                        t("export_runs"),
+                        t("export_runs_subtitle"),
+                        "",
+                        true,
+                        v -> exportRuns()
+                ),
+                settingsRow(
+                        "☁",
+                        color("#EF4444"),
+                        t("clear_cloud_runs"),
+                        t("clear_cloud_runs_subtitle"),
+                        "",
+                        true,
+                        v -> confirmClearCloudRuns()
+                ),
+                settingsRow(
+                        "⊘",
+                        color("#DC2626"),
+                        t("delete_sync_space"),
+                        t("delete_sync_space_subtitle"),
+                        "",
+                        true,
+                        v -> confirmDeleteSyncSpace()
+                )
         ), matchWrap());
 
         TextView supportTitle = sectionTitle(t("support"));
         LinearLayout.LayoutParams supportParams = matchWrap();
         supportParams.setMargins(0, dp(8), 0, 0);
         settingsContent.addView(supportTitle, supportParams);
-        settingsContent.addView(settingsRow(
+        settingsContent.addView(settingsGroup(settingsRow(
                 "♥",
                 color("#EF4444"),
                 t("donation"),
@@ -933,88 +941,90 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 "",
                 true,
                 v -> showDonationSheet()
-        ), matchWrap());
+        )), matchWrap());
 
         TextView appTitle = sectionTitle(t("app"));
         LinearLayout.LayoutParams appParams = matchWrap();
         appParams.setMargins(0, dp(8), 0, 0);
         settingsContent.addView(appTitle, appParams);
-        settingsContent.addView(settingsRow(
-                "↻",
-                color("#2563EB"),
-                t("auto_check_updates"),
-                t("auto_check_updates_subtitle"),
-                onOff(autoCheckUpdatesEnabled()),
-                false,
-                v -> togglePreference(PREF_UPDATE_AUTO_CHECK, true, v)
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "⌁",
-                color("#0EA5E9"),
-                t("wifi_only_downloads"),
-                t("wifi_only_downloads_subtitle"),
-                onOff(wifiOnlyUpdatesEnabled()),
-                false,
-                v -> togglePreference(PREF_UPDATE_WIFI_ONLY, false, v)
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "↓",
-                color("#2563EB"),
-                t("update"),
-                updateRowSubtitle(),
-                updateRowValue(),
-                true,
-                v -> {
-                    if (hasAvailableUpdate()) {
-                        confirmUpdateDownload();
-                    } else {
-                        checkForUpdates(true);
-                    }
-                }
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "✦",
-                color("#F59E0B"),
-                t("whats_new"),
-                t("whats_new_subtitle"),
-                "",
-                true,
-                v -> showWhatsNewDialog()
-        ), matchWrap());
         String ver = currentVersionName();
         String cli = prefs.getString("latest_cli_version", "");
         if (!cli.isEmpty()) ver += " / CLI " + cli;
-        settingsContent.addView(settingsRow(
-                "i",
-                textSecondary(),
-                t("version"),
-                appDisplayName() + " app",
-                ver,
-                false,
-                null
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "diagnostics_icon",
-                color("#64748B"),
-                t("diagnostics"),
-                t("diagnostics_subtitle"),
-                "",
-                true,
-                v -> {
-                    String diag = diagnosticsText();
-                    copyText(appDisplayName() + " diagnostics", diag);
-                    statusText.setText(t("diagnostics_copied"));
-                    openExternalUrl("https://github.com/HaolemeApp/Haoleme/issues/new");
-                }
-        ), matchWrap());
-        settingsContent.addView(settingsRow(
-                "github",
-                textPrimary(),
-                t("github"),
-                t("github_subtitle"),
-                "",
-                true,
-                v -> openExternalUrl("https://github.com/HaolemeApp/Haoleme")
+        settingsContent.addView(settingsGroup(
+                settingsRow(
+                        "↻",
+                        color("#2563EB"),
+                        t("auto_check_updates"),
+                        t("auto_check_updates_subtitle"),
+                        onOff(autoCheckUpdatesEnabled()),
+                        false,
+                        v -> togglePreference(PREF_UPDATE_AUTO_CHECK, true, v)
+                ),
+                settingsRow(
+                        "⌁",
+                        color("#0EA5E9"),
+                        t("wifi_only_downloads"),
+                        t("wifi_only_downloads_subtitle"),
+                        onOff(wifiOnlyUpdatesEnabled()),
+                        false,
+                        v -> togglePreference(PREF_UPDATE_WIFI_ONLY, false, v)
+                ),
+                settingsRow(
+                        "↓",
+                        color("#2563EB"),
+                        t("update"),
+                        updateRowSubtitle(),
+                        updateRowValue(),
+                        true,
+                        v -> {
+                            if (hasAvailableUpdate()) {
+                                confirmUpdateDownload();
+                            } else {
+                                checkForUpdates(true);
+                            }
+                        }
+                ),
+                settingsRow(
+                        "✦",
+                        color("#F59E0B"),
+                        t("whats_new"),
+                        t("whats_new_subtitle"),
+                        "",
+                        true,
+                        v -> showWhatsNewDialog()
+                ),
+                settingsRow(
+                        "i",
+                        textSecondary(),
+                        t("version"),
+                        appDisplayName() + " app",
+                        ver,
+                        false,
+                        null
+                ),
+                settingsRow(
+                        "diagnostics_icon",
+                        color("#64748B"),
+                        t("diagnostics"),
+                        t("diagnostics_subtitle"),
+                        "",
+                        true,
+                        v -> {
+                            String diag = diagnosticsText();
+                            copyText(appDisplayName() + " diagnostics", diag);
+                            statusText.setText(t("diagnostics_copied"));
+                            openExternalUrl("https://github.com/HaolemeApp/Haoleme/issues/new");
+                        }
+                ),
+                settingsRow(
+                        "github",
+                        textPrimary(),
+                        t("github"),
+                        t("github_subtitle"),
+                        "",
+                        true,
+                        v -> openExternalUrl("https://github.com/HaolemeApp/Haoleme")
+                )
         ), matchWrap());
     }
 
@@ -1162,8 +1172,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setMinimumHeight(dp(52));
-        row.setPadding(dp(10), dp(6), dp(9), dp(6));
-        row.setBackground(roundedBg(cardBg(), 12, cardStroke()));
+        row.setPadding(dp(12), dp(8), dp(11), dp(8));
+        row.setBackground(rowPressBg());
         row.setElevation(0);
         row.setClickable(listener != null);
         if (listener != null) {
@@ -1213,9 +1223,53 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
 
         LinearLayout.LayoutParams params = matchWrap();
-        params.setMargins(0, 0, 0, dp(8));
+        params.setMargins(0, 0, 0, 0);
         row.setLayoutParams(params);
         return row;
+    }
+
+    private LinearLayout settingsGroup(View... rows) {
+        LinearLayout group = new LinearLayout(this);
+        group.setOrientation(LinearLayout.VERTICAL);
+        group.setBackground(roundedBg(cardBg(), 12, cardStroke()));
+        group.setClipToOutline(true);
+        boolean first = true;
+        for (View row : rows) {
+            if (row == null) continue;
+            if (!first) group.addView(settingsDividerView());
+            group.addView(row);
+            first = false;
+        }
+        LinearLayout.LayoutParams lp = matchWrap();
+        lp.setMargins(0, 0, 0, dp(10));
+        group.setLayoutParams(lp);
+        return group;
+    }
+
+    private View settingsDividerView() {
+        View d = new View(this);
+        d.setBackgroundColor(settingsDivider());
+        int h = Math.max(1, Math.round(getResources().getDisplayMetrics().density * 0.7f));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, h);
+        lp.setMargins(dp(50), 0, 0, 0);
+        d.setLayoutParams(lp);
+        return d;
+    }
+
+    private int settingsDivider() {
+        return isDarkTheme() ? color("#2C2C32") : color("#EDF0F4");
+    }
+
+    private int pressHighlight() {
+        return isDarkTheme() ? color("#2E2E36") : color("#E9EDF3");
+    }
+
+    private android.graphics.drawable.Drawable rowPressBg() {
+        android.content.res.ColorStateList ripple = android.content.res.ColorStateList.valueOf(pressHighlight());
+        android.graphics.drawable.StateListDrawable content = new android.graphics.drawable.StateListDrawable();
+        content.addState(new int[]{android.R.attr.state_pressed}, new android.graphics.drawable.ColorDrawable(pressHighlight()));
+        content.addState(new int[0], new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        return new android.graphics.drawable.RippleDrawable(ripple, content, new android.graphics.drawable.ColorDrawable(Color.WHITE));
     }
 
     private void showThemeDialog() {

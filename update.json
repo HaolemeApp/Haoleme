@@ -1,17 +1,17 @@
 {
   "android": {
-    "versionCode": 134,
-    "versionName": "0.8.9",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.9.apk",
+    "versionCode": 135,
+    "versionName": "0.9.0",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.0.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.8.9.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.8.9.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.9/Haoleme-0.8.9.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.0.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.9.0.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.0/Haoleme-0.9.0.apk"
     ],
-    "sha256": "a7e9da74c26113ae4987bce9ee7507a8d7dc3e7cb80930be033312d98b3c9ca4",
+    "sha256": "76dc7f53678643a5d3bd5f63645ccdd53153bef7264812232597f351fe8c191f",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.8.9：所有运行卡片高度统一——没有输出的运行也显示“（暂无输出）”占位，列表不再忽高忽低。"
+    "notes": "0.9.0：设置页改为分组卡片——同一类目合并成一个整体，行间用浅色细线分隔，点击有按压高亮反馈，更像系统设置。"
   },
   "python": {
     "version": "0.4.9",
