@@ -4185,6 +4185,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 out.append('\n');
                 lineStart = out.length();
             } else if (ch == '\r') {
+                // "\r\n" is a normal line ending (a PTY maps \n -> \r\n), so the
+                // \r must NOT wipe the line — let the following \n finalize it.
+                // Only a bare \r (carriage return) is an in-place overwrite
+                // (progress-bar frame), which restarts the current line.
+                if (i + 1 < s.length() && s.charAt(i + 1) == '\n') {
+                    continue;
+                }
                 out.setLength(lineStart);
             } else {
                 out.append(ch);

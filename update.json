@@ -1,17 +1,17 @@
 {
   "android": {
-    "versionCode": 128,
-    "versionName": "0.8.3",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.3.apk",
+    "versionCode": 129,
+    "versionName": "0.8.4",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.8.4.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.8.3.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.8.3.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.3/Haoleme-0.8.3.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.8.4.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.8.4.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.8.4/Haoleme-0.8.4.apk"
     ],
-    "sha256": "e79c1c8491d6c30404f7eee85a776cbceb65401ba94a369608f7c21abc912d6c",
+    "sha256": "9a5fab5444f3bd3d056fc29005071a6031574dbee3f7a7e2e9ce9de7e9cffe4d",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.8.3：控制台进度条支持——CLI 正常显示进度条；App 控制台底部实时显示进度条，结束后收为一行，不再刷屏。"
+    "notes": "0.8.4：修复 0.8.3 控制台输出看不到的问题（\\r\\n 行尾被误清空）。普通输出恢复正常，进度条仍正确折叠。"
   },
   "python": {
     "version": "0.4.8",
