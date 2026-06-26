@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -578,6 +579,33 @@ class CloudServerDeviceTest(unittest.TestCase):
             with patch.dict("os.environ", {"HAOLEME_ALLOW_EXISTING_LEGACY_ACCOUNTS": "0"}, clear=True):
                 self.assertFalse(server_allows_existing_legacy_accounts())
                 self.assertFalse(legacy_admin_token_allowed(db_path, "existing-account"))
+
+    def test_upsert_run_keeps_streamed_output_on_status_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_1"
+            init_db(db_path)
+            upsert_run(db_path, account_key, self.sample_run("run-1", device_id, "Server A", "running"))
+            auth = AuthContext(account_key=account_key, token_hash="h", scope="write",
+                               device_id=device_id, device_name="Server A")
+            append_run_update(db_path, account_key, {
+                "id": "run-1", "status": "running",
+                "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n", "ciphertext": "abc"},
+                "outputLength": 10,
+            }, auth)
+            # Final completion upsert carries no outputChunks (include_output=False);
+            # the streamed output must survive the status update.
+            upsert_run(db_path, account_key, self.sample_run("run-1", device_id, "Server A", "succeeded"))
+            with connect(db_path) as db:
+                payload = json.loads(db.execute(
+                    "SELECT payload FROM runs WHERE account_key = ? AND id = ?",
+                    (account_key, "run-1"),
+                ).fetchone()["payload"])
+            self.assertEqual(payload["status"], "succeeded")
+            self.assertEqual(len(payload.get("outputChunks") or []), 1)
+            self.assertEqual(payload["outputChunks"][0]["ciphertext"], "abc")
+            self.assertEqual(payload.get("outputLength"), 10)
 
     def sample_run(self, run_id, device_id, device_name, status="succeeded"):
         return {

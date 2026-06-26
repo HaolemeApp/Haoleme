@@ -14,9 +14,9 @@
     "notes": "0.8.5：超长命令在运行列表里只显示一行、控制台标题最多两行（点一下看完整命令并可复制），不再占满屏幕。"
   },
   "python": {
-    "version": "0.4.8",
+    "version": "0.4.9",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.8-py3-none-any.whl",
-    "notes": "0.4.8: PTY sized to terminal so progress bars render in the CLI."
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.9-py3-none-any.whl",
+    "notes": "0.4.9: fix console output disappearing after a run completes (final status upsert no longer wipes streamed output)."
   }
 }

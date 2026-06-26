@@ -1772,10 +1772,21 @@ def upsert_run(db_path: Path, account_key: str, run: dict[str, Any]) -> None:
         if existing_row is not None:
             try:
                 existing = json.loads(existing_row["payload"])
-                if existing.get("interruptRequestedAt") and not run.get("interruptRequestedAt"):
-                    run["interruptRequestedAt"] = existing["interruptRequestedAt"]
             except json.JSONDecodeError:
-                pass
+                existing = {}
+            if existing.get("interruptRequestedAt") and not run.get("interruptRequestedAt"):
+                run["interruptRequestedAt"] = existing["interruptRequestedAt"]
+            # Output is streamed via append_run_update (outputChunks / tails). A
+            # full payload replace here must NOT drop it, or the final status
+            # upsert on completion wipes the console. Preserve accumulated output
+            # whenever this upsert didn't carry its own.
+            if not run.get("outputChunks") and existing.get("outputChunks"):
+                run["outputChunks"] = existing["outputChunks"]
+                if not run.get("outputLength") and existing.get("outputLength"):
+                    run["outputLength"] = existing["outputLength"]
+            for tail in ("outputTail", "stdoutTail", "stderrTail"):
+                if not run.get(tail) and existing.get(tail):
+                    run[tail] = existing[tail]
         db.execute(
             """
             INSERT INTO runs(account_key, id, updated_at, status, device_id, device_name, project, payload)
