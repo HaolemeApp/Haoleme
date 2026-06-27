@@ -91,9 +91,9 @@ class CliPairingTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("Update available", buffer.getvalue())
 
-    def test_main_routes_version_subcommand(self):
+    def test_main_routes_version_flag(self):
         with patch("haoleme.cli.version_command", return_value=0) as mocked:
-            exit_code = main(["version", "--check"])
+            exit_code = main(["--version", "--check"])
         self.assertEqual(exit_code, 0)
         mocked.assert_called_once_with(["--check"])
 

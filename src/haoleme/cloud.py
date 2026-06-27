@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import secrets
 import socket
 import threading
@@ -20,6 +21,29 @@ from .crypto import encrypt_output_chunk, encrypt_run_payload, is_valid_account_
 
 DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "https://api.haoleme.cloud").rstrip("/")
 USER_AGENT = f"haoleme/{__version__}"
+
+
+_CLIENT_RUN_METADATA: dict[str, str] | None = None
+
+
+def client_run_metadata() -> dict[str, str]:
+    """Constant per-process run metadata (CLI version, OS, hostname), cached."""
+    global _CLIENT_RUN_METADATA
+    if _CLIENT_RUN_METADATA is None:
+        try:
+            os_label = f"{platform.system()} {platform.release()}".strip()
+        except Exception:
+            os_label = ""
+        try:
+            host = socket.gethostname()
+        except Exception:
+            host = ""
+        _CLIENT_RUN_METADATA = {
+            "cliVersion": __version__,
+            "os": os_label,
+            "hostname": host,
+        }
+    return _CLIENT_RUN_METADATA
 # Console sync cadence is tiered by run age (see CloudSyncer._running_sync_interval):
 # fast (MIN) for fresh runs, easing to MAX for long-lived ones.
 RUNNING_SYNC_MIN_INTERVAL_SECONDS = 1.0
@@ -230,6 +254,10 @@ class CloudClient:
 
     def upsert_run(self, run: RunRecord, *, include_output: bool = True) -> None:
         payload = run.to_dict()
+        meta = client_run_metadata()
+        payload["cliVersion"] = meta["cliVersion"]
+        payload["os"] = meta["os"]
+        payload["hostname"] = meta["hostname"]
         if self.config.device_id:
             payload["deviceId"] = self.config.device_id
         if self.config.device_name:

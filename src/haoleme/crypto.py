@@ -13,8 +13,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 E2EE_VERSION = 1
 RUN_E2EE_ALGORITHM = "AES-256-GCM"
 KEY_WRAP_ALGORITHM = "RSA-OAEP-SHA256"
-ENCRYPTED_FIELDS = ("command", "commandText", "cwd", "stdoutTail", "stderrTail", "outputTail")
-METADATA_ENCRYPTED_FIELDS = ("command", "commandText", "cwd")
+ENCRYPTED_FIELDS = ("command", "commandText", "cwd", "stdoutTail", "stderrTail", "outputTail", "cliVersion", "os", "hostname")
+METADATA_ENCRYPTED_FIELDS = ("command", "commandText", "cwd", "cliVersion", "os", "hostname")
 OUTPUT_ENCRYPTED_FIELDS = ("stdoutTail", "stderrTail", "outputTail")
 
 
@@ -87,6 +87,9 @@ def encrypt_run_payload(run: dict[str, Any], account_key: str, *, include_output
     encrypted["stdoutTail"] = ""
     encrypted["stderrTail"] = ""
     encrypted["outputTail"] = ""
+    encrypted["cliVersion"] = ""
+    encrypted["os"] = ""
+    encrypted["hostname"] = ""
     encrypted["e2ee"] = {
         "v": E2EE_VERSION,
         "alg": RUN_E2EE_ALGORITHM,

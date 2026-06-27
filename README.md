@@ -64,7 +64,7 @@ hao python train.py
 hao bash run.sh
 ```
 
-旧写法 `hao run python train.py` 仍然可用。
+（旧的 `hao run ...` 写法已移除，请直接使用 `hao <command>`。）
 
 手机上会自动显示运行状态和控制台输出。
 

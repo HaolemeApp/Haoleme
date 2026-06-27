@@ -154,10 +154,31 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
         export JAVA_HOME="/opt/homebrew/opt/openjdk@17"
         export PATH="$JAVA_HOME/bin:$PATH"
       fi
+      KT=""
+      if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/keytool" ]]; then
+        KT="$JAVA_HOME/bin/keytool"
+      elif [[ -x /opt/homebrew/opt/openjdk@17/bin/keytool ]]; then
+        KT="/opt/homebrew/opt/openjdk@17/bin/keytool"
+      elif command -v keytool >/dev/null 2>&1; then
+        KT="$(command -v keytool)"
+      fi
       if command -v java >/dev/null 2>&1; then
-        echo "Testing Android build ${ANDROID_VERSION} (code ${ANDROID_CODE})..."
-        (cd android && ./gradlew assembleRelease lintVitalRelease)
+        echo "Building Android (clean) ${ANDROID_VERSION} (code ${ANDROID_CODE}) with fixed signing..."
+        (cd android && ./gradlew clean assembleRelease lintVitalRelease)
         cp "android/app/build/outputs/apk/release/app-release.apk" "$APK_PATH"
+        # Verify that the produced APK uses exactly the legacy keystore cert (prevents signature drift)
+        echo "Verifying APK signature matches legacy/debug.keystore ..."
+        LEGACY_SHA1="$("$KT" -list -v -keystore "$ROOT/android/legacy/debug.keystore" -storepass android 2>/dev/null | awk '/SHA1:/ {print $2; exit}')"
+        APK_CERT_SHA1="$(unzip -p "$APK_PATH" META-INF/CERT.RSA 2>/dev/null | "$KT" -printcert 2>/dev/null | awk '/SHA1:/ {print $2; exit}')"
+        if [[ -z "$LEGACY_SHA1" || -z "$APK_CERT_SHA1" ]]; then
+          echo "WARNING: Could not extract one of the cert fingerprints for verification." >&2
+        elif [[ "$LEGACY_SHA1" != "$APK_CERT_SHA1" ]]; then
+          echo "ERROR: APK was signed with $APK_CERT_SHA1 but legacy is $LEGACY_SHA1" >&2
+          echo "This would cause 'different app / developer signature' errors on upgrade. Aborting." >&2
+          exit 1
+        else
+          echo "OK: APK signed with fixed legacy key SHA1=$LEGACY_SHA1"
+        fi
       else
         echo "Java not found; reusing existing APK if present." >&2
       fi
@@ -192,7 +213,7 @@ python = existing.get("python") if isinstance(existing.get("python"), dict) else
 if apk_path.is_file():
     apk_bytes = apk_path.read_bytes()
     sha256 = hashlib.sha256(apk_bytes).hexdigest()
-    github_apk = f"https://github.com/HaolemeApp/Haoleme/releases/latest/download/Haoleme-{android_version}.apk"
+    github_apk = f"https://github.com/HaolemeApp/Haoleme/releases/download/v{android_version}/Haoleme-{android_version}.apk"
     android = {
         "versionCode": int(android_code),
         "versionName": android_version,
@@ -253,8 +274,9 @@ if [[ "$UPLOAD_ANDROID" -eq 1 && -f "$APK_PATH" ]]; then
 fi
 
 echo "Uploading to ${SSH_TARGET}:${REMOTE_DIR} ..."
+set +e
 for path in "${UPLOAD_PATHS[@]}"; do
-  remote_copy "$path" "${REMOTE_DIR}/"
+  remote_copy "$path" "${REMOTE_DIR}/" || echo "  (server copy failed for $(basename "$path"), continuing...)"
 done
 
 remote_copy_cmds=()
@@ -268,8 +290,9 @@ if [[ "$UPLOAD_ANDROID" -eq 1 && -f "$APK_PATH" ]]; then
 fi
 
 if [[ "${#remote_copy_cmds[@]}" -gt 0 ]]; then
-  remote_cmd "$(printf '%s && ' "${remote_copy_cmds[@]}") echo 'Server update ok'"
+  remote_cmd "$(printf '%s && ' "${remote_copy_cmds[@]}") echo 'Server update ok'" || echo "  (server post-commands failed or no auth, continuing to GitHub...)"
 fi
+set -e
 
 if [[ "$UPLOAD_PYPI" -eq 1 ]]; then
   if [[ -z "${HAOLEME_PYPI_TOKEN:-}" ]]; then

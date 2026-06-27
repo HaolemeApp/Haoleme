@@ -62,7 +62,7 @@ or:
 hao bash run.sh
 ```
 
-The old `hao run python train.py` form still works.
+(The old explicit `hao run ...` form has been removed; use `hao <command>` directly.)
 
 The app will show live status and console output automatically.
 

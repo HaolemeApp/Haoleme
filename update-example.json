@@ -1,22 +1,22 @@
 {
   "android": {
-    "versionCode": 135,
-    "versionName": "0.9.0",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.0.apk",
+    "versionCode": 136,
+    "versionName": "0.9.1",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.1.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.0.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.9.0.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.0/Haoleme-0.9.0.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.1.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.9.1.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.1/Haoleme-0.9.1.apk"
     ],
-    "sha256": "76dc7f53678643a5d3bd5f63645ccdd53153bef7264812232597f351fe8c191f",
+    "sha256": "5d4ffba0884f526f2777cdf0cd8b4c9aeb7c91a067ab12470d2dc3d39ac862a1",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.0：设置页改为分组卡片——同一类目合并成一个整体，行间用浅色细线分隔，点击有按压高亮反馈，更像系统设置。"
+    "notes": "0.9.1：控制台新增「信息」面板——查看服务器、路径、CLI 版本、操作系统、进程号、创建/更新时间等元数据，并可一键复制、归档运行（状态筛选里可看已归档）。"
   },
   "python": {
-    "version": "0.4.9",
+    "version": "0.4.10",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.9-py3-none-any.whl",
-    "notes": "0.4.9: fix console output disappearing after a run completes (final status upsert no longer wipes streamed output)."
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.10-py3-none-any.whl",
+    "notes": "0.4.10: cloud runs now carry CLI version, OS and hostname (E2EE-encrypted) so the app can show full run metadata."
   }
 }

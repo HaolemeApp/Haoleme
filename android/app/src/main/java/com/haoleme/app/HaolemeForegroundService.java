@@ -1,6 +1,7 @@
 package com.haoleme.app;
 
 import android.Manifest;
+import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -27,8 +28,10 @@ import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -60,7 +63,13 @@ public class HaolemeForegroundService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Map<String, String> knownStatuses = new HashMap<>();
+    private final Map<String, Long> deviceLastReportTime = new HashMap<>();
+    private final Map<String, Long> lastNonTerminalForRun = new HashMap<>();
+    private final Map<String, Boolean> previousDeviceOnline = new HashMap<>();
+    private final Set<String> devicesWithRecentActiveRuns = new HashSet<>();
     private SharedPreferences prefs;
+    private long lastDeviceCheckTime = 0;
+    private static final long DEVICE_CHECK_INTERVAL_MS = 30000; // 30 seconds to save battery/network
     private final long notificationSessionStartedAt = System.currentTimeMillis();
     private boolean firstLoad = true;
     private String latestEvent = "";
@@ -124,15 +133,75 @@ public class HaolemeForegroundService extends Service {
                         continue;
                     }
                     run = decryptRun(run);
+                    String did = run.optString("deviceId", "").trim();
+                    if (!did.isEmpty()) {
+                        long now = System.currentTimeMillis();
+                        long prev = deviceLastReportTime.getOrDefault(did, 0L);
+                        long gap = now - prev;
+                        deviceLastReportTime.put(did, now);
+                        if (gap > 5 * 60 * 1000) {
+                            String dname = run.optString("deviceName", did);
+                            sendDeviceReconnectNotification(did, dname, gap);
+                        }
+                    }
+                    String rid = run.optString("id", "");
+                    String rstatus = run.optString("status", "");
+                    boolean rterm = "succeeded".equals(rstatus) || "failed".equals(rstatus) || "cancelled".equals(rstatus);
+                    if (!rterm) {
+                        lastNonTerminalForRun.put(rid, System.currentTimeMillis());
+                    } else {
+                        devicesWithRecentActiveRuns.remove(did);  // clean if terminal
+                    }
+                    if ("created".equals(rstatus) || "running".equals(rstatus)) {
+                        devicesWithRecentActiveRuns.add(did);
+                    }
                     maybeNotify(run);
                     String updated = run.optString("updatedAt", "");
                     if (updated.compareTo(latest) > 0) {
                         latest = updated;
                     }
                 }
+                if (!devicesWithRecentActiveRuns.isEmpty() || firstLoad) {
+                    checkAndNotifyDeviceChanges();
+                }
                 latestEvent = latest == null ? "" : latest;
                 if (firstLoad) {
                     firstLoad = false;
+                }
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
+    private void checkAndNotifyDeviceChanges() {
+        long now = System.currentTimeMillis();
+        if (now - lastDeviceCheckTime < DEVICE_CHECK_INTERVAL_MS) {
+            return; // throttle to reduce battery and network usage
+        }
+        lastDeviceCheckTime = now;
+
+        executor.submit(() -> {
+            try {
+                String token = normalizedToken();
+                if (token.isEmpty()) return;
+                String url = normalizedServerUrl() + "/api/devices";
+                String body = httpGet(url, token);
+                JSONArray devices = new JSONObject(body).getJSONArray("devices");
+                for (int i = 0; i < devices.length(); i++) {
+                    JSONObject dev = devices.optJSONObject(i);
+                    if (dev == null) continue;
+                    String id = dev.optString("id", "");
+                    boolean online = dev.optBoolean("online", false);
+                    String name = dev.optString("name", id);
+                    Boolean prev = previousDeviceOnline.put(id, online);
+                    if (prev != null && prev != online) {
+                        boolean hadActive = devicesWithRecentActiveRuns.contains(id);
+                        if (!online) {
+                            sendDeviceOfflineNotification(id, name, hadActive);
+                        } else {
+                            sendDeviceReconnectNotification(id, name, 0);
+                        }
+                    }
                 }
             } catch (Exception ignored) {
             }
@@ -212,7 +281,13 @@ public class HaolemeForegroundService extends Service {
         }
         boolean wasRunning = "created".equals(previous) || "running".equals(previous);
         boolean completedDuringSession = runTerminalAtMillis(run) >= notificationSessionStartedAt;
-        if ((!wasRunning && !completedDuringSession) || (firstLoad && !completedDuringSession)) {
+
+        // Detect reconnect: if this terminal report comes long after last non-terminal for this run
+        long lastNon = lastNonTerminalForRun.getOrDefault(id, notificationSessionStartedAt);
+        long termTime = runTerminalAtMillis(run);
+        boolean afterReconnect = (termTime - lastNon > 5 * 60 * 1000); // >5min gap
+
+        if ((!wasRunning && !afterReconnect && !completedDuringSession) || (firstLoad && !completedDuringSession)) {
             return;
         }
         if ("succeeded".equals(status) && !prefs.getBoolean(PREF_NOTIFY_SUCCESS, true)) {
@@ -249,24 +324,105 @@ public class HaolemeForegroundService extends Service {
                 : new android.app.Notification.Builder(this);
         String command = displayText(run.optString("commandText", "Command"));
         String status = run.optString("status", "finished");
-        String summary = notificationSummary(run, command, status);
-        builder.setContentTitle(appDisplayName() + ": " + status)
+        String dev = run.optString("deviceName", run.optString("deviceId", ""));
+        String proj = run.optString("project", "");
+        long dur = runDurationSeconds(run);
+        String durStr = dur > 0 ? " • " + dur + "s" : "";
+
+        // compute reconnect flag again for title
+        String rid = run.optString("id", "");
+        long lastNon = lastNonTerminalForRun.getOrDefault(rid, notificationSessionStartedAt);
+        long termTime = runTerminalAtMillis(run);
+        boolean afterReconnect = (termTime - lastNon > 5 * 60 * 1000);
+
+        String title = appDisplayName() + ": " + status;
+        if (!dev.isEmpty()) title += " on " + dev;
+        if (afterReconnect) title += " (reconnected)";
+        String summary = notificationSummary(run, command, status, dev, proj, durStr, afterReconnect);
+
+        builder.setContentTitle(title)
                 .setContentText(summary)
-                .setSmallIcon(android.R.drawable.stat_notify_more)
+                .setSmallIcon("succeeded".equals(status) ? android.R.drawable.stat_sys_upload_done : android.R.drawable.stat_notify_error)
                 .setContentIntent(openAppIntent())
-                .setAutoCancel(true);
+                .setAutoCancel(true)
+                .setCategory("succeeded".equals(status) ? Notification.CATEGORY_STATUS : Notification.CATEGORY_ERROR)
+                .setGroup("haoleme-runs");
+
+        if (Build.VERSION.SDK_INT >= 21) {
+            builder.setColor("succeeded".equals(status) ? 0xFF22C55E : 0xFFEF4444);
+        }
+
+        // Rich notification for better visibility of output etc.
+        Notification.BigTextStyle bigStyle = new Notification.BigTextStyle()
+                .bigText(summary)
+                .setBigContentTitle(title);
+        builder.setStyle(bigStyle);
+
         manager.notify(run.optString("id", command).hashCode(), builder.build());
     }
 
-    private String notificationSummary(JSONObject run, String command, String status) {
-        if (!"failed".equals(status) && !"cancelled".equals(status)) {
-            return command;
+    private void sendDeviceReconnectNotification(String did, String dname, long gapMs) {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            return;
         }
-        String latest = latestOutputLine(run);
-        if (latest.isEmpty()) {
-            return command;
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager == null) return;
+        long mins = gapMs / 60000;
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(this, MONITOR_CHANNEL_ID)
+                : new Notification.Builder(this);
+        b.setContentTitle(appDisplayName() + ": Device reconnected")
+         .setContentText(dname + " back after ~" + mins + " min. Checking runs...")
+         .setSmallIcon(android.R.drawable.stat_notify_sync)
+         .setContentIntent(openAppIntent())
+         .setAutoCancel(true)
+         .setGroup("haoleme-devices");
+        manager.notify(("reconnect-" + did).hashCode(), b.build());
+    }
+
+    private void sendDeviceOfflineNotification(String did, String dname, boolean hadActive) {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            return;
         }
-        return trim(command + " · " + displayText(latest));
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager == null) return;
+        String text = dname + " is now offline";
+        if (hadActive) text += " (had active runs)";
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(this, MONITOR_CHANNEL_ID)
+                : new Notification.Builder(this);
+        b.setContentTitle(appDisplayName() + ": Device offline")
+         .setContentText(text)
+         .setSmallIcon(android.R.drawable.stat_notify_error)
+         .setContentIntent(openAppIntent())
+         .setAutoCancel(true)
+         .setGroup("haoleme-devices");
+        manager.notify(("offline-" + did).hashCode(), b.build());
+    }
+
+    private String notificationSummary(JSONObject run, String command, String status, String dev, String proj, String durStr, boolean afterReconnect) {
+        StringBuilder sb = new StringBuilder();
+        if (!dev.isEmpty()) sb.append("[").append(dev).append("]");
+        if (!proj.isEmpty()) sb.append(" (").append(proj).append(")");
+        if (sb.length() > 0) sb.append(" ");
+        sb.append(command).append(durStr);
+
+        if ("failed".equals(status) || "cancelled".equals(status)) {
+            String latest = latestOutputLine(run);
+            if (!latest.isEmpty()) {
+                sb.append("\n").append(displayText(latest));
+            }
+            Object ec = run.opt("exitCode");
+            if (ec != null) sb.append(" [exit=").append(ec).append("]");
+        } else {
+            // for success, perhaps last line too if useful
+            String latest = latestOutputLine(run);
+            if (!latest.isEmpty()) sb.append("\n").append(displayText(latest));
+        }
+        if (afterReconnect) {
+            sb.append("\n(reported after device reconnect)");
+        }
+        return trim(sb.toString());
     }
 
     private String latestOutputLine(JSONObject run) {

@@ -149,6 +149,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String CACHE_DEVICES = "cached_devices_json";
     private static final String CACHE_RUN_PREFIX = "cached_run_";
     private static final String PREF_STATUS_FILTER = "status_filter";
+    private static final String PREF_ARCHIVED_RUNS = "archived_run_ids";
     private static final String PREF_PROJECT_FILTER = "project_filter";
     private static final String PREF_THEME_MODE = "theme_mode";
     private static final String PREF_NOTIFY_SUCCESS = "notify_success";
@@ -203,6 +204,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView detailCommand;
     private TextView detailMeta;
     private TextView detailConsole;
+    private JSONObject currentRunDetail;
     private TextView consoleAutoScrollButton;
     private TextView consoleInterruptButton;
     private TextView consoleTopMoreButton;
@@ -358,7 +360,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         selectedRunId = null;
         selectedRunStatus = "";
         selectedStatusFilter = prefs.getString(PREF_STATUS_FILTER, "all");
-        if (!"running".equals(selectedStatusFilter) && !"failed".equals(selectedStatusFilter) && !"succeeded".equals(selectedStatusFilter)) {
+        if (!"running".equals(selectedStatusFilter) && !"failed".equals(selectedStatusFilter)
+                && !"succeeded".equals(selectedStatusFilter) && !"archived".equals(selectedStatusFilter)) {
             selectedStatusFilter = "all";
         }
         selectedDeviceId = prefs.getString("selected_device_id", "all");
@@ -3151,8 +3154,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void showStatusFilterDialog() {
-        String[] labels = new String[]{t("all"), t("running"), t("failed"), t("succeeded")};
-        String[] values = new String[]{"all", "running", "failed", "succeeded"};
+        String[] labels = new String[]{t("all"), t("running"), t("failed"), t("succeeded"), isEnglish() ? "Archived" : "已归档"};
+        String[] values = new String[]{"all", "running", "failed", "succeeded", "archived"};
         int selected = 0;
         for (int i = 0; i < values.length; i++) {
             if (values[i].equals(selectedStatusFilter)) {
@@ -3246,6 +3249,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         if ("succeeded".equals(value)) {
             return t("succeeded");
+        }
+        if ("archived".equals(value)) {
+            return isEnglish() ? "Archived" : "已归档";
         }
         return t("all");
     }
@@ -3420,19 +3426,32 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private JSONArray filterRuns(JSONArray runs) {
-        if ("all".equals(selectedStatusFilter) && "all".equals(selectedProjectFilter)) {
-            return runs;
-        }
+        boolean archivedView = "archived".equals(selectedStatusFilter);
+        Set<String> archived = archivedRunIds();
         JSONArray filtered = new JSONArray();
         for (int i = 0; i < runs.length(); i++) {
             JSONObject run = runs.optJSONObject(i);
             if (run == null) {
                 continue;
             }
-            String status = run.optString("status", "");
-            if (statusMatchesFilter(status, selectedStatusFilter) && projectMatchesFilter(run.optString("project", ""), selectedProjectFilter)) {
-                filtered.put(run);
+            String id = run.optString("id", "");
+            boolean isArchived = !id.isEmpty() && archived.contains(id);
+            if (archivedView) {
+                if (!isArchived) {
+                    continue;
+                }
+            } else {
+                if (isArchived) {
+                    continue;
+                }
+                if (!statusMatchesFilter(run.optString("status", ""), selectedStatusFilter)) {
+                    continue;
+                }
             }
+            if (!projectMatchesFilter(run.optString("project", ""), selectedProjectFilter)) {
+                continue;
+            }
+            filtered.put(run);
         }
         return filtered;
     }
@@ -3790,6 +3809,193 @@ public class MainActivity extends Activity implements LifecycleOwner {
         handler.postDelayed(pollRunnable, CONSOLE_RUNNING_POLL_MS);
     }
 
+    private void mergeRunDetailMetadata(JSONObject run) {
+        if (run == null) {
+            return;
+        }
+        if (currentRunDetail == null
+                || !currentRunDetail.optString("id", "").equals(run.optString("id", ""))) {
+            currentRunDetail = run;
+            return;
+        }
+        for (String key : new String[]{"status", "updatedAt", "endedAt", "exitCode", "pid", "project", "deviceName"}) {
+            if (run.has(key)) {
+                try {
+                    currentRunDetail.put(key, run.get(key));
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private void showRunInfoDialog() {
+        JSONObject run = currentRunDetail;
+        if (run == null) {
+            statusText.setText(isEnglish() ? "Run details are still loading." : "运行信息尚未加载完成。");
+            return;
+        }
+        String id = run.optString("id", "");
+        boolean archived = isRunArchived(id);
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(6), dp(22), dp(6));
+        scroll.addView(box, matchWrap());
+
+        String status = run.optString("status", "");
+        addInfoRow(box, isEnglish() ? "Status" : "状态", statusLabel(status) + statusExitSuffix(run));
+        addInfoRow(box, isEnglish() ? "Command" : "命令", run.optString("commandText", ""));
+        addInfoRow(box, isEnglish() ? "Server" : "服务器", normalizedServerUrl());
+        addInfoRow(box, isEnglish() ? "Device" : "设备", run.optString("deviceName", ""));
+        addInfoRow(box, isEnglish() ? "Project" : "项目", run.optString("project", ""));
+        addInfoRow(box, isEnglish() ? "Path" : "路径", run.optString("cwd", ""));
+        int pid = run.optInt("pid", -1);
+        addInfoRow(box, "PID", pid > 0 ? String.valueOf(pid) : "");
+        addInfoRow(box, isEnglish() ? "CLI version" : "CLI 版本", run.optString("cliVersion", ""));
+        addInfoRow(box, isEnglish() ? "OS" : "操作系统", run.optString("os", ""));
+        addInfoRow(box, isEnglish() ? "Hostname" : "主机名", run.optString("hostname", ""));
+        addInfoRow(box, isEnglish() ? "Run ID" : "运行 ID", id);
+        addInfoRow(box, isEnglish() ? "Created" : "创建时间", formatIsoLocal(run.optString("startedAt", "")));
+        addInfoRow(box, isEnglish() ? "Ended" : "结束时间", formatIsoLocal(run.optString("endedAt", "")));
+        addInfoRow(box, isEnglish() ? "Updated" : "更新时间", formatIsoLocal(run.optString("updatedAt", "")));
+        addInfoRow(box, isEnglish() ? "Duration" : "用时", durationText(run));
+        addInfoRow(box, isEnglish() ? "Archived" : "归档",
+                archived ? (isEnglish() ? "Yes" : "已归档") : (isEnglish() ? "No" : "未归档"));
+
+        AlertDialog d = dialogBuilder()
+                .setTitle(isEnglish() ? "Run details" : "运行详情")
+                .setView(scroll)
+                .setPositiveButton(isEnglish() ? "Copy" : "复制",
+                        (dialog, which) -> copyText(appDisplayName() + " run info", buildRunInfoText(run)))
+                .setNeutralButton(archived ? (isEnglish() ? "Unarchive" : "取消归档") : (isEnglish() ? "Archive" : "归档"),
+                        (dialog, which) -> {
+                            setRunArchived(id, !archived);
+                            statusText.setText(archived
+                                    ? (isEnglish() ? "Run unarchived." : "已取消归档。")
+                                    : (isEnglish() ? "Run archived." : "已归档，可在状态筛选里查看。"));
+                        })
+                .setNegativeButton(t("close"), null)
+                .create();
+        applyDialogStyle(d);
+        d.show();
+    }
+
+    private void addInfoRow(LinearLayout parent, String label, String value) {
+        if (value == null) {
+            value = "";
+        }
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(0, dp(8), 0, dp(8));
+
+        TextView labelView = new TextView(this);
+        labelView.setText(label);
+        labelView.setTextSize(11);
+        labelView.setTextColor(textSecondary());
+        row.addView(labelView, matchWrap());
+
+        TextView valueView = new TextView(this);
+        valueView.setText(value.isEmpty() ? "—" : value);
+        valueView.setTextSize(14);
+        valueView.setTextColor(textPrimary());
+        valueView.setPadding(0, dp(2), 0, 0);
+        valueView.setTextIsSelectable(true);
+        row.addView(valueView, matchWrap());
+
+        parent.addView(row, matchWrap());
+
+        View divider = new View(this);
+        divider.setBackgroundColor(settingsDivider());
+        int h = Math.max(1, Math.round(getResources().getDisplayMetrics().density * 0.7f));
+        parent.addView(divider, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, h));
+    }
+
+    private String buildRunInfoText(JSONObject run) {
+        String id = run.optString("id", "");
+        int pid = run.optInt("pid", -1);
+        StringBuilder sb = new StringBuilder();
+        sb.append(isEnglish() ? "Status: " : "状态：").append(statusLabel(run.optString("status", ""))).append(statusExitSuffix(run)).append('\n');
+        sb.append(isEnglish() ? "Command: " : "命令：").append(run.optString("commandText", "")).append('\n');
+        sb.append(isEnglish() ? "Server: " : "服务器：").append(normalizedServerUrl()).append('\n');
+        sb.append(isEnglish() ? "Device: " : "设备：").append(run.optString("deviceName", "")).append('\n');
+        sb.append(isEnglish() ? "Project: " : "项目：").append(run.optString("project", "")).append('\n');
+        sb.append(isEnglish() ? "Path: " : "路径：").append(run.optString("cwd", "")).append('\n');
+        sb.append("PID: ").append(pid > 0 ? String.valueOf(pid) : "").append('\n');
+        sb.append(isEnglish() ? "CLI version: " : "CLI 版本：").append(run.optString("cliVersion", "")).append('\n');
+        sb.append(isEnglish() ? "OS: " : "操作系统：").append(run.optString("os", "")).append('\n');
+        sb.append(isEnglish() ? "Hostname: " : "主机名：").append(run.optString("hostname", "")).append('\n');
+        sb.append(isEnglish() ? "Run ID: " : "运行 ID：").append(id).append('\n');
+        sb.append(isEnglish() ? "Created: " : "创建时间：").append(formatIsoLocal(run.optString("startedAt", ""))).append('\n');
+        sb.append(isEnglish() ? "Ended: " : "结束时间：").append(formatIsoLocal(run.optString("endedAt", ""))).append('\n');
+        sb.append(isEnglish() ? "Updated: " : "更新时间：").append(formatIsoLocal(run.optString("updatedAt", ""))).append('\n');
+        sb.append(isEnglish() ? "Duration: " : "用时：").append(durationText(run));
+        return sb.toString();
+    }
+
+    private String formatIsoLocal(String iso) {
+        if (iso == null || iso.trim().isEmpty()) {
+            return "";
+        }
+        try {
+            String s = iso.trim();
+            int dot = s.indexOf('.');
+            if (dot > 0) {
+                s = s.substring(0, dot);
+            } else {
+                s = s.replace("Z", "");
+            }
+            java.text.SimpleDateFormat in = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US);
+            in.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+            java.util.Date dt = in.parse(s);
+            java.text.SimpleDateFormat out = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
+            return dt == null ? iso : out.format(dt);
+        } catch (Exception e) {
+            return iso;
+        }
+    }
+
+    private Set<String> archivedRunIds() {
+        Set<String> set = new HashSet<>();
+        String raw = prefs.getString(PREF_ARCHIVED_RUNS, "");
+        if (raw != null && !raw.isEmpty()) {
+            try {
+                JSONArray a = new JSONArray(raw);
+                for (int i = 0; i < a.length(); i++) {
+                    String s = a.optString(i, "");
+                    if (!s.isEmpty()) {
+                        set.add(s);
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return set;
+    }
+
+    private boolean isRunArchived(String id) {
+        return id != null && !id.isEmpty() && archivedRunIds().contains(id);
+    }
+
+    private void setRunArchived(String id, boolean archived) {
+        if (id == null || id.isEmpty()) {
+            return;
+        }
+        Set<String> set = archivedRunIds();
+        if (archived) {
+            set.add(id);
+        } else {
+            set.remove(id);
+        }
+        JSONArray a = new JSONArray();
+        for (String s : set) {
+            a.put(s);
+        }
+        prefs.edit().putString(PREF_ARCHIVED_RUNS, a.toString()).apply();
+        loadCachedRuns();
+        refreshRuns();
+    }
+
     private void buildConsoleUi() {
         consoleAutoScroll = true;
         consoleSearchVisible = false;
@@ -3852,6 +4058,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout.LayoutParams autoParams = new LinearLayout.LayoutParams(0, dp(44), 1);
         autoParams.setMargins(dp(8), 0, 0, 0);
         consoleActions.addView(consoleAutoScrollButton, autoParams);
+
+        TextView infoButton = actionButton(actionLabel("ⓘ", isEnglish() ? "Info" : "信息", 1.12f));
+        infoButton.setOnClickListener(v -> showRunInfoDialog());
+        LinearLayout.LayoutParams infoParams = new LinearLayout.LayoutParams(0, dp(44), 1);
+        infoParams.setMargins(dp(8), 0, 0, 0);
+        consoleActions.addView(infoButton, infoParams);
+
         LinearLayout.LayoutParams actionRowParams = matchWrap();
         actionRowParams.setMargins(0, dp(8), 0, dp(8));
         root.addView(consoleActions, actionRowParams);
@@ -4132,6 +4345,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (selectedRunId != null && selectedRunId.equals(run.optString("id", ""))) {
             selectedRunStatus = status;
         }
+        mergeRunDetailMetadata(run);
         String projectName = run.optString("project", "").trim();
         String projectSuffix = projectName.isEmpty() ? "" : " · " + projectName;
         detailMeta.setText(status.toUpperCase(Locale.US) + projectSuffix + statusSuffix(run));
@@ -4172,6 +4386,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (!fromCache) {
             maybeNotify(run);
         }
+        currentRunDetail = run;
         String status = run.optString("status", "unknown");
         if (selectedRunId != null && selectedRunId.equals(run.optString("id", ""))) {
             selectedRunStatus = status;
@@ -5980,6 +6195,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 copy = new JSONObject(run.toString());
                 copy.put("commandText", fields.optString("commandText", copy.optString("commandText", "")));
                 copy.put("cwd", fields.optString("cwd", copy.optString("cwd", "")));
+                copy.put("cliVersion", fields.optString("cliVersion", copy.optString("cliVersion", "")));
+                copy.put("os", fields.optString("os", copy.optString("os", "")));
+                copy.put("hostname", fields.optString("hostname", copy.optString("hostname", "")));
                 copy.put("stdoutTail", fields.optString("stdoutTail", ""));
                 copy.put("stderrTail", fields.optString("stderrTail", ""));
                 copy.put("outputTail", fields.optString("outputTail", ""));
