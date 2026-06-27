@@ -195,6 +195,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView statusText;
     private TextView deviceSummaryText;
     private LinearLayout deviceGpuContainer;
+    private int gpuMetricIndex = 0;
+    private static final int GPU_METRIC_COUNT = 3;
+    private android.view.GestureDetector gpuGestureDetector;
     private HorizontalScrollView devicesScrollView;
     private LinearLayout devicesContainer;
     private LinearLayout runsContainer;
@@ -669,6 +672,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         deviceGpuContainer = new LinearLayout(this);
         deviceGpuContainer.setOrientation(LinearLayout.VERTICAL);
         deviceGpuContainer.setVisibility(View.GONE);
+        attachGpuSwipe(deviceGpuContainer);
         LinearLayout.LayoutParams gpuParams = matchWrap();
         gpuParams.setMargins(0, 0, 0, dp(4));
         deviceHeader.addView(deviceGpuContainer, gpuParams);
@@ -3048,6 +3052,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
             deviceGpuContainer.setVisibility(View.GONE);
             return;
         }
+        if (gpuMetricIndex < 0 || gpuMetricIndex >= GPU_METRIC_COUNT) {
+            gpuMetricIndex = 0;
+        }
+
+        deviceGpuContainer.addView(buildGpuMetricHeader());
 
         int gpusPerRow = 4;
         int total = deviceGpus.size();
@@ -3072,6 +3081,27 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 JSONObject gpu = deviceGpus.get(gidx);
                 int idx = gpu.optInt("index", gidx);
                 int util = Math.max(0, Math.min(100, gpu.optInt("utilization", 0)));
+                int memUsed = Math.max(0, gpu.optInt("memoryUsed", 0));
+                int memTotal = Math.max(0, gpu.optInt("memoryTotal", 0));
+                int temp = Math.max(0, gpu.optInt("temperature", 0));
+                int memPct = memTotal > 0 ? Math.max(0, Math.min(100, Math.round(memUsed * 100f / memTotal))) : 0;
+
+                int progress;
+                String valueText;
+                int barColor;
+                if (gpuMetricIndex == 1) {            // VRAM usage rate
+                    progress = memPct;
+                    valueText = memPct + "%";
+                    barColor = gpuBarColor(memPct, false);
+                } else if (gpuMetricIndex == 2) {     // temperature
+                    progress = Math.min(100, temp);
+                    valueText = temp + "°";
+                    barColor = gpuBarColor(temp, true);
+                } else {                               // utilization
+                    progress = util;
+                    valueText = util + "%";
+                    barColor = gpuBarColor(util, false);
+                }
 
                 LinearLayout item = new LinearLayout(this);
                 item.setOrientation(LinearLayout.VERTICAL);
@@ -3088,24 +3118,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
                 ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
                 bar.setMax(100);
-                bar.setProgress(util);
+                bar.setProgress(progress);
                 LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(dp(38), dp(6));
                 barLp.setMargins(dp(1), dp(1), dp(1), dp(1));
                 bar.setLayoutParams(barLp);
-
-                int barColor = color("#22C55E"); // green
-                if (util >= 95) {
-                    barColor = color("#EF4444"); // red full
-                } else if (util >= 75) {
-                    barColor = color("#EAB308"); // yellow high
-                }
                 bar.setProgressTintList(ColorStateList.valueOf(barColor));
                 bar.setProgressBackgroundTintList(ColorStateList.valueOf(gpuTrackColor()));
 
                 item.addView(bar);
 
                 TextView pct = new TextView(this);
-                pct.setText(util + "%");
+                pct.setText(valueText);
                 pct.setTextSize(7f);
                 pct.setTextColor(textSecondary());
                 pct.setGravity(Gravity.CENTER);
@@ -3116,6 +3139,93 @@ public class MainActivity extends Activity implements LifecycleOwner {
             deviceGpuContainer.addView(row, matchWrap());
         }
         deviceGpuContainer.setVisibility(View.VISIBLE);
+    }
+
+    private int gpuBarColor(int value, boolean isTemp) {
+        if (isTemp) {
+            if (value >= 80) return color("#EF4444");
+            if (value >= 65) return color("#EAB308");
+            return color("#22C55E");
+        }
+        if (value >= 95) return color("#EF4444");
+        if (value >= 75) return color("#EAB308");
+        return color("#22C55E");
+    }
+
+    private String gpuMetricName() {
+        if (gpuMetricIndex == 1) {
+            return isEnglish() ? "VRAM usage" : "显存占用率";
+        }
+        if (gpuMetricIndex == 2) {
+            return isEnglish() ? "Temperature" : "GPU 温度";
+        }
+        return isEnglish() ? "GPU usage" : "GPU 利用率";
+    }
+
+    private View buildGpuMetricHeader() {
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(0, 0, 0, dp(2));
+
+        TextView title = new TextView(this);
+        title.setText(gpuMetricName());
+        title.setTextSize(10f);
+        title.setTextColor(textPrimary());
+        title.setTypeface(null, Typeface.BOLD);
+        head.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        StringBuilder dots = new StringBuilder();
+        for (int i = 0; i < GPU_METRIC_COUNT; i++) {
+            dots.append(i == gpuMetricIndex ? "●" : "○");
+            if (i < GPU_METRIC_COUNT - 1) {
+                dots.append(' ');
+            }
+        }
+        TextView dotView = new TextView(this);
+        dotView.setText(dots + (isEnglish() ? "  swipe ›" : "  右滑切换 ›"));
+        dotView.setTextSize(9f);
+        dotView.setTextColor(textSecondary());
+        head.addView(dotView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        return head;
+    }
+
+    private void attachGpuSwipe(View target) {
+        gpuGestureDetector = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onFling(android.view.MotionEvent e1, android.view.MotionEvent e2, float velocityX, float velocityY) {
+                if (e1 == null || e2 == null) {
+                    return false;
+                }
+                float dx = e2.getX() - e1.getX();
+                float dy = e2.getY() - e1.getY();
+                if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > dp(36)) {
+                    if (dx < 0) {
+                        gpuMetricIndex = (gpuMetricIndex + 1) % GPU_METRIC_COUNT;
+                    } else {
+                        gpuMetricIndex = (gpuMetricIndex - 1 + GPU_METRIC_COUNT) % GPU_METRIC_COUNT;
+                    }
+                    updateDeviceGpu();
+                    return true;
+                }
+                return false;
+            }
+
+            @Override
+            public boolean onSingleTapUp(android.view.MotionEvent e) {
+                gpuMetricIndex = (gpuMetricIndex + 1) % GPU_METRIC_COUNT;
+                updateDeviceGpu();
+                return true;
+            }
+        });
+        target.setClickable(true);
+        target.setOnTouchListener((v, ev) -> {
+            boolean handled = gpuGestureDetector.onTouchEvent(ev);
+            if (ev.getAction() == android.view.MotionEvent.ACTION_UP) {
+                v.performClick();
+            }
+            return handled;
+        });
     }
 
     private void showClearDeviceRunsDialog(String deviceId, String currentName) {

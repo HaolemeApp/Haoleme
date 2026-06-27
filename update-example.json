@@ -1,17 +1,17 @@
 {
   "android": {
-    "versionCode": 136,
-    "versionName": "0.9.1",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.1.apk",
+    "versionCode": 137,
+    "versionName": "0.9.2",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.2.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.1.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.9.1.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.1/Haoleme-0.9.1.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.2.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.9.2.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.2/Haoleme-0.9.2.apk"
     ],
-    "sha256": "5d4ffba0884f526f2777cdf0cd8b4c9aeb7c91a067ab12470d2dc3d39ac862a1",
+    "sha256": "bd38c9527cd3e5cb667b623cbfef02bdb42a3ad0ed4da9e905eca783e154d83b",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.1：控制台新增「信息」面板——查看服务器、路径、CLI 版本、操作系统、进程号、创建/更新时间等元数据，并可一键复制、归档运行（状态筛选里可看已归档）。"
+    "notes": "0.9.2：设备页 GPU 面板新增「显存占用率」，左右滑动可在 利用率 / 显存 / 温度 之间切换查看。"
   },
   "python": {
     "version": "0.4.10",
