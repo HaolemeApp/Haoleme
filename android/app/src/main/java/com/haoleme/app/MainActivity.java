@@ -196,6 +196,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView deviceSummaryText;
     private LinearLayout deviceGpuContainer;
     private int gpuMetricIndex = 0;
+    private boolean gpuExpanded = false;
     private static final int GPU_METRIC_COUNT = 3;
     private android.view.GestureDetector gpuGestureDetector;
     private HorizontalScrollView devicesScrollView;
@@ -244,6 +245,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private int outputChunkSyncedCount = 0;
     private boolean consoleIncrementalUsesChunks = false;
     private String currentTab = "runs";
+    private String settingsSection = null;
+    private String lastRunsSig = "";
+    private String lastDevicesSig = "";
 
     private final Runnable pollRunnable = new Runnable() {
         @Override
@@ -356,6 +360,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
             returnToList();
             return;
         }
+        if ("settings".equals(currentTab) && settingsSection != null) {
+            settingsSection = null;
+            buildUi();
+            return;
+        }
         super.onBackPressed();
     }
 
@@ -387,6 +396,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(18), statusBarHeight() + dp(8), dp(18), navigationBarHeight() + dp(2));
+        // Let the bottom bar draw edge-to-edge into the root padding (negative margins).
+        root.setClipToPadding(false);
         root.setBackgroundColor(appBg());
         getWindow().setStatusBarColor(appBg());
         getWindow().setNavigationBarColor(appBg());
@@ -471,13 +482,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 1
         ));
 
-        if ("devices".equals(currentTab)) {
-            buildDevicesTab(content);
-        } else if ("settings".equals(currentTab)) {
+        if ("settings".equals(currentTab)) {
             buildSettingsTab(content);
         } else {
-            currentTab = "runs";
-            buildRunsTab(content);
+            currentTab = "home";
+            buildHomeTab(content);
         }
         root.addView(bottomTabs());
 
@@ -549,55 +558,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return text.length() > 5000 ? text.substring(0, 5000) : text;
     }
 
-    private void buildRunsTab(LinearLayout content) {
-        if (!hasPairedDevice()) {
-            buildPairOnboarding(content);
-            return;
-        }
-
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
-        controls.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView deviceFilterButton = actionButton(t("device") + ": " + ("all".equals(selectedDeviceId) ? t("all") : selectedDeviceName()));
-        deviceFilterButton.setOnClickListener(v -> showDeviceFilterDialog());
-        controls.addView(deviceFilterButton, new LinearLayout.LayoutParams(0, dp(46), 1));
-
-        TextView projectFilterButton = actionButton(t("project") + ": " + projectFilterLabel(selectedProjectFilter));
-        projectFilterButton.setOnClickListener(v -> showProjectFilterDialog());
-        LinearLayout.LayoutParams projectParams = new LinearLayout.LayoutParams(0, dp(46), 1);
-        projectParams.setMargins(dp(8), 0, 0, 0);
-        controls.addView(projectFilterButton, projectParams);
-
-        TextView statusFilterButton = actionButton(t("status") + ": " + statusFilterLabel(selectedStatusFilter));
-        statusFilterButton.setOnClickListener(v -> showStatusFilterDialog());
-        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(0, dp(46), 1);
-        statusParams.setMargins(dp(8), 0, 0, 0);
-        controls.addView(statusFilterButton, statusParams);
-
-        TextView refreshButton = actionButton(actionLabel("↻", "", 1.28f));
-        refreshButton.setContentDescription(t("refresh"));
-        refreshButton.setOnClickListener(v -> {
-            refreshDevices(true);
-            refreshRuns(true);
-        });
-        LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(dp(46), dp(46));
-        refreshParams.setMargins(dp(8), 0, 0, 0);
-        controls.addView(refreshButton, refreshParams);
-        content.addView(controls, matchWrap());
-
-        ScrollView scrollView = new ScrollView(this);
-        runsContainer = new LinearLayout(this);
-        runsContainer.setOrientation(LinearLayout.VERTICAL);
-        scrollView.addView(runsContainer);
-        content.addView(scrollView, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1
-        ));
-        loadCachedRuns();
-    }
-
     @ExperimentalGetImage
     private void buildPairOnboarding(LinearLayout content) {
         content.addView(emptyState(t("pair_this_phone"), t("pair_onboarding_subtitle"), "▣"), matchWrap());
@@ -626,7 +586,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return paired != null && !paired.trim().isEmpty();
     }
 
-    private void buildDevicesTab(LinearLayout content) {
+    private void buildHomeTab(LinearLayout content) {
+        if (!hasPairedDevice()) {
+            buildPairOnboarding(content);
+            return;
+        }
         devicesScrollView = new HorizontalScrollView(this);
         devicesScrollView.setHorizontalScrollBarEnabled(false);
         devicesContainer = new LinearLayout(this);
@@ -648,7 +612,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
         deviceSummaryText.setText("");
         deviceSummaryText.setTextSize(11);
         deviceSummaryText.setTextColor(textSecondary());
-        deviceSummaryText.setPadding(0, dp(4), dp(8), dp(10));
+        deviceSummaryText.setPadding(0, dp(6), dp(8), dp(6));
+        deviceSummaryText.setOnClickListener(v -> {
+            gpuExpanded = !gpuExpanded;
+            updateDeviceSummary();
+        });
         infoRow.addView(deviceSummaryText, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
         TextView refreshDeviceButton = actionButton(actionLabel("↻", "", 1.34f));
@@ -678,24 +646,40 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         content.addView(deviceHeader, matchWrap());
 
-        // The run list lives only on the Runs tab now; the Devices tab is fleet
-        // health + management. Tapping here jumps to Runs filtered to this device.
-        TextView viewRunsButton = actionButton(actionLabel("▤", isEnglish() ? "View runs" : "查看运行", 1.12f));
-        viewRunsButton.setOnClickListener(v -> {
-            currentTab = "runs";
-            buildUi();
-            refreshRuns();
-        });
-        LinearLayout.LayoutParams viewRunsParams = matchWrap();
-        viewRunsParams.setMargins(0, dp(8), 0, dp(4));
-        content.addView(viewRunsButton, viewRunsParams);
+        // Status + project as two independent controls (device is chosen via the
+        // strip above). Separate buttons let you set both without reopening a menu.
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
+        controls.setGravity(Gravity.CENTER_VERTICAL);
 
-        // Spacer pushes the fleet panel to the top.
-        View spacer = new View(this);
-        content.addView(spacer, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        TextView statusFilterButton = actionButton(t("status") + ": " + statusFilterLabel(selectedStatusFilter));
+        statusFilterButton.setOnClickListener(v -> showStatusFilterDialog());
+        controls.addView(statusFilterButton, new LinearLayout.LayoutParams(0, dp(42), 1));
+
+        TextView projectFilterButton = actionButton(t("project") + ": " + projectFilterLabel(selectedProjectFilter));
+        projectFilterButton.setOnClickListener(v -> showProjectFilterDialog());
+        LinearLayout.LayoutParams pParams = new LinearLayout.LayoutParams(0, dp(42), 1);
+        pParams.setMargins(dp(8), 0, 0, 0);
+        controls.addView(projectFilterButton, pParams);
+
+        LinearLayout.LayoutParams controlsParams = matchWrap();
+        controlsParams.setMargins(0, dp(2), 0, dp(2));
+        content.addView(controls, controlsParams);
+
+        // The single run list (filtered by selected device + project + status).
+        ScrollView scrollView = new ScrollView(this);
+        runsContainer = new LinearLayout(this);
+        runsContainer.setOrientation(LinearLayout.VERTICAL);
+        scrollView.addView(runsContainer);
+        content.addView(scrollView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
 
         mergeDevicesFromCachedRuns();
         loadCachedDevices();
+        loadCachedRuns();
         updateDeviceSummary();
         updateDeviceActionButtons();
     }
@@ -715,8 +699,126 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 1
         ));
 
-        TextView pairTitle = sectionTitle(t("pair_device"));
-        settingsContent.addView(pairTitle, matchWrap());
+        if (settingsSection == null) {
+            buildSettingsHome(settingsContent);
+            return;
+        }
+
+        // Second level: a clean back link (the top header already shows the
+        // section title), then the section rows.
+        TextView back = new TextView(this);
+        back.setText("‹  " + t("settings"));
+        back.setTextSize(15);
+        back.setTextColor(color("#2563EB"));
+        back.setGravity(Gravity.CENTER_VERTICAL);
+        back.setPadding(dp(2), dp(6), dp(12), dp(10));
+        back.setClickable(true);
+        back.setOnClickListener(v -> {
+            settingsSection = null;
+            buildUi();
+        });
+        LinearLayout.LayoutParams backParams = matchWrap();
+        settingsContent.addView(back, backParams);
+
+        switch (settingsSection) {
+            case "pair":
+                buildPairSection(settingsContent);
+                break;
+            case "notifications":
+                buildNotificationsSection(settingsContent);
+                break;
+            case "storage":
+                buildStorageSection(settingsContent);
+                break;
+            default:
+                settingsSection = null;
+                buildSettingsHome(settingsContent);
+                break;
+        }
+    }
+
+    private String settingsSectionTitle(String key) {
+        if (key == null) {
+            return t("settings");
+        }
+        switch (key) {
+            case "pair": return isEnglish() ? "Pairing" : "配对设备";
+            case "appearance": return t("appearance");
+            case "notifications": return t("notifications");
+            case "security": return t("security");
+            case "storage": return t("storage");
+            case "about": return isEnglish() ? "About" : "关于";
+            default: return t("settings");
+        }
+    }
+
+    private void openSettingsSection(String key) {
+        settingsSection = key;
+        buildUi();
+    }
+
+    @ExperimentalGetImage
+    private void buildSettingsHome(LinearLayout c) {
+        // Pairing stays on the top level — it's important, and the real scan/code
+        // controls give the page substance instead of a bare list of links.
+        TextView pairTitle = sectionTitle(settingsSectionTitle("pair"));
+        c.addView(pairTitle, matchWrap());
+        buildPairSection(c);
+
+        // Appearance / security / about live directly on the settings home.
+        c.addView(sectionTitle(t("appearance")), matchWrap());
+        buildAppearanceSection(c);
+
+        c.addView(sectionTitle(t("security")), matchWrap());
+        buildSecuritySection(c);
+
+        TextView more = sectionTitle(isEnglish() ? "Preferences" : "通用设置");
+        c.addView(more, matchWrap());
+        c.addView(settingsGroup(
+                settingsRow("✓", color("#16A34A"),
+                        settingsSectionTitle("notifications"),
+                        isEnglish() ? "Run alerts, quiet hours" : "运行提醒、免打扰",
+                        "", true, v -> openSettingsSection("notifications")),
+                settingsRow("▤", color("#0EA5E9"),
+                        settingsSectionTitle("storage"),
+                        isEnglish() ? "Cache, clear, export" : "缓存、清理、导出",
+                        "", true, v -> openSettingsSection("storage"))
+        ));
+
+        c.addView(sectionTitle(settingsSectionTitle("about")), matchWrap());
+        buildAboutSection(c);
+
+        c.addView(buildSettingsFooter());
+    }
+
+    private View buildSettingsFooter() {
+        LinearLayout f = new LinearLayout(this);
+        f.setOrientation(LinearLayout.VERTICAL);
+        f.setGravity(Gravity.CENTER);
+        f.setPadding(0, dp(20), 0, dp(12));
+
+        TextView name = new TextView(this);
+        name.setText(appDisplayName());
+        name.setTextSize(13);
+        name.setTextColor(textSecondary());
+        name.setGravity(Gravity.CENTER);
+        f.addView(name, matchWrap());
+
+        String ver = currentVersionName();
+        String cli = prefs.getString("latest_cli_version", "");
+        String sub = "v" + ver + (cli.isEmpty() ? "" : "  ·  CLI " + cli);
+        TextView v = new TextView(this);
+        v.setText(sub);
+        v.setTextSize(11);
+        v.setTextColor(textSecondary());
+        v.setGravity(Gravity.CENTER);
+        v.setPadding(0, dp(2), 0, 0);
+        f.addView(v, matchWrap());
+        return f;
+    }
+
+    @ExperimentalGetImage
+    private void buildPairSection(LinearLayout settingsContent) {
         settingsContent.addView(settingsGroup(settingsRow(
                 "qr",
                 color("#2563EB"),
@@ -725,7 +827,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 "",
                 true,
                 v -> startQrScan()
-        )), matchWrap());
+        )));
 
         LinearLayout pairControls = new LinearLayout(this);
         pairControls.setOrientation(LinearLayout.HORIZONTAL);
@@ -760,7 +862,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         pairButtonParams.setMargins(dp(8), 0, 0, 0);
         pairControls.addView(pairButton, pairButtonParams);
         LinearLayout.LayoutParams pairParams = matchWrap();
-        pairParams.setMargins(0, 0, 0, dp(8));
+        pairParams.setMargins(0, 0, 0, dp(10));
         settingsContent.addView(pairCodeCard(pairControls), pairParams);
         settingsContent.addView(settingsGroup(settingsRow(
                 "⇄",
@@ -770,12 +872,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 syncSpaceLabel(),
                 true,
                 v -> showSyncSpaceDialog()
-        )), matchWrap());
+        )));
+    }
 
-        TextView appearanceTitle = sectionTitle(t("appearance"));
-        LinearLayout.LayoutParams appearanceParams = matchWrap();
-        appearanceParams.setMargins(0, dp(6), 0, 0);
-        settingsContent.addView(appearanceTitle, appearanceParams);
+    private void buildAppearanceSection(LinearLayout settingsContent) {
         settingsContent.addView(settingsGroup(
                 settingsRow(
                         "theme_icon",
@@ -795,12 +895,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         true,
                         v -> showLanguageDialog()
                 )
-        ), matchWrap());
+        ));
+    }
 
-        TextView notificationsTitle = sectionTitle(t("notifications"));
-        LinearLayout.LayoutParams notificationsParams = matchWrap();
-        notificationsParams.setMargins(0, dp(8), 0, 0);
-        settingsContent.addView(notificationsTitle, notificationsParams);
+    private void buildNotificationsSection(LinearLayout settingsContent) {
         settingsContent.addView(settingsGroup(
                 settingsRow(
                         "✓",
@@ -838,12 +936,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         false,
                         v -> togglePreference(PREF_NOTIFY_QUIET_HOURS, false, v)
                 )
-        ), matchWrap());
+        ));
+    }
 
-        TextView securityTitle = sectionTitle(t("security"));
-        LinearLayout.LayoutParams securityParams = matchWrap();
-        securityParams.setMargins(0, dp(8), 0, 0);
-        settingsContent.addView(securityTitle, securityParams);
+    private void buildSecuritySection(LinearLayout settingsContent) {
         settingsContent.addView(settingsGroup(
                 settingsRow(
                         "mask_icon",
@@ -863,12 +959,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         true,
                         v -> showDeviceSecurityDialog()
                 )
-        ), matchWrap());
+        ));
+    }
 
-        TextView storageTitle = sectionTitle(t("storage"));
-        LinearLayout.LayoutParams storageParams = matchWrap();
-        storageParams.setMargins(0, dp(8), 0, 0);
-        settingsContent.addView(storageTitle, storageParams);
+    private void buildStorageSection(LinearLayout settingsContent) {
         settingsContent.addView(settingsGroup(
                 settingsRow(
                         "▤",
@@ -933,12 +1027,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         true,
                         v -> confirmDeleteSyncSpace()
                 )
-        ), matchWrap());
+        ));
+    }
 
-        TextView supportTitle = sectionTitle(t("support"));
-        LinearLayout.LayoutParams supportParams = matchWrap();
-        supportParams.setMargins(0, dp(8), 0, 0);
-        settingsContent.addView(supportTitle, supportParams);
+    private void buildAboutSection(LinearLayout settingsContent) {
         settingsContent.addView(settingsGroup(settingsRow(
                 "♥",
                 color("#EF4444"),
@@ -947,12 +1039,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 "",
                 true,
                 v -> showDonationSheet()
-        )), matchWrap());
+        )));
 
-        TextView appTitle = sectionTitle(t("app"));
-        LinearLayout.LayoutParams appParams = matchWrap();
-        appParams.setMargins(0, dp(8), 0, 0);
-        settingsContent.addView(appTitle, appParams);
         String ver = currentVersionName();
         String cli = prefs.getString("latest_cli_version", "");
         if (!cli.isEmpty()) ver += " / CLI " + cli;
@@ -1031,16 +1119,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         true,
                         v -> openExternalUrl("https://github.com/HaolemeApp/Haoleme")
                 )
-        ), matchWrap());
+        ));
     }
 
     private TextView sectionTitle(String title) {
+        // iOS-style grouped section header: small, muted, slightly tracked.
         TextView view = new TextView(this);
         view.setText(title);
-        view.setTextSize(14);
-        view.setTypeface(null, Typeface.BOLD);
-        view.setTextColor(textPrimary());
-        view.setPadding(0, dp(8), 0, dp(6));
+        view.setTextSize(12);
+        view.setTypeface(null, Typeface.NORMAL);
+        view.setAllCaps(true);
+        view.setLetterSpacing(0.04f);
+        view.setTextColor(textSecondary());
+        view.setPadding(dp(4), dp(12), 0, dp(6));
         return view;
     }
 
@@ -1221,7 +1312,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             TextView chevronView = new TextView(this);
             chevronView.setText("›");
             chevronView.setTextSize(24);
-            chevronView.setTextColor(textSecondary());
+            chevronView.setTextColor(chevronColor());
             chevronView.setGravity(Gravity.CENTER);
             LinearLayout.LayoutParams chevronParams = new LinearLayout.LayoutParams(dp(22), LinearLayout.LayoutParams.WRAP_CONTENT);
             chevronParams.setMargins(dp(4), 0, 0, 0);
@@ -1263,7 +1354,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private int settingsDivider() {
-        return isDarkTheme() ? color("#2C2C32") : color("#EDF0F4");
+        return isDarkTheme() ? color("#2C2C2E") : color("#E5E5EA");
     }
 
     private int pressHighlight() {
@@ -1653,13 +1744,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private String screenTitle() {
-        if ("devices".equals(currentTab)) {
-            return t("devices");
-        }
         if ("settings".equals(currentTab)) {
-            return t("settings");
+            return settingsSection == null ? t("settings") : settingsSectionTitle(settingsSection);
         }
-        return t("runs");
+        return isEnglish() ? "Home" : "主页";
     }
 
     private String appDisplayName() {
@@ -2532,58 +2620,68 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private LinearLayout bottomTabs() {
-        LinearLayout shell = new LinearLayout(this);
-        shell.setOrientation(LinearLayout.VERTICAL);
-        shell.setPadding(dp(7), dp(6), dp(7), dp(6));
-        shell.setBackground(roundedBg(cardBg(), 18, cardStroke()));
-        shell.setElevation(0);
+        // Flat full-width bar with a top hairline (mirrors happy-app's TabBar):
+        // surface background, no floating card, active tab shown by color + weight.
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.VERTICAL);
+        bar.setBackgroundColor(cardBg());
+        bar.setPadding(0, 0, 0, navigationBarHeight() + dp(2));
+
+        View topLine = new View(this);
+        topLine.setBackgroundColor(cardStroke());
+        int hairline = Math.max(1, Math.round(getResources().getDisplayMetrics().density * 0.7f));
+        bar.addView(topLine, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, hairline));
 
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
-        tabs.setGravity(Gravity.CENTER);
-        tabs.setPadding(0, 0, 0, 0);
-        tabs.addView(tabButton("runs", "▶", t("runs")), new LinearLayout.LayoutParams(0, dp(54), 1));
-        tabs.addView(tabButton("devices", "▣", t("devices")), new LinearLayout.LayoutParams(0, dp(54), 1));
-        tabs.addView(tabButton("settings", "⚙", t("settings")), new LinearLayout.LayoutParams(0, dp(54), 1));
-        shell.addView(tabs, matchWrap());
+        tabs.setPadding(dp(12), 0, dp(12), 0);
+        tabs.addView(tabButton("home", "⌂", isEnglish() ? "Home" : "主页"),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        tabs.addView(tabButton("settings", "⚙", t("settings")),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        bar.addView(tabs, matchWrap());
+
+        // Break out of the root's side/bottom padding so the bar spans edge to edge.
         LinearLayout.LayoutParams params = matchWrap();
-        params.setMargins(dp(4), dp(4), dp(4), dp(0));
-        shell.setLayoutParams(params);
-        return shell;
+        params.setMargins(-dp(18), dp(6), -dp(18), -(navigationBarHeight() + dp(2)));
+        bar.setLayoutParams(params);
+        return bar;
     }
 
     private LinearLayout tabButton(String tab, String icon, String label) {
         LinearLayout button = new LinearLayout(this);
         button.setOrientation(LinearLayout.VERTICAL);
         button.setGravity(Gravity.CENTER);
-        button.setPadding(dp(4), dp(3), dp(4), dp(3));
-        boolean selected = tab.equals(currentTab);
-        button.setBackground(roundedBg(selected ? tabSelectedBg() : Color.TRANSPARENT, 18, selected ? tabSelectedBg() : Color.TRANSPARENT));
+        button.setPadding(0, dp(8), 0, dp(5));
+        button.setBackground(rowPressBg());
         button.setClickable(true);
+        boolean selected = tab.equals(currentTab);
 
         TextView iconView = new TextView(this);
         iconView.setText(icon);
-        iconView.setTextSize(18);
+        iconView.setTextSize(20);
         iconView.setGravity(Gravity.CENTER);
         iconView.setTypeface(null, Typeface.BOLD);
-        iconView.setTextColor(selected ? tabSelectedText() : tabMutedText());
-        button.addView(iconView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(24)));
+        iconView.setTextColor(selected ? textPrimary() : textSecondary());
+        button.addView(iconView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         TextView labelView = new TextView(this);
         labelView.setText(label);
-        labelView.setTextSize(11);
+        labelView.setTextSize(10);
         labelView.setGravity(Gravity.CENTER);
         labelView.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
-        labelView.setTextColor(selected ? tabSelectedText() : tabMutedText());
-        button.addView(labelView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(20)));
+        labelView.setTextColor(selected ? textPrimary() : textSecondary());
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        labelParams.setMargins(0, dp(3), 0, 0);
+        button.addView(labelView, labelParams);
 
         button.setOnClickListener(v -> {
             if (!tab.equals(currentTab)) {
                 currentTab = tab;
+                settingsSection = null;
                 buildUi();
-                if ("devices".equals(currentTab)) {
+                if ("home".equals(currentTab)) {
                     refreshDevices();
-                } else if ("runs".equals(currentTab)) {
                     refreshRuns();
                 }
             }
@@ -2624,11 +2722,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         // stale refresh for a previous device selection, ignore
                         return;
                     }
-                    if ("devices".equals(currentTab)) {
-                        loadCachedDevices();
-                        updateDeviceSummary();
-                        updateDeviceActionButtons();
-                    }
                     renderRuns(runs, false);
                 });
                 executor.submit(() -> saveRunsCache(runs));
@@ -2636,7 +2729,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 Log.w(TAG, "refreshRuns failed for " + safeRequestLabel(requestUrl), e);
                 handler.post(() -> {
                     if (hasCachedRuns()) {
-                        if ("devices".equals(currentTab)) {
+                        if ("home".equals(currentTab)) {
                             mergeDevicesFromCachedRuns();
                             loadCachedDevices();
                         }
@@ -2666,7 +2759,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 Log.w(TAG, "refreshDevices failed for " + safeRequestLabel(requestUrl), ignored);
                 handler.post(() -> {
                     mergeDevicesFromCachedRuns();
-                    if ("devices".equals(currentTab)) {
+                    if ("home".equals(currentTab)) {
                         loadCachedDevices();
                         if (manual || !hasCachedRuns()) {
                             statusText.setText(cloudFailureMessage(ignored) + (isEnglish() ? " Showing saved devices." : " 正在显示已保存设备。"));
@@ -2755,14 +2848,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 hasSelected = true;
             }
         }
-        if (devicesContainer == null) {
-            return;
-        }
-        devicesContainer.removeAllViews();
-        devicesContainer.addView(deviceButton("all", t("all"), false));
-
-        // Collect devices to show, sort by name for stable ordering so buttons don't jump positions
-        // on every refresh (polls etc). Name sort is consistent and infrequent changes.
+        // Collect devices to show (before any view work) and sort by name for
+        // stable ordering so buttons don't jump positions on every refresh.
         List<JSONObject> toShow = new ArrayList<>();
         for (int i = 0; i < devices.length(); i++) {
             JSONObject device = devices.optJSONObject(i);
@@ -2783,15 +2870,42 @@ public class MainActivity extends Activity implements LifecycleOwner {
             String nb = b.optString("name", b.optString("id", "")).toLowerCase(Locale.US);
             return na.compareTo(nb);
         });
-        for (JSONObject device : toShow) {
-            String id = device.optString("id", "");
-            boolean online = device.optBoolean("online", false);
-            devicesContainer.addView(deviceButton(id, device.optString("name", id), online));
-        }
         if (!hasSelected && devices.length() > 0) {
             selectedDeviceId = "all";
             prefs.edit().putString("selected_device_id", selectedDeviceId).apply();
             scrollX = 0;
+        }
+
+        if (devicesContainer == null) {
+            return;
+        }
+
+        // The chip strip depends only on id/name/online + selection + the offline
+        // toggle. GPU/heartbeat values change every poll but don't affect the
+        // chips, so when the strip is unchanged we skip the rebuild (no 5s flicker
+        // or wasted work) and only refresh the live summary/GPU panel.
+        StringBuilder sigB = new StringBuilder();
+        for (JSONObject device : toShow) {
+            sigB.append(device.optString("id", "")).append(':')
+                .append(device.optString("name", "")).append(':')
+                .append(device.optBoolean("online", false) ? '1' : '0').append('|');
+        }
+        sigB.append("sel=").append(selectedDeviceId).append(";off=").append(showOffline);
+        String sig = sigB.toString();
+        if (devicesContainer.getChildCount() > 0 && sig.equals(lastDevicesSig)) {
+            updateDeviceSummary();
+            updateDeviceActionButtons();
+            updateConnectionSubtitle();
+            return;
+        }
+        lastDevicesSig = sig;
+
+        devicesContainer.removeAllViews();
+        devicesContainer.addView(deviceButton("all", t("all"), false));
+        for (JSONObject device : toShow) {
+            String id = device.optString("id", "");
+            boolean online = device.optBoolean("online", false);
+            devicesContainer.addView(deviceButton(id, device.optString("name", id), online));
         }
         updateDeviceSummary();
         updateDeviceActionButtons();
@@ -2889,6 +3003,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
             loadCachedDevices();
             updateDeviceSummary();
             updateDeviceActionButtons();
+            // Show this device's cached runs immediately, then refresh in the
+            // background — switching devices no longer waits on the network.
+            loadCachedRuns();
             refreshRuns();
         });
         if (!"all".equals(id)) {
@@ -3006,18 +3123,32 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         String lastSeen = formatDeviceTimestamp(deviceLastSeen.get(selectedDeviceId));
-        String tokenUsed = formatDeviceTimestamp(deviceTokenLastUsed.get(selectedDeviceId));
         StringBuilder text = new StringBuilder(selectedDeviceName());
         boolean online = Boolean.TRUE.equals(deviceOnline.get(selectedDeviceId));
-        text.append("\n").append(online ? (isEnglish() ? "Online" : "在线") : (isEnglish() ? "Offline" : "离线"));
+        text.append(" · ").append(online ? (isEnglish() ? "Online" : "在线") : (isEnglish() ? "Offline" : "离线"));
         if (!lastSeen.isEmpty()) {
-            text.append("\n").append(isEnglish() ? "Heartbeat: " : "最后心跳：").append(lastSeen);
+            text.append(" · ").append(isEnglish() ? "seen " : "心跳 ").append(lastSeen);
         }
-        if (!tokenUsed.isEmpty()) {
-            text.append("\n").append(isEnglish() ? "Token: " : "Token 使用：").append(tokenUsed);
+        if (selectedDeviceGpuCount() > 0) {
+            text.append(gpuExpanded ? (isEnglish() ? " · GPU ▴" : " · GPU ▴") : (isEnglish() ? " · GPU ▾" : " · GPU ▾"));
         }
         deviceSummaryText.setText(text.toString());
         updateDeviceGpu();
+    }
+
+    private int selectedDeviceGpuCount() {
+        if (selectedDeviceId == null || "all".equals(selectedDeviceId)) {
+            return 0;
+        }
+        JSONArray devices = cachedDevicesArray();
+        for (int i = 0; i < devices.length(); i++) {
+            JSONObject d = devices.optJSONObject(i);
+            if (d != null && selectedDeviceId.equals(d.optString("id", ""))) {
+                JSONArray g = d.optJSONArray("gpus");
+                return g == null ? 0 : g.length();
+            }
+        }
+        return 0;
     }
 
     private void updateDeviceGpu() {
@@ -3048,6 +3179,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         }
         if (deviceGpus.isEmpty()) {
+            deviceGpuContainer.setVisibility(View.GONE);
+            return;
+        }
+        if (!gpuExpanded) {
+            // Folded by default to keep the home page tidy; tap the device
+            // status line to expand the swipeable GPU panel.
             deviceGpuContainer.setVisibility(View.GONE);
             return;
         }
@@ -3287,46 +3424,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         d.show();
     }
 
-    private void showDeviceFilterDialog() {
-        JSONArray devices = cachedDevicesArray();
-        List<String> labels = new ArrayList<>();
-        List<String> values = new ArrayList<>();
-        labels.add(t("all"));
-        values.add("all");
-        for (int i = 0; i < devices.length(); i++) {
-            JSONObject d = devices.optJSONObject(i);
-            if (d == null) {
-                continue;
-            }
-            String id = d.optString("id", "");
-            if (id.isEmpty()) {
-                continue;
-            }
-            labels.add(d.optString("name", id));
-            values.add(id);
-        }
-        int selected = 0;
-        for (int i = 0; i < values.size(); i++) {
-            if (values.get(i).equals(selectedDeviceId)) {
-                selected = i;
-                break;
-            }
-        }
-        AlertDialog d = dialogBuilder()
-                .setTitle(t("device"))
-                .setSingleChoiceItems(labels.toArray(new String[0]), selected, (dialog, which) -> {
-                    selectedDeviceId = values.get(which);
-                    prefs.edit().putString("selected_device_id", selectedDeviceId).apply();
-                    dialog.dismiss();
-                    buildUi();
-                    refreshRuns();
-                })
-                .setNegativeButton(t("cancel"), null)
-                .create();
-        applyDialogStyle(d);
-        d.show();
-    }
-
     private void showProjectFilterDialog() {
         List<String> values = availableProjectFilters();
         String[] labels = new String[values.size()];
@@ -3553,9 +3650,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 }
             }
         }
+        // Skip the expensive full-list rebuild when nothing visible changed
+        // (avoids re-inflating every run card on each poll).
+        String runsSig = runsSignature(visibleRuns);
+        if (runsContainer != null && runsContainer.getChildCount() > 0 && runsSig.equals(lastRunsSig)) {
+            if (!fromCache) {
+                firstLoad = false;
+            }
+            return;
+        }
         if (runsContainer == null) {
             return;
         }
+        lastRunsSig = runsSig;
         runsContainer.removeAllViews();
 
         for (int i = 0; i < visibleRuns.length(); i++) {
@@ -3581,13 +3688,32 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
     }
 
+    private String runsSignature(JSONArray runs) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < runs.length(); i++) {
+            JSONObject r = runs.optJSONObject(i);
+            if (r == null) {
+                continue;
+            }
+            sb.append(r.optString("id", "")).append('|')
+              .append(r.optString("status", "")).append('|')
+              .append(r.optString("updatedAt", "")).append('|')
+              .append(r.optInt("outputLength", r.optString("outputTail", "").length())).append(';');
+        }
+        return sb.toString();
+    }
+
     private JSONArray filterRuns(JSONArray runs) {
         boolean archivedView = "archived".equals(selectedStatusFilter);
+        boolean allDevices = selectedDeviceId == null || "all".equals(selectedDeviceId);
         Set<String> archived = archivedRunIds();
         JSONArray filtered = new JSONArray();
         for (int i = 0; i < runs.length(); i++) {
             JSONObject run = runs.optJSONObject(i);
             if (run == null) {
+                continue;
+            }
+            if (!allDevices && !selectedDeviceId.equals(run.optString("deviceId", ""))) {
                 continue;
             }
             String id = run.optString("id", "");
@@ -3815,8 +3941,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String runId = run.optString("id", "");
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(11), dp(8), dp(11), dp(8));
-        card.setBackground(roundedBg(cardBg(), 11, cardStroke()));
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setBackground(roundedBg(cardBg(), 12, cardStroke()));
         card.setElevation(0);
         card.setClickable(true);
         card.setOnClickListener(v -> openRunDetail(runId));
@@ -6741,7 +6867,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private int appBg() {
-        return isDarkTheme() ? color("#151515") : color("#EEF1F5");
+        // iOS-style grouped background: a neutral gray so white cards pop.
+        return isDarkTheme() ? color("#0E0E10") : color("#F2F2F7");
     }
 
     private int surfaceBg() {
@@ -6749,11 +6876,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private int cardBg() {
-        return isDarkTheme() ? color("#222226") : color("#FFFFFF");
+        return isDarkTheme() ? color("#1C1C1E") : color("#FFFFFF");
     }
 
     private int cardStroke() {
-        return isDarkTheme() ? color("#34343A") : color("#E2E6EE");
+        return isDarkTheme() ? color("#2C2C2E") : color("#E5E5EA");
     }
 
     private int iconChipBg() {
@@ -6777,7 +6904,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private int textSecondary() {
-        return isDarkTheme() ? color("#B8B8C2") : color("#6B7280");
+        return isDarkTheme() ? color("#98989F") : color("#8E8E93");
+    }
+
+    private int chevronColor() {
+        return isDarkTheme() ? color("#5A5A5E") : color("#C7C7CC");
     }
 
     private int tabSelectedBg() {
@@ -6817,7 +6948,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private int surfaceStroke() {
-        return isDarkTheme() ? color("#3A3A40") : color("#DCE2EC");
+        return isDarkTheme() ? color("#2C2C2E") : color("#E5E5EA");
     }
 
     private int gpuTrackColor() {

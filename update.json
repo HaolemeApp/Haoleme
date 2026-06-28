@@ -1,17 +1,17 @@
 {
   "android": {
-    "versionCode": 138,
-    "versionName": "0.9.3",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.3.apk",
+    "versionCode": 149,
+    "versionName": "0.9.14",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.14.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.3.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.9.3.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.3/Haoleme-0.9.3.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.14.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.9.14.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.14/Haoleme-0.9.14.apk"
     ],
-    "sha256": "056e99c2f8a8b15da07a6ae896eb2f6384800eed9741135fada0e51fc5657c12",
+    "sha256": "cafc82c8298fe59c01e27c1a8f005cd53e886587996475c4faa5cdc6523a632b",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.3：理清运行/设备两页职责——运行列表只在「运行」页（设备/项目/状态筛选都在这里，可直接换设备）；「设备」页只保留设备状态/GPU/管理，去掉重复的运行列表，点「查看运行」跳到已筛选的运行页。"
+    "notes": "0.9.14：运行与设备合并为「主页」（设备条选设备即筛选+看GPU），GPU 可折叠、显存/温度可滑动；设置页重排（配对/外观/安全/关于直接在首页，通知/存储进二级）；切设备读缓存秒切、刷新更省更稳；整体改为 iOS 分组风格 + 扁平通栏底栏，更精致。"
   },
   "python": {
     "version": "0.4.10",
