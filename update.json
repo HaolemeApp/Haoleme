@@ -1,17 +1,17 @@
 {
   "android": {
-    "versionCode": 149,
-    "versionName": "0.9.14",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.14.apk",
+    "versionCode": 151,
+    "versionName": "0.9.16",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.16.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.14.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.9.14.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.14/Haoleme-0.9.14.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.16.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.9.16.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.16/Haoleme-0.9.16.apk"
     ],
-    "sha256": "cafc82c8298fe59c01e27c1a8f005cd53e886587996475c4faa5cdc6523a632b",
+    "sha256": "466c16d757c0587bc6d07e0f5f7b572c6be9d833d42df99c1dac90c77b8f4e61",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.14：运行与设备合并为「主页」（设备条选设备即筛选+看GPU），GPU 可折叠、显存/温度可滑动；设置页重排（配对/外观/安全/关于直接在首页，通知/存储进二级）；切设备读缓存秒切、刷新更省更稳；整体改为 iOS 分组风格 + 扁平通栏底栏，更精致。"
+    "notes": "0.9.16：配对区(扫码/验证码/共享空间)间距收紧不再分散;底栏切换不再有灰色高亮,只变图标与文字;运行中时列表刷新更快(2.5秒),空闲时保持省电。"
   },
   "python": {
     "version": "0.4.10",

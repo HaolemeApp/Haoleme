@@ -61,8 +61,8 @@ android {
         applicationId "com.haoleme.app"
         minSdk 23
         targetSdk 35
-        versionCode 149
-        versionName "0.9.14"
+        versionCode 151
+        versionName "0.9.16"
         buildConfigField "String", "HAOLEME_DEFAULT_SERVER_URL", "\"${defaultServerUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\""
         buildConfigField "String", "HAOLEME_UPDATE_URLS", "\"${defaultUpdateUrls.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")}\""
 

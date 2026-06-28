@@ -138,6 +138,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String CHANNEL_ID = "runs";
     private static final int CAMERA_REQUEST = 4108;
     private static final long POLL_MS = 5000L;
+    private static final long LIST_ACTIVE_POLL_MS = 2500L;
     private static final long CONSOLE_RUNNING_POLL_MS = 1000L;
     private static final int HTTP_CONNECT_TIMEOUT_MS = 8000;
     private static final int HTTP_READ_TIMEOUT_MS = 12000;
@@ -248,6 +249,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private String settingsSection = null;
     private String lastRunsSig = "";
     private String lastDevicesSig = "";
+    private boolean hasActiveRunVisible = false;
 
     private final Runnable pollRunnable = new Runnable() {
         @Override
@@ -268,11 +270,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
     };
 
     private long pollDelayMs() {
-        if (selectedRunId != null
-                && ("running".equals(selectedRunStatus) || "created".equals(selectedRunStatus))) {
-            return CONSOLE_RUNNING_POLL_MS;
+        if (selectedRunId != null) {
+            return ("running".equals(selectedRunStatus) || "created".equals(selectedRunStatus))
+                    ? CONSOLE_RUNNING_POLL_MS : POLL_MS;
         }
-        return POLL_MS;
+        // On the list: poll faster while something is actively running so progress
+        // shows sooner; stay calm (slower) when everything is idle.
+        return hasActiveRunVisible ? LIST_ACTIVE_POLL_MS : POLL_MS;
     }
 
     @Override
@@ -819,6 +823,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     @ExperimentalGetImage
     private void buildPairSection(LinearLayout settingsContent) {
+        LinearLayout.LayoutParams tightGroup = matchWrap();
+        tightGroup.setMargins(0, 0, 0, dp(3));
         settingsContent.addView(settingsGroup(settingsRow(
                 "qr",
                 color("#2563EB"),
@@ -827,7 +833,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 "",
                 true,
                 v -> startQrScan()
-        )));
+        )), tightGroup);
 
         LinearLayout pairControls = new LinearLayout(this);
         pairControls.setOrientation(LinearLayout.HORIZONTAL);
@@ -862,7 +868,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         pairButtonParams.setMargins(dp(8), 0, 0, 0);
         pairControls.addView(pairButton, pairButtonParams);
         LinearLayout.LayoutParams pairParams = matchWrap();
-        pairParams.setMargins(0, 0, 0, dp(10));
+        pairParams.setMargins(0, 0, 0, dp(3));
         settingsContent.addView(pairCodeCard(pairControls), pairParams);
         settingsContent.addView(settingsGroup(settingsRow(
                 "⇄",
@@ -2653,7 +2659,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         button.setOrientation(LinearLayout.VERTICAL);
         button.setGravity(Gravity.CENTER);
         button.setPadding(0, dp(8), 0, dp(5));
-        button.setBackground(rowPressBg());
+        // No press ripple/highlight on the bar — switching only changes the
+        // icon + label color, nothing gray flashes.
         button.setClickable(true);
         boolean selected = tab.equals(currentTab);
 
@@ -3622,6 +3629,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void renderRuns(JSONArray runs, boolean fromCache) {
         JSONArray visibleRuns = filterRuns(runs);
+        // Track whether anything is actively running so the poll loop can speed up.
+        boolean active = false;
+        for (int i = 0; i < runs.length(); i++) {
+            JSONObject r = runs.optJSONObject(i);
+            if (r != null) {
+                String s = r.optString("status", "");
+                if ("running".equals(s) || "created".equals(s)) {
+                    active = true;
+                    break;
+                }
+            }
+        }
+        hasActiveRunVisible = active;
         int failedCount = 0;
         for (int i = 0; i < visibleRuns.length(); i++) {
             JSONObject run = visibleRuns.optJSONObject(i);
