@@ -1,17 +1,17 @@
 {
   "android": {
-    "versionCode": 137,
-    "versionName": "0.9.2",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.2.apk",
+    "versionCode": 138,
+    "versionName": "0.9.3",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.3.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.2.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.9.2.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.2/Haoleme-0.9.2.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.3.apk",
+      "http://39.96.50.42/downloads/Haoleme-0.9.3.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.3/Haoleme-0.9.3.apk"
     ],
-    "sha256": "bd38c9527cd3e5cb667b623cbfef02bdb42a3ad0ed4da9e905eca783e154d83b",
+    "sha256": "056e99c2f8a8b15da07a6ae896eb2f6384800eed9741135fada0e51fc5657c12",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.2：设备页 GPU 面板新增「显存占用率」，左右滑动可在 利用率 / 显存 / 温度 之间切换查看。"
+    "notes": "0.9.3：理清运行/设备两页职责——运行列表只在「运行」页（设备/项目/状态筛选都在这里，可直接换设备）；「设备」页只保留设备状态/GPU/管理，去掉重复的运行列表，点「查看运行」跳到已筛选的运行页。"
   },
   "python": {
     "version": "0.4.10",

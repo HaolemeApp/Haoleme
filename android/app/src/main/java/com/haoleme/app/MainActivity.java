@@ -559,9 +559,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
         controls.setOrientation(LinearLayout.HORIZONTAL);
         controls.setGravity(Gravity.CENTER_VERTICAL);
 
+        TextView deviceFilterButton = actionButton(t("device") + ": " + ("all".equals(selectedDeviceId) ? t("all") : selectedDeviceName()));
+        deviceFilterButton.setOnClickListener(v -> showDeviceFilterDialog());
+        controls.addView(deviceFilterButton, new LinearLayout.LayoutParams(0, dp(46), 1));
+
         TextView projectFilterButton = actionButton(t("project") + ": " + projectFilterLabel(selectedProjectFilter));
         projectFilterButton.setOnClickListener(v -> showProjectFilterDialog());
-        controls.addView(projectFilterButton, new LinearLayout.LayoutParams(0, dp(46), 1));
+        LinearLayout.LayoutParams projectParams = new LinearLayout.LayoutParams(0, dp(46), 1);
+        projectParams.setMargins(dp(8), 0, 0, 0);
+        controls.addView(projectFilterButton, projectParams);
 
         TextView statusFilterButton = actionButton(t("status") + ": " + statusFilterLabel(selectedStatusFilter));
         statusFilterButton.setOnClickListener(v -> showStatusFilterDialog());
@@ -569,23 +575,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
         statusParams.setMargins(dp(8), 0, 0, 0);
         controls.addView(statusFilterButton, statusParams);
 
-        TextView refreshButton = actionButton(actionLabel("↻", t("refresh"), 1.28f));
+        TextView refreshButton = actionButton(actionLabel("↻", "", 1.28f));
+        refreshButton.setContentDescription(t("refresh"));
         refreshButton.setOnClickListener(v -> {
             refreshDevices(true);
             refreshRuns(true);
         });
-        LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(dp(104), dp(46));
+        LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(dp(46), dp(46));
         refreshParams.setMargins(dp(8), 0, 0, 0);
         controls.addView(refreshButton, refreshParams);
         content.addView(controls, matchWrap());
-
-        TextView selectedText = new TextView(this);
-        selectedText.setText(t("device") + ": " + ("all".equals(selectedDeviceId) ? t("all") : selectedDeviceName())
-                + " · " + t("project") + ": " + projectFilterLabel(selectedProjectFilter));
-        selectedText.setTextSize(11);
-        selectedText.setTextColor(textSecondary());
-        selectedText.setPadding(0, dp(4), 0, dp(6));
-        content.addView(selectedText, matchWrap());
 
         ScrollView scrollView = new ScrollView(this);
         runsContainer = new LinearLayout(this);
@@ -679,24 +678,24 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         content.addView(deviceHeader, matchWrap());
 
-        TextView runsTitle = sectionTitle(isEnglish() ? "Device Runs" : "设备运行");
-        LinearLayout.LayoutParams runsTitleParams = matchWrap();
-        runsTitleParams.setMargins(0, dp(4), 0, 0);
-        content.addView(runsTitle, runsTitleParams);
+        // The run list lives only on the Runs tab now; the Devices tab is fleet
+        // health + management. Tapping here jumps to Runs filtered to this device.
+        TextView viewRunsButton = actionButton(actionLabel("▤", isEnglish() ? "View runs" : "查看运行", 1.12f));
+        viewRunsButton.setOnClickListener(v -> {
+            currentTab = "runs";
+            buildUi();
+            refreshRuns();
+        });
+        LinearLayout.LayoutParams viewRunsParams = matchWrap();
+        viewRunsParams.setMargins(0, dp(8), 0, dp(4));
+        content.addView(viewRunsButton, viewRunsParams);
 
-        ScrollView scrollView = new ScrollView(this);
-        runsContainer = new LinearLayout(this);
-        runsContainer.setOrientation(LinearLayout.VERTICAL);
-        scrollView.addView(runsContainer);
-        content.addView(scrollView, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1
-        ));
+        // Spacer pushes the fleet panel to the top.
+        View spacer = new View(this);
+        content.addView(spacer, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
 
         mergeDevicesFromCachedRuns();
         loadCachedDevices();
-        loadCachedRuns();
         updateDeviceSummary();
         updateDeviceActionButtons();
     }
@@ -3288,6 +3287,46 @@ public class MainActivity extends Activity implements LifecycleOwner {
         d.show();
     }
 
+    private void showDeviceFilterDialog() {
+        JSONArray devices = cachedDevicesArray();
+        List<String> labels = new ArrayList<>();
+        List<String> values = new ArrayList<>();
+        labels.add(t("all"));
+        values.add("all");
+        for (int i = 0; i < devices.length(); i++) {
+            JSONObject d = devices.optJSONObject(i);
+            if (d == null) {
+                continue;
+            }
+            String id = d.optString("id", "");
+            if (id.isEmpty()) {
+                continue;
+            }
+            labels.add(d.optString("name", id));
+            values.add(id);
+        }
+        int selected = 0;
+        for (int i = 0; i < values.size(); i++) {
+            if (values.get(i).equals(selectedDeviceId)) {
+                selected = i;
+                break;
+            }
+        }
+        AlertDialog d = dialogBuilder()
+                .setTitle(t("device"))
+                .setSingleChoiceItems(labels.toArray(new String[0]), selected, (dialog, which) -> {
+                    selectedDeviceId = values.get(which);
+                    prefs.edit().putString("selected_device_id", selectedDeviceId).apply();
+                    dialog.dismiss();
+                    buildUi();
+                    refreshRuns();
+                })
+                .setNegativeButton(t("cancel"), null)
+                .create();
+        applyDialogStyle(d);
+        d.show();
+    }
+
     private void showProjectFilterDialog() {
         List<String> values = availableProjectFilters();
         String[] labels = new String[values.size()];
@@ -3504,6 +3543,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 ? (isEnglish() ? failedCount + " failed run(s). " : failedCount + " 条失败运行。")
                 : "";
         statusText.setText(prefix + failedPart + suffix);
+        // Notifications must fire regardless of which tab is showing (the run list
+        // only exists on the Runs tab now), so notify before the container guard.
+        if (!fromCache) {
+            for (int i = 0; i < visibleRuns.length(); i++) {
+                JSONObject run = visibleRuns.optJSONObject(i);
+                if (run != null) {
+                    maybeNotify(run);
+                }
+            }
+        }
         if (runsContainer == null) {
             return;
         }
@@ -3513,9 +3562,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             JSONObject run = visibleRuns.optJSONObject(i);
             if (run == null) {
                 continue;
-            }
-            if (!fromCache) {
-                maybeNotify(run);
             }
             try {
                 runsContainer.addView(runView(run));
