@@ -90,7 +90,7 @@ chmod +x deploy/upload-release.sh
 ```
 
 Users can then run `hao update` to install the latest CLI from
-`http://39.96.50.42/downloads/update.json`, and the Android app can check the
+`https://api.haoleme.cloud/downloads/update.json`, and the Android app can check the
 same manifest for APK updates.
 
 ## Health And Security Checks

@@ -10,15 +10,15 @@
 #
 # Auth (pick one):
 #   export HAOLEME_UPLOAD_PASSWORD='...'
-#   ssh root@39.96.50.42   # when SSH keys are configured
+#   ssh root@api.haoleme.cloud   # when SSH keys are configured
 #
 # PyPI (with --pypi or when HAOLEME_PYPI_TOKEN is set during python upload):
 #   export HAOLEME_PYPI_TOKEN='pypi-...'
 #
 # Optional env:
-#   HAOLEME_UPLOAD_HOST=39.96.50.42
+#   HAOLEME_UPLOAD_HOST=api.haoleme.cloud
 #   HAOLEME_UPLOAD_USER=root
-#   HAOLEME_PUBLIC_URL=http://39.96.50.42
+#   HAOLEME_PUBLIC_URL=https://api.haoleme.cloud
 #   HAOLEME_ANDROID_NOTES="Release notes for the app"
 #   HAOLEME_PYTHON_NOTES="Release notes for hao CLI"
 #   JAVA_HOME=/path/to/jdk
@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-SERVER="${HAOLEME_UPLOAD_HOST:-39.96.50.42}"
+SERVER="${HAOLEME_UPLOAD_HOST:-api.haoleme.cloud}"
 SERVER_USER="${HAOLEME_UPLOAD_USER:-root}"
 REMOTE_DIR="${HAOLEME_UPLOAD_DIR:-/opt/haoleme-cloud-data/downloads}"
 PUBLIC_BASE="${HAOLEME_PUBLIC_URL:-http://${SERVER}}"

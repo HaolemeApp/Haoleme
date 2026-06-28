@@ -5,7 +5,6 @@
     "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.16.apk",
     "apkUrls": [
       "https://api.haoleme.cloud/downloads/Haoleme-0.9.16.apk",
-      "http://39.96.50.42/downloads/Haoleme-0.9.16.apk",
       "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.16/Haoleme-0.9.16.apk"
     ],
     "sha256": "466c16d757c0587bc6d07e0f5f7b572c6be9d833d42df99c1dac90c77b8f4e61",
