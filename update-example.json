@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 152,
-    "versionName": "0.9.17",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.17.apk",
+    "versionCode": 153,
+    "versionName": "0.9.18",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.18.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.17.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.17/Haoleme-0.9.17.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.18.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.18/Haoleme-0.9.18.apk"
     ],
-    "sha256": "ebfb39c786ccf1c8b63f5e099a541e9c64f45a83635af51ef62be8d796847481",
+    "sha256": "9dfbfff2b01dee3981b5116a12e0ec86bd5efc4ec4953b0615830be6e39cc392",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.17：弱网下配对更稳——扫码配对的请求中途断连会自动重试（最多 3 次），不再一断就显示“连接不上/过期”；配对成功后命令也能正常解密显示（不再卡在 Encrypted command）。"
+    "notes": "0.9.18：修复运行命令标题显示“Encrypted command”的问题——只要有密文就解密(不再因加密版本号字段不为 1 而跳过)，命令能正常显示。"
   },
   "python": {
     "version": "0.4.10",

@@ -6504,7 +6504,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private JSONObject decryptRun(JSONObject run, JSONArray extraChunks) {
         JSONObject copy;
         JSONObject e2ee = run.optJSONObject("e2ee");
-        if (e2ee == null || e2ee.optInt("v", 0) != 1) {
+        // Decrypt whenever a ciphertext is present — don't gate on an exact
+        // version int (a storage/normalization quirk can leave v=0/missing,
+        // which previously skipped decryption and leaked the "Encrypted command"
+        // placeholder while output still decrypted). AES-GCM validates anyway.
+        if (e2ee == null || e2ee.optString("ciphertext", "").isEmpty()) {
             copy = run;
         } else {
             try {
