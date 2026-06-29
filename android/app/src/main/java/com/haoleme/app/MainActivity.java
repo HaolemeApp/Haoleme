@@ -2337,9 +2337,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
         SharedPreferences.Editor editor = prefs.edit();
         Map<String, ?> values = prefs.getAll();
         for (String key : values.keySet()) {
+            // NOTE: deliberately keep "encryption_key_b64" — the E2EE account key
+            // must survive resets/server-URL changes/re-pairs. Discarding it mints a
+            // new key, orphaning every run encrypted with the old one ("Encrypted
+            // command" / no output) and fragmenting accounts. A clean re-pair then
+            // re-shares this same stable key to the CLI so runs stay decryptable.
             if (isLocalCacheKey(key)
                     || "token".equals(key)
-                    || "encryption_key_b64".equals(key)
                     || "paired_device_id".equals(key)
                     || "paired_device_name".equals(key)
                     || "paired_account".equals(key)
