@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 151,
-    "versionName": "0.9.16",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.16.apk",
+    "versionCode": 152,
+    "versionName": "0.9.17",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.17.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.16.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.16/Haoleme-0.9.16.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.17.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.17/Haoleme-0.9.17.apk"
     ],
-    "sha256": "466c16d757c0587bc6d07e0f5f7b572c6be9d833d42df99c1dac90c77b8f4e61",
+    "sha256": "ebfb39c786ccf1c8b63f5e099a541e9c64f45a83635af51ef62be8d796847481",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.16：配对区(扫码/验证码/共享空间)间距收紧不再分散;底栏切换不再有灰色高亮,只变图标与文字;运行中时列表刷新更快(2.5秒),空闲时保持省电。"
+    "notes": "0.9.17：弱网下配对更稳——扫码配对的请求中途断连会自动重试（最多 3 次），不再一断就显示“连接不上/过期”；配对成功后命令也能正常解密显示（不再卡在 Encrypted command）。"
   },
   "python": {
     "version": "0.4.10",

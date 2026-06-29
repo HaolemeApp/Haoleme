@@ -5463,27 +5463,49 @@ public class MainActivity extends Activity implements LifecycleOwner {
         statusText.setText(isEnglish() ? "Pairing..." : "正在配对...");
         executor.submit(() -> {
             try {
-                JSONObject payload = new JSONObject();
-                payload.put("code", normalizedCode);
-                payload.put("appVersionCode", currentVersionCode());
-                payload.put("appVersionName", currentVersionName());
-                payload.put("platform", "android");
-                String reusableDeviceId = reusablePairDeviceId();
-                if (!reusableDeviceId.isEmpty()) {
-                    payload.put("replaceDeviceId", reusableDeviceId);
+                // Pairing on a flaky mobile network often drops mid-request
+                // (broken pipe / connection reset). Retry the info+confirm
+                // sequence a few times on transient errors; fail fast on real
+                // server responses (expired / used / unauthorized).
+                JSONObject response = null;
+                int maxAttempts = 3;
+                for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+                    try {
+                        JSONObject payload = new JSONObject();
+                        payload.put("code", normalizedCode);
+                        payload.put("appVersionCode", currentVersionCode());
+                        payload.put("appVersionName", currentVersionName());
+                        payload.put("platform", "android");
+                        String reusableDeviceId = reusablePairDeviceId();
+                        if (!reusableDeviceId.isEmpty()) {
+                            payload.put("replaceDeviceId", reusableDeviceId);
+                        }
+                        JSONObject infoPayload = new JSONObject();
+                        infoPayload.put("code", normalizedCode);
+                        String infoText = httpPostJson(targetServer + "/api/pair/info", infoPayload.toString());
+                        JSONObject info = infoText.isEmpty() ? new JSONObject() : new JSONObject(infoText);
+                        String publicKey = info.optString("publicKey", "").trim();
+                        if (!publicKey.isEmpty()) {
+                            payload.put("encryptedAccountKey", encryptAccountKeyForPair(publicKey));
+                            payload.put("encryptedAccountKeyAlgorithm", "RSA-OAEP-SHA256");
+                            payload.put("e2eeVersion", 1);
+                        }
+                        String responseText = httpPostJson(targetServer + "/api/pair/confirm", payload.toString());
+                        response = responseText.isEmpty() ? new JSONObject() : new JSONObject(responseText);
+                        break;
+                    } catch (HaolemeHttpException he) {
+                        throw he;
+                    } catch (Exception netErr) {
+                        if (attempt >= maxAttempts) {
+                            throw netErr;
+                        }
+                        final int shownAttempt = attempt;
+                        handler.post(() -> statusText.setText(isEnglish()
+                                ? "Weak network — retrying pairing (" + shownAttempt + "/" + (maxAttempts - 1) + ")..."
+                                : "网络不稳，正在重试配对（" + shownAttempt + "/" + (maxAttempts - 1) + "）..."));
+                        Thread.sleep(900L);
+                    }
                 }
-                JSONObject infoPayload = new JSONObject();
-                infoPayload.put("code", normalizedCode);
-                String infoText = httpPostJson(targetServer + "/api/pair/info", infoPayload.toString());
-                JSONObject info = infoText.isEmpty() ? new JSONObject() : new JSONObject(infoText);
-                String publicKey = info.optString("publicKey", "").trim();
-                if (!publicKey.isEmpty()) {
-                    payload.put("encryptedAccountKey", encryptAccountKeyForPair(publicKey));
-                    payload.put("encryptedAccountKeyAlgorithm", "RSA-OAEP-SHA256");
-                    payload.put("e2eeVersion", 1);
-                }
-                String responseText = httpPostJson(targetServer + "/api/pair/confirm", payload.toString());
-                JSONObject response = responseText.isEmpty() ? new JSONObject() : new JSONObject(responseText);
                 String deviceName = response.optString("deviceName", "").trim();
                 if (deviceName.isEmpty()) {
                     deviceName = appDisplayName() + " device";
