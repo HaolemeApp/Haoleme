@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 157,
-    "versionName": "0.9.22",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.22/Haoleme-0.9.22.apk",
+    "versionCode": 158,
+    "versionName": "0.9.23",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.23/Haoleme-0.9.23.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.22/Haoleme-0.9.22.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.22.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.23/Haoleme-0.9.23.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.23.apk"
     ],
-    "sha256": "e6f6fa5904455911085b750bd3973282fa270cf4006db21b5b02ccf0973e8c5a",
+    "sha256": "d4542cc4b761f52a0d877707053799cb0881309ba74e5cd98f693389dc71bd00",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.22：修复配对码假过期。App 会自动迁移旧 IP 配置，并在当前服务器找不到配对码时回退到 api.haoleme.cloud。"
+    "notes": "0.9.23：美化设置页，增加顶部概览卡、统一分组层级和图标质感，并让更新检查自动选择多个更新源里的最高版本。"
   },
   "python": {
     "version": "0.4.12",

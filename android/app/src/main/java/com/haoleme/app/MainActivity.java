@@ -770,6 +770,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     @ExperimentalGetImage
     private void buildSettingsHome(LinearLayout c) {
+        c.addView(settingsHeroCard(), matchWrap());
+
         // Pairing stays on the top level — it's important, and the real scan/code
         // controls give the page substance instead of a bare list of links.
         TextView pairTitle = sectionTitle(settingsSectionTitle("pair"));
@@ -826,6 +828,83 @@ public class MainActivity extends Activity implements LifecycleOwner {
         v.setPadding(0, dp(2), 0, 0);
         f.addView(v, matchWrap());
         return f;
+    }
+
+    private View settingsHeroCard() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(16), dp(15), dp(16), dp(15));
+        card.setBackground(roundedBg(settingsHeroBg(), 24, settingsHeroStroke()));
+        card.setClipToOutline(true);
+
+        FrameLayout iconShell = new FrameLayout(this);
+        iconShell.setBackground(roundedBg(isDarkTheme() ? color("#111113") : Color.WHITE, 18, settingsHeroStroke()));
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(isDarkTheme() ? R.drawable.haoleme_icon_dark : R.drawable.haoleme_icon_light);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        iconShell.addView(icon, new FrameLayout.LayoutParams(dp(46), dp(46), Gravity.CENTER));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(58), dp(58));
+        card.addView(iconShell, iconParams);
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams copyParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        copyParams.setMargins(dp(13), 0, dp(8), 0);
+        card.addView(copy, copyParams);
+
+        TextView title = new TextView(this);
+        title.setText(appDisplayName());
+        title.setTextColor(textPrimary());
+        title.setTextSize(21);
+        title.setTypeface(null, Typeface.BOLD);
+        title.setSingleLine(true);
+        copy.addView(title, matchWrap());
+
+        TextView subtitle = new TextView(this);
+        subtitle.setText(settingsHeroSubtitle());
+        subtitle.setTextColor(textSecondary());
+        subtitle.setTextSize(12);
+        subtitle.setPadding(0, dp(3), 0, 0);
+        copy.addView(subtitle, matchWrap());
+
+        TextView badge = new TextView(this);
+        badge.setText(settingsHeroBadge());
+        badge.setTextColor(settingsHeroBadgeText());
+        badge.setTextSize(11);
+        badge.setTypeface(null, Typeface.BOLD);
+        badge.setGravity(Gravity.CENTER);
+        badge.setPadding(dp(9), dp(5), dp(9), dp(5));
+        badge.setBackground(roundedBg(settingsHeroBadgeBg(), 99, Color.TRANSPARENT));
+        card.addView(badge, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout.LayoutParams params = matchWrap();
+        params.setMargins(0, dp(2), 0, dp(12));
+        card.setLayoutParams(params);
+        return card;
+    }
+
+    private String settingsHeroSubtitle() {
+        int online = onlineDeviceCount();
+        int total = deviceNames.size();
+        if (total <= 0 && hasPairedDevice()) {
+            total = 1;
+        }
+        String devices = isEnglish()
+                ? online + " online · " + total + " devices"
+                : online + " 在线 · " + total + " 台设备";
+        return devices + " · v" + currentVersionName();
+    }
+
+    private String settingsHeroBadge() {
+        if (hasAvailableUpdate()) {
+            return isEnglish() ? "UPDATE" : "可更新";
+        }
+        if (hasPairedDevice()) {
+            return isEnglish() ? "SYNC" : "同步中";
+        }
+        return isEnglish() ? "PAIR" : "去配对";
     }
 
     @ExperimentalGetImage
@@ -1139,20 +1218,20 @@ public class MainActivity extends Activity implements LifecycleOwner {
         // iOS-style grouped section header: small, muted, slightly tracked.
         TextView view = new TextView(this);
         view.setText(title);
-        view.setTextSize(12);
-        view.setTypeface(null, Typeface.NORMAL);
-        view.setAllCaps(true);
-        view.setLetterSpacing(0.04f);
+        view.setTextSize(13);
+        view.setTypeface(null, Typeface.BOLD);
+        view.setAllCaps(false);
+        view.setLetterSpacing(0f);
         view.setTextColor(textSecondary());
-        view.setPadding(dp(4), dp(12), 0, dp(6));
+        view.setPadding(dp(4), dp(15), 0, dp(8));
         return view;
     }
 
     private LinearLayout pairCodeCard(LinearLayout pairControls) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(12), dp(10), dp(12), dp(12));
-        card.setBackground(roundedBg(cardBg(), 16, cardStroke()));
+        card.setPadding(dp(14), dp(12), dp(14), dp(14));
+        card.setBackground(roundedBg(cardBg(), 18, cardStroke()));
         card.setElevation(0);
 
         TextView title = new TextView(this);
@@ -1210,55 +1289,55 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private View settingsIconView(String icon, int iconColor) {
         FrameLayout chip = new FrameLayout(this);
-        chip.setBackgroundColor(Color.TRANSPARENT);
+        chip.setBackground(roundedBg(settingsIconChipBg(iconColor), 99, Color.TRANSPARENT));
 
         if ("github".equals(icon)) {
             ImageView image = new ImageView(this);
             image.setImageResource(R.drawable.github_mark);
             image.setColorFilter(iconColor);
             image.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-            FrameLayout.LayoutParams imageParams = new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER);
+            FrameLayout.LayoutParams imageParams = new FrameLayout.LayoutParams(dp(23), dp(23), Gravity.CENTER);
             chip.addView(image, imageParams);
             return chip;
         }
         if ("qr".equals(icon)) {
             QrIconView qr = new QrIconView(this, iconColor);
-            chip.addView(qr, new FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER));
+            chip.addView(qr, new FrameLayout.LayoutParams(dp(25), dp(25), Gravity.CENTER));
             return chip;
         }
         if ("theme_icon".equals(icon)) {
             ThemeIconView theme = new ThemeIconView(this, iconColor);
-            chip.addView(theme, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
+            chip.addView(theme, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
             return chip;
         }
         if ("quiet_icon".equals(icon)) {
             QuietHoursIconView quiet = new QuietHoursIconView(this, iconColor);
-            chip.addView(quiet, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
+            chip.addView(quiet, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
             return chip;
         }
         if ("mask_icon".equals(icon)) {
             MaskIconView mask = new MaskIconView(this, iconColor);
-            chip.addView(mask, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
+            chip.addView(mask, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
             return chip;
         }
         if ("language_icon".equals(icon)) {
             LanguageIconView language = new LanguageIconView(this, iconColor);
-            chip.addView(language, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
+            chip.addView(language, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
             return chip;
         }
         if ("diagnostics_icon".equals(icon)) {
             DiagnosticsIconView diagnostics = new DiagnosticsIconView(this, iconColor);
-            chip.addView(diagnostics, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
+            chip.addView(diagnostics, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
             return chip;
         }
 
         TextView iconView = new TextView(this);
         iconView.setText(icon);
-        float textSize = icon.length() > 1 ? 20f : 27f;
-        int box = dp(30);
+        float textSize = icon.length() > 1 ? 17f : 22f;
+        int box = dp(26);
         if ("♥".equals(icon)) {
-            textSize = 21f;
-            box = dp(26);
+            textSize = 19f;
+            box = dp(24);
         }
         iconView.setTextSize(textSize);
         iconView.setTypeface(null, Typeface.BOLD);
@@ -1281,8 +1360,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setMinimumHeight(dp(52));
-        row.setPadding(dp(12), dp(8), dp(11), dp(8));
+        row.setMinimumHeight(dp(60));
+        row.setPadding(dp(13), dp(9), dp(12), dp(9));
         row.setBackground(rowPressBg());
         row.setElevation(0);
         row.setClickable(listener != null);
@@ -1290,35 +1369,38 @@ public class MainActivity extends Activity implements LifecycleOwner {
             row.setOnClickListener(listener);
         }
 
-        row.addView(settingsIconView(icon, iconColor), new LinearLayout.LayoutParams(dp(32), dp(32)));
+        row.addView(settingsIconView(icon, iconColor), new LinearLayout.LayoutParams(dp(38), dp(38)));
 
         LinearLayout labels = new LinearLayout(this);
         labels.setOrientation(LinearLayout.VERTICAL);
         TextView titleView = new TextView(this);
         titleView.setText(title);
-        titleView.setTextSize(14);
+        titleView.setTextSize(14.5f);
+        titleView.setTypeface(null, Typeface.BOLD);
         titleView.setTextColor(textPrimary());
         titleView.setSingleLine(false);
         labels.addView(titleView, matchWrap());
         if (subtitle != null && !subtitle.trim().isEmpty()) {
             TextView subtitleView = new TextView(this);
             subtitleView.setText(subtitle.trim());
-            subtitleView.setTextSize(11);
+            subtitleView.setTextSize(11.5f);
             subtitleView.setTextColor(textSecondary());
             subtitleView.setPadding(0, dp(2), 0, 0);
             labels.addView(subtitleView, matchWrap());
         }
         LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        labelParams.setMargins(dp(9), 0, dp(8), 0);
+        labelParams.setMargins(dp(11), 0, dp(8), 0);
         row.addView(labels, labelParams);
 
         if (value != null && !value.trim().isEmpty()) {
             TextView valueView = new TextView(this);
             valueView.setTag("settings_value");
             valueView.setText(value.trim());
-            valueView.setTextSize(13);
+            valueView.setTextSize(12);
             valueView.setTextColor(textSecondary());
             valueView.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+            valueView.setPadding(dp(8), dp(4), dp(8), dp(4));
+            valueView.setBackground(roundedBg(settingsValueBg(), 99, Color.TRANSPARENT));
             row.addView(valueView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         }
         if (chevron) {
@@ -1341,7 +1423,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private LinearLayout settingsGroup(View... rows) {
         LinearLayout group = new LinearLayout(this);
         group.setOrientation(LinearLayout.VERTICAL);
-        group.setBackground(roundedBg(cardBg(), 12, cardStroke()));
+        group.setBackground(roundedBg(cardBg(), 18, cardStroke()));
         group.setClipToOutline(true);
         boolean first = true;
         for (View row : rows) {
@@ -1351,7 +1433,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             first = false;
         }
         LinearLayout.LayoutParams lp = matchWrap();
-        lp.setMargins(0, 0, 0, dp(10));
+        lp.setMargins(0, 0, 0, dp(13));
         group.setLayoutParams(lp);
         return group;
     }
@@ -1361,7 +1443,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         d.setBackgroundColor(settingsDivider());
         int h = Math.max(1, Math.round(getResources().getDisplayMetrics().density * 0.7f));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, h);
-        lp.setMargins(dp(50), 0, 0, 0);
+        lp.setMargins(dp(62), 0, dp(12), 0);
         d.setLayoutParams(lp);
         return d;
     }
@@ -5906,23 +5988,32 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         executor.submit(() -> {
             try {
-                String body = "";
+                JSONObject payload = null;
                 String usedUrl = "";
+                int bestVersionCode = -1;
                 Exception lastError = null;
                 for (String updateUrl : urlsToTry) {
                     try {
-                        body = httpGetPublic(updateUrl);
-                        usedUrl = updateUrl;
-                        break;
+                        String body = httpGetPublic(updateUrl);
+                        JSONObject candidatePayload = new JSONObject(body);
+                        JSONObject candidateAndroid = candidatePayload.optJSONObject("android");
+                        if (candidateAndroid == null) {
+                            candidateAndroid = candidatePayload;
+                        }
+                        int candidateCode = candidateAndroid.optInt("versionCode", 0);
+                        if (payload == null || candidateCode > bestVersionCode) {
+                            payload = candidatePayload;
+                            usedUrl = updateUrl;
+                            bestVersionCode = candidateCode;
+                        }
                     } catch (Exception e) {
                         lastError = e;
                     }
                 }
-                if (body.isEmpty()) {
+                if (payload == null) {
                     throw lastError == null ? new IllegalStateException("No update source worked") : lastError;
                 }
 
-                JSONObject payload = new JSONObject(body);
                 JSONObject androidUpdate = payload.optJSONObject("android");
                 if (androidUpdate == null) {
                     androidUpdate = payload;
@@ -6992,8 +7083,44 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return isDarkTheme() ? color("#2C2C2E") : color("#E5E5EA");
     }
 
+    private int settingsHeroBg() {
+        return isDarkTheme() ? color("#1B1B20") : color("#FFFFFF");
+    }
+
+    private int settingsHeroStroke() {
+        return isDarkTheme() ? color("#303039") : color("#E7EAF0");
+    }
+
+    private int settingsHeroBadgeBg() {
+        if (hasAvailableUpdate()) {
+            return isDarkTheme() ? color("#3B1518") : color("#FEE2E2");
+        }
+        if (hasPairedDevice()) {
+            return isDarkTheme() ? color("#123524") : color("#DCFCE7");
+        }
+        return isDarkTheme() ? color("#18233A") : color("#EAF2FF");
+    }
+
+    private int settingsHeroBadgeText() {
+        if (hasAvailableUpdate()) {
+            return isDarkTheme() ? color("#FDA4AF") : color("#DC2626");
+        }
+        if (hasPairedDevice()) {
+            return isDarkTheme() ? color("#86EFAC") : color("#16A34A");
+        }
+        return isDarkTheme() ? color("#93C5FD") : color("#2563EB");
+    }
+
     private int iconChipBg() {
         return isDarkTheme() ? color("#2B2B31") : color("#F5F7FA");
+    }
+
+    private int settingsIconChipBg(int accent) {
+        return blendColors(cardBg(), accent, isDarkTheme() ? 0.18f : 0.11f);
+    }
+
+    private int settingsValueBg() {
+        return isDarkTheme() ? color("#27272D") : color("#F4F6FA");
     }
 
     private int iconChipStroke() {
@@ -7082,6 +7209,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private int gpuTrackColor() {
         return isDarkTheme() ? color("#9CA3AF") : color("#6B7280");
+    }
+
+    private int blendColors(int base, int overlay, float amount) {
+        float clamped = Math.max(0f, Math.min(1f, amount));
+        int r = Math.round(Color.red(base) * (1f - clamped) + Color.red(overlay) * clamped);
+        int g = Math.round(Color.green(base) * (1f - clamped) + Color.green(overlay) * clamped);
+        int b = Math.round(Color.blue(base) * (1f - clamped) + Color.blue(overlay) * clamped);
+        return Color.rgb(r, g, b);
     }
 
     private void styleActionButton(Button button) {
