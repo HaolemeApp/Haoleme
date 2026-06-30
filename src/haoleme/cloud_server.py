@@ -25,7 +25,7 @@ from ._compat import remove_prefix, remove_suffix, unlink_missing
 
 
 DEFAULT_MIN_ANDROID_VERSION_CODE = 22
-PAIR_TTL_SECONDS = 300
+PAIR_TTL_SECONDS = 600
 PAIR_START_RATE_LIMIT = 20
 APP_REGISTER_RATE_LIMIT = 20
 PAIR_CONFIRM_RATE_LIMIT = 30
@@ -38,8 +38,8 @@ MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_TAIL = 1_000_000
 MAX_OUTPUT_CHUNKS = 20_000
 MAX_LIST_OUTPUT_PREVIEW = 2000
-DEVICE_ONLINE_WINDOW_SECONDS = 90
-STALE_RUNNING_GRACE_SECONDS = 90
+DEVICE_ONLINE_WINDOW_SECONDS = 240
+STALE_RUNNING_GRACE_SECONDS = 240
 STALE_RUNNING_SECONDS = DEVICE_ONLINE_WINDOW_SECONDS + STALE_RUNNING_GRACE_SECONDS
 DOWNLOADS_DIR_NAME = "downloads"
 DEFAULT_BACKUP_KEEP = 14
@@ -653,7 +653,12 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         e2ee_version = int_or_none(payload.get("e2eeVersion"))
         confirmed_device_id = pair["device_id"] or ""
         confirmed_device_name = pair["device_name"] or "好了么 CLI"
-        reuse_device = get_device(self.server.db_path, account_key, confirmed_device_id)
+        replace_device_id = str(payload.get("replaceDeviceId") or "").strip()
+        reuse_device = None
+        if is_valid_device_id(replace_device_id):
+            reuse_device = get_device(self.server.db_path, account_key, replace_device_id)
+        if reuse_device is None:
+            reuse_device = get_device(self.server.db_path, account_key, confirmed_device_id)
         if reuse_device is not None:
             confirmed_device_id = reuse_device["id"]
             confirmed_device_name = reuse_device["name"] or confirmed_device_name

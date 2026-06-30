@@ -252,6 +252,42 @@ class CloudServerDeviceTest(unittest.TestCase):
                 thread.join(timeout=2)
                 server.server_close()
 
+    def test_pair_confirm_reuses_requested_existing_device_for_app_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 66)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            app_token = "app-token-secret-for-device-reuse"
+            account_key = token_hash(app_token)
+            try:
+                upsert_device(db_path, account_key, "dev_old123", "My Mac", "2026-06-18T01:00:00Z")
+                self.assertTrue(create_pair(db_path, "234567", "pair-secret", "dev_new", "My Mac", time.time(), "public-key"))
+
+                confirmed = self.post_json(
+                    base + "/api/pair/confirm",
+                    {
+                        "code": "234567",
+                        "replaceDeviceId": "dev_old123",
+                        "appVersionCode": 157,
+                        "appVersionName": "0.9.22",
+                        "platform": "android",
+                    },
+                    token=app_token,
+                )
+
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["deviceId"], "dev_old123")
+                self.assertEqual(confirmed["deviceName"], "My Mac")
+                self.assertEqual([device["id"] for device in list_devices(db_path, account_key)], ["dev_old123"])
+                pair = get_pair(db_path, "234567")
+                self.assertEqual(pair["device_id"], "dev_old123")
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
     def test_runs_can_be_filtered_by_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"

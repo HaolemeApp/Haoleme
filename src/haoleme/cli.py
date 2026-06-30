@@ -44,8 +44,10 @@ RESERVED_COMMANDS = {
     "update",
 }
 PUBLIC_URL_RE = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
-HEARTBEAT_INTERVAL_SECONDS = 60
+HEARTBEAT_INTERVAL_SECONDS = 45
+HEARTBEAT_STAGGER_SECONDS = 20
 HEARTBEAT_ACTIVE_POLL_SECONDS = 3
+GITHUB_UPDATE_JSON_URL = "https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json"
 ORPHANED_RUN_GRACE_SECONDS = 30
 INTERRUPT_NOTE = "\n[好了么] Interrupted from mobile app.\n"
 
@@ -1070,7 +1072,7 @@ def stop_heartbeat_daemon() -> tuple[bool, str]:
 def heartbeat_initial_delay(config: CloudConfig) -> int:
     seed = config.device_id or config.machine_id or config.device_name or gethostname() or "haoleme"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16) % HEARTBEAT_INTERVAL_SECONDS
+    return int(digest[:8], 16) % HEARTBEAT_STAGGER_SECONDS
 
 
 def _parse_int(value: str):
@@ -1320,6 +1322,7 @@ def update_json_urls() -> list[str]:
         add(config.api_url.rstrip("/") + "/downloads/update.json")
     add(DEFAULT_CLOUD_URL.rstrip("/") + "/downloads/update.json")
     add(os.environ.get("HAOLEME_UPDATE_URL", ""))
+    add(GITHUB_UPDATE_JSON_URL)
     return urls
 
 

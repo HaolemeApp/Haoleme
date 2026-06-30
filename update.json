@@ -13,9 +13,9 @@
     "notes": "0.9.22：修复配对码假过期。App 会自动迁移旧 IP 配置，并在当前服务器找不到配对码时回退到 api.haoleme.cloud。"
   },
   "python": {
-    "version": "0.4.11",
+    "version": "0.4.12",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.11-py3-none-any.whl",
-    "notes": "0.4.11: fixes pairing on the cloud server so pair info/confirm no longer fail as expired/unauthorized."
+    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.22/haoleme-0.4.12-py3-none-any.whl",
+    "notes": "0.4.12: keeps devices online more reliably and reuses the existing device when re-pairing from the app."
   }
 }
