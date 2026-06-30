@@ -597,13 +597,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         devicesScrollView = new HorizontalScrollView(this);
         devicesScrollView.setHorizontalScrollBarEnabled(false);
+        devicesScrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         devicesContainer = new LinearLayout(this);
         devicesContainer.setOrientation(LinearLayout.HORIZONTAL);
+        devicesContainer.setGravity(Gravity.CENTER_VERTICAL);
+        devicesContainer.setPadding(0, 0, dp(8), 0);
         devicesScrollView.addView(devicesContainer, new HorizontalScrollView.LayoutParams(
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT,
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT
         ));
-        content.addView(devicesScrollView, matchWrap());
+        LinearLayout.LayoutParams stripParams = matchWrap();
+        stripParams.setMargins(0, dp(2), 0, dp(8));
+        content.addView(devicesScrollView, stripParams);
 
         LinearLayout deviceHeader = new LinearLayout(this);
         deviceHeader.setOrientation(LinearLayout.VERTICAL);
@@ -2978,35 +2983,46 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private View deviceButton(String id, String label, boolean online) {
         boolean selected = id.equals(selectedDeviceId);
         LinearLayout button = new LinearLayout(this);
-        button.setOrientation(LinearLayout.HORIZONTAL);
-        button.setGravity(Gravity.CENTER_VERTICAL);
-        button.setMinimumHeight(dp(34));
-        button.setPadding(dp(10), 0, dp(11), 0);
-        button.setBackground(roundedBg(selected ? tabSelectedBg() : cardBg(), 14, selected ? tabSelectedBg() : cardStroke()));
+        button.setOrientation(LinearLayout.VERTICAL);
+        button.setGravity(Gravity.CENTER);
+        button.setMinimumHeight(dp(48));
+        button.setPadding(dp(12), 0, dp(12), 0);
+        button.setBackgroundColor(Color.TRANSPARENT);
         button.setClickable(true);
         button.setElevation(0);
 
-        if (!"all".equals(id)) {
-            View dot = statusDot(online ? color("#16A34A") : (selected ? tabSelectedText() : textSecondary()));
-            LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(8), dp(8));
-            dotParams.setMargins(0, 0, dp(10), 0);
-            button.addView(dot, dotParams);
-        }
+        LinearLayout labelRow = new LinearLayout(this);
+        labelRow.setOrientation(LinearLayout.HORIZONTAL);
+        labelRow.setGravity(Gravity.CENTER);
 
-        ComputerIconView icon = new ComputerIconView(this, selected ? tabSelectedText() : textPrimary());
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(20), dp(18));
-        iconParams.setMargins(0, 0, dp(7), 0);
-        button.addView(icon, iconParams);
+        if (!"all".equals(id)) {
+            View dot = statusDot(online ? color("#16A34A") : mutedDotColor());
+            LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(7), dp(7));
+            dotParams.setMargins(0, 0, dp(6), 0);
+            labelRow.addView(dot, dotParams);
+
+            ComputerIconView icon = new ComputerIconView(this, selected ? textPrimary() : textSecondary());
+            LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(17), dp(15));
+            iconParams.setMargins(0, 0, dp(5), 0);
+            labelRow.addView(icon, iconParams);
+        }
 
         TextView name = new TextView(this);
         name.setText(label == null || label.trim().isEmpty() ? ("all".equals(id) ? "All" : "Device") : label.trim());
         name.setSingleLine(true);
-        name.setTextSize(13);
+        name.setTextSize(selected ? 18 : 17);
         name.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
-        name.setTextColor(selected ? tabSelectedText() : textPrimary());
-        name.setGravity(Gravity.CENTER_VERTICAL);
+        name.setTextColor(selected ? textPrimary() : topTabMutedText());
+        name.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        button.addView(name, nameParams);
+        labelRow.addView(name, nameParams);
+        button.addView(labelRow, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        View underline = new View(this);
+        underline.setBackground(roundedBg(selected ? topTabAccent() : Color.TRANSPARENT, 99, Color.TRANSPARENT));
+        LinearLayout.LayoutParams underlineParams = new LinearLayout.LayoutParams(dp(36), dp(4));
+        underlineParams.setMargins(0, dp(7), 0, 0);
+        button.addView(underline, underlineParams);
 
         button.setOnClickListener(v -> {
             selectedDeviceId = id;
@@ -3027,9 +3043,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                dp(42)
+                dp(56)
         );
-        params.setMargins(0, dp(8), dp(8), 0);
+        params.setMargins(0, 0, dp(16), 0);
         button.setLayoutParams(params);
         return button;
     }
@@ -3965,8 +3981,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String runId = run.optString("id", "");
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(12), dp(10), dp(12), dp(10));
-        card.setBackground(roundedBg(cardBg(), 12, cardStroke()));
+        card.setPadding(dp(14), dp(12), dp(14), dp(12));
+        card.setBackground(roundedBg(cardBg(), 18, cardStroke()));
         card.setElevation(0);
         card.setClickable(true);
         card.setOnClickListener(v -> openRunDetail(runId));
@@ -3975,7 +3991,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        cardParams.setMargins(0, 0, 0, dp(6));
+        cardParams.setMargins(0, 0, 0, dp(10));
         card.setLayoutParams(cardParams);
 
         String status = run.optString("status", "unknown");
@@ -4029,8 +4045,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
         output.setTextColor(hasOutput ? textPrimary() : textSecondary());
         output.setTypeface(android.graphics.Typeface.MONOSPACE);
         output.setSingleLine(true);
-        output.setPadding(0, dp(5), 0, 0);
-        card.addView(output, matchWrap());
+        output.setPadding(dp(10), dp(8), dp(10), dp(8));
+        output.setBackground(roundedBg(outputPreviewBg(), 12, outputPreviewStroke()));
+        LinearLayout.LayoutParams outputParams = matchWrap();
+        outputParams.setMargins(0, dp(8), 0, 0);
+        card.addView(output, outputParams);
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -4039,7 +4058,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        actionParams.setMargins(0, dp(6), 0, 0);
+        actionParams.setMargins(0, dp(8), 0, 0);
 
         TextView consoleButton = actionButton(actionLabel("▣", t("console"), 1.12f));
         consoleButton.setOnClickListener(v -> openRunDetail(runId));
@@ -6963,6 +6982,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return isDarkTheme() ? color("#98989F") : color("#8E8E93");
     }
 
+    private int topTabMutedText() {
+        return isDarkTheme() ? color("#B8B8BE") : color("#737987");
+    }
+
+    private int topTabAccent() {
+        return color("#FF4D63");
+    }
+
+    private int mutedDotColor() {
+        return isDarkTheme() ? color("#5F6068") : color("#C9CED8");
+    }
+
     private int chevronColor() {
         return isDarkTheme() ? color("#5A5A5E") : color("#C7C7CC");
     }
@@ -6993,6 +7024,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private int consoleBg() {
         return isDarkTheme() ? color("#0F1012") : color("#FFFFFF");
+    }
+
+    private int outputPreviewBg() {
+        return isDarkTheme() ? color("#141417") : color("#F8F8FA");
+    }
+
+    private int outputPreviewStroke() {
+        return isDarkTheme() ? color("#24242A") : color("#ECECF1");
     }
 
     private int consoleText() {

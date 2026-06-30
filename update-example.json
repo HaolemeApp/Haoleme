@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 155,
-    "versionName": "0.9.20",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.20.apk",
+    "versionCode": 156,
+    "versionName": "0.9.21",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.21.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.20.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.20/Haoleme-0.9.20.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.21.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.21/Haoleme-0.9.21.apk"
     ],
-    "sha256": "d917ca211ed8c436b2a9fb2a6711423fbc60e29b63db3bd310661539dfc0cfea",
+    "sha256": "1459189a6d984cb207c72938abbb2ede1838143dede6eeb94c2050f41a4a0933",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.20：修复根因——重置/换服务器/重新配对时不再丢弃端到端密钥(以前会换新密钥导致旧运行无法解密、显示 Encrypted command、账号碎片化)。现在密钥保持稳定,干净配对后命令与输出可正常解密。"
+    "notes": "0.9.21：视觉升级：首页设备栏改为小红书风格频道导航，选中设备显示红色下划线；运行卡片优化为更清爽的信息流质感。"
   },
   "python": {
     "version": "0.4.10",
