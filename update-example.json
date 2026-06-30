@@ -2,10 +2,10 @@
   "android": {
     "versionCode": 156,
     "versionName": "0.9.21",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-0.9.21.apk",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.21/Haoleme-0.9.21.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.21.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.21/Haoleme-0.9.21.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.21/Haoleme-0.9.21.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.21.apk"
     ],
     "sha256": "1459189a6d984cb207c72938abbb2ede1838143dede6eeb94c2050f41a4a0933",
     "minSupportedVersionCode": 66,
