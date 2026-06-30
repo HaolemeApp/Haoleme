@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 156,
-    "versionName": "0.9.21",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.21/Haoleme-0.9.21.apk",
+    "versionCode": 157,
+    "versionName": "0.9.22",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.22/Haoleme-0.9.22.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.21/Haoleme-0.9.21.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.21.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.22/Haoleme-0.9.22.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.22.apk"
     ],
-    "sha256": "1459189a6d984cb207c72938abbb2ede1838143dede6eeb94c2050f41a4a0933",
+    "sha256": "e6f6fa5904455911085b750bd3973282fa270cf4006db21b5b02ccf0973e8c5a",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.21：视觉升级：首页设备栏改为小红书风格频道导航，选中设备显示红色下划线；运行卡片优化为更清爽的信息流质感。"
+    "notes": "0.9.22：修复配对码假过期。App 会自动迁移旧 IP 配置，并在当前服务器找不到配对码时回退到 api.haoleme.cloud。"
   },
   "python": {
     "version": "0.4.11",

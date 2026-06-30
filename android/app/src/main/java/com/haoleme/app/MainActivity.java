@@ -176,6 +176,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String[] LEGACY_SERVER_URLS = new String[]{
             "http://106.14.246.204",
             "https://106.14.246.204",
+            "http://39.96.50.42",
+            "https://39.96.50.42",
             "http://api.haoleme.cloud"
     };
 
@@ -5486,30 +5488,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         statusText.setText(isEnglish() ? "Pairing..." : "正在配对...");
         executor.submit(() -> {
             try {
-                // Step 1: fetch pair info. This is idempotent (a read), so it's
-                // safe to retry on a flaky network.
-                JSONObject info = null;
-                int maxInfoAttempts = 3;
-                for (int attempt = 1; attempt <= maxInfoAttempts; attempt++) {
-                    try {
-                        JSONObject infoPayload = new JSONObject();
-                        infoPayload.put("code", normalizedCode);
-                        String infoText = httpPostJson(targetServer + "/api/pair/info", infoPayload.toString());
-                        info = infoText.isEmpty() ? new JSONObject() : new JSONObject(infoText);
-                        break;
-                    } catch (HaolemeHttpException he) {
-                        throw he;
-                    } catch (Exception netErr) {
-                        if (attempt >= maxInfoAttempts) {
-                            throw netErr;
-                        }
-                        final int shownAttempt = attempt;
-                        handler.post(() -> statusText.setText(isEnglish()
-                                ? "Weak network — retrying (" + shownAttempt + "/" + (maxInfoAttempts - 1) + ")..."
-                                : "网络不稳，正在重试（" + shownAttempt + "/" + (maxInfoAttempts - 1) + "）..."));
-                        Thread.sleep(900L);
-                    }
-                }
+                PairInfoResult pairInfo = fetchPairInfoWithFallback(targetServer, normalizedCode);
+                JSONObject info = pairInfo.info;
+                String confirmedServer = pairInfo.server;
 
                 // Step 2: build the confirm payload (encrypt the account key to
                 // the CLI's public key).
@@ -5533,7 +5514,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 // it must NOT be retried — a retry after a dropped response would
                 // hit an already-used/deleted code and wrongly report "expired".
                 // A network error here surfaces as an honest network message.
-                String responseText = httpPostJson(targetServer + "/api/pair/confirm", payload.toString());
+                String responseText = httpPostJson(confirmedServer + "/api/pair/confirm", payload.toString());
                 JSONObject response = responseText.isEmpty() ? new JSONObject() : new JSONObject(responseText);
                 String deviceName = response.optString("deviceName", "").trim();
                 if (deviceName.isEmpty()) {
@@ -5546,6 +5527,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 String finalAccount = account.isEmpty() ? "default" : account;
                 String finalPairedAt = pairedAt;
                 String finalDeviceId = deviceId;
+                String finalServer = confirmedServer;
                 handler.post(() -> {
                     pairingInProgress = false;
                     if (pairButton != null) {
@@ -5559,7 +5541,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                             .putString("paired_device_id", finalDeviceId)
                             .putString("paired_account", finalAccount)
                             .putString("paired_at", finalPairedAt)
-                            .putString("paired_server_url", targetServer)
+                            .putString("paired_server_url", finalServer)
+                            .putString("server_url", finalServer)
                             .apply();
                     if (!finalDeviceId.isEmpty()) {
                         selectedDeviceId = finalDeviceId;
@@ -5582,6 +5565,57 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 });
             }
         });
+    }
+
+    private PairInfoResult fetchPairInfoWithFallback(String initialServer, String normalizedCode) throws Exception {
+        String primary = normalizeServerUrl(initialServer);
+        try {
+            return fetchPairInfoWithRetry(primary, normalizedCode);
+        } catch (HaolemeHttpException first) {
+            String fallback = normalizeServerUrl(DEFAULT_SERVER_URL);
+            if (isPairCodeMissing(first) && !fallback.equals(primary)) {
+                handler.post(() -> statusText.setText(isEnglish()
+                        ? "Pair code not found on saved server. Trying Haoleme Cloud..."
+                        : "当前服务器没有找到配对码，正在切换到好了么云端..."));
+                try {
+                    return fetchPairInfoWithRetry(fallback, normalizedCode);
+                } catch (HaolemeHttpException second) {
+                    if (!isPairCodeMissing(second)) {
+                        throw second;
+                    }
+                }
+            }
+            throw first;
+        }
+    }
+
+    private PairInfoResult fetchPairInfoWithRetry(String server, String normalizedCode) throws Exception {
+        int maxInfoAttempts = 3;
+        for (int attempt = 1; attempt <= maxInfoAttempts; attempt++) {
+            try {
+                JSONObject infoPayload = new JSONObject();
+                infoPayload.put("code", normalizedCode);
+                String infoText = httpPostJson(server + "/api/pair/info", infoPayload.toString());
+                JSONObject info = infoText.isEmpty() ? new JSONObject() : new JSONObject(infoText);
+                return new PairInfoResult(server, info);
+            } catch (HaolemeHttpException he) {
+                throw he;
+            } catch (Exception netErr) {
+                if (attempt >= maxInfoAttempts) {
+                    throw netErr;
+                }
+                final int shownAttempt = attempt;
+                handler.post(() -> statusText.setText(isEnglish()
+                        ? "Weak network — retrying (" + shownAttempt + "/" + (maxInfoAttempts - 1) + ")..."
+                        : "网络不稳，正在重试（" + shownAttempt + "/" + (maxInfoAttempts - 1) + "）..."));
+                Thread.sleep(900L);
+            }
+        }
+        throw new IOException("pair info unavailable");
+    }
+
+    private boolean isPairCodeMissing(HaolemeHttpException e) {
+        return e != null && ("pair_code_expired".equals(e.errorCode()) || e.statusCode == 404);
     }
 
     private String reusablePairDeviceId() {
@@ -7422,6 +7456,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
             paint.setStyle(Paint.Style.FILL);
             canvas.drawCircle(cx, cy - size * 0.15f, size * 0.04f, paint);
+        }
+    }
+
+    private static class PairInfoResult {
+        final String server;
+        final JSONObject info;
+
+        PairInfoResult(String server, JSONObject info) {
+            this.server = server;
+            this.info = info;
         }
     }
 }
