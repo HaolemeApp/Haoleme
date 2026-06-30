@@ -1,6 +1,9 @@
 import json
 import tempfile
+import threading
+import time
 import unittest
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -27,6 +30,7 @@ from haoleme.cloud_server import (
     get_run,
     init_db,
     health_payload,
+    HaolemeCloudServer,
     find_app_token,
     get_space_join_code,
     is_e2ee_run,
@@ -213,6 +217,40 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertTrue(cancel_pair(db_path, "123456", "pair-secret", "2026-06-18T01:00:01Z"))
             self.assertEqual(get_pair(db_path, "123456")["status"], "cancelled")
             self.assertFalse(cancel_pair(db_path, "123456", "pair-secret", "2026-06-18T01:00:02Z"))
+
+    def test_pair_info_and_confirm_do_not_require_existing_auth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 66)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            app_token = "app-token-secret-for-first-pairing"
+            try:
+                self.assertTrue(create_pair(db_path, "123456", "pair-secret", "dev_123", "Server A", time.time(), "public-key"))
+
+                info = self.post_json(base + "/api/pair/info", {"code": "123456"})
+                self.assertEqual(info["status"], "pending")
+                self.assertEqual(info["deviceId"], "dev_123")
+
+                confirmed = self.post_json(
+                    base + "/api/pair/confirm",
+                    {"code": "123456", "appVersionCode": 156, "appVersionName": "0.9.21", "platform": "android"},
+                    token=app_token,
+                )
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["deviceId"], "dev_123")
+
+                account_key = token_hash(app_token)
+                self.assertIsNotNone(find_app_token(db_path, token_hash(app_token)))
+                self.assertEqual([device["id"] for device in list_devices(db_path, account_key)], ["dev_123"])
+                pair = get_pair(db_path, "123456")
+                self.assertIsNotNone(pair)
+                self.assertIsNotNone(authenticate_device_token(db_path, token_hash(pair["token"])))
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
 
     def test_runs_can_be_filtered_by_status(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -629,6 +667,15 @@ class CloudServerDeviceTest(unittest.TestCase):
             "stderrTail": "",
             "outputTail": "hello\n",
         }
+
+    def post_json(self, url, payload, token=""):
+        body = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
 
 
 class CloudServerAppendTest(unittest.TestCase):

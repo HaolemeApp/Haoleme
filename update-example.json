@@ -13,9 +13,9 @@
     "notes": "0.9.21：视觉升级：首页设备栏改为小红书风格频道导航，选中设备显示红色下划线；运行卡片优化为更清爽的信息流质感。"
   },
   "python": {
-    "version": "0.4.10",
+    "version": "0.4.11",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.10-py3-none-any.whl",
-    "notes": "0.4.10: cloud runs now carry CLI version, OS and hostname (E2EE-encrypted) so the app can show full run metadata."
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.11-py3-none-any.whl",
+    "notes": "0.4.11: fixes pairing on the cloud server so pair info/confirm no longer fail as expired/unauthorized."
   }
 }

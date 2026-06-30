@@ -240,6 +240,12 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/pair/cancel":
             self.cancel_pairing()
             return
+        if parsed.path == "/api/pair/info":
+            self.pairing_info()
+            return
+        if parsed.path == "/api/pair/confirm":
+            self.confirm_pairing()
+            return
         if parsed.path == "/api/apps/register":
             if not self.allow_app_register_attempt():
                 self.send_json(
@@ -263,18 +269,6 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
                 return
             self.share_sync_space(auth)
-            return
-        if parsed.path == "/api/pair/info":
-            if auth.scope != "admin":
-                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
-                return
-            self.pairing_info()
-            return
-        if parsed.path == "/api/pair/confirm":
-            if auth.scope != "admin":
-                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
-                return
-            self.confirm_pairing()
             return
         if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/rename"):
             if auth.scope != "admin":
@@ -615,10 +609,23 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             )
             return
 
-        auth = self.authenticated_context()
-        if not auth or auth.scope != "admin":
+        app_token = self.bearer_token()
+        if not app_token or len(app_token) < 16:
             self.send_unauthorized()
             return
+        app_token_hash = token_hash(app_token)
+        app_auth = find_app_token(self.server.db_path, app_token_hash)
+        if app_auth is not None and app_auth["revoked_at"]:
+            self.send_unauthorized()
+            return
+        if app_auth is not None:
+            account_key = app_auth["account_key"]
+            client_id = app_auth["client_id"] or ("app_pair_" + app_token_hash[:16])
+            client_name = app_auth["client_name"] or "Haoleme App"
+        else:
+            account_key = app_token_hash
+            client_id = "app_pair_" + app_token_hash[:16]
+            client_name = "Haoleme App"
 
         code = normalize_pair_code(payload.get("code"))
         if not code:
@@ -646,7 +653,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         e2ee_version = int_or_none(payload.get("e2eeVersion"))
         confirmed_device_id = pair["device_id"] or ""
         confirmed_device_name = pair["device_name"] or "好了么 CLI"
-        reuse_device = get_device(self.server.db_path, auth.account_key, confirmed_device_id)
+        reuse_device = get_device(self.server.db_path, account_key, confirmed_device_id)
         if reuse_device is not None:
             confirmed_device_id = reuse_device["id"]
             confirmed_device_name = reuse_device["name"] or confirmed_device_name
@@ -664,16 +671,25 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             encrypted_account_key_algorithm,
             e2ee_version,
         )
+        store_app_token(
+            self.server.db_path,
+            account_key,
+            client_id,
+            client_name,
+            platform,
+            app_token,
+            confirmed_at,
+        )
         upsert_device(
             self.server.db_path,
-            auth.account_key,
+            account_key,
             confirmed_device_id,
             confirmed_device_name,
             confirmed_at,
         )
         store_device_token(
             self.server.db_path,
-            auth.account_key,
+            account_key,
             confirmed_device_id,
             confirmed_device_name,
             device_token,
