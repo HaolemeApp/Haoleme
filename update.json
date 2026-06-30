@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 158,
-    "versionName": "0.9.23",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.23/Haoleme-0.9.23.apk",
+    "versionCode": 159,
+    "versionName": "0.9.24",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.24/Haoleme-0.9.24.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.23/Haoleme-0.9.23.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.23.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.24/Haoleme-0.9.24.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.24.apk"
     ],
-    "sha256": "d4542cc4b761f52a0d877707053799cb0881309ba74e5cd98f693389dc71bd00",
+    "sha256": "b7d9ca342fa3bd53c82655bbbf87a79cf840ff1bd63c799346212748355dfedb",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.23：美化设置页，增加顶部概览卡、统一分组层级和图标质感，并让更新检查自动选择多个更新源里的最高版本。"
+    "notes": "0.9.24：修复设备列表刷新偶尔把已知设备刷没的问题。App 会合并云端设备和本地缓存，只有主动断联时才移除设备。"
   },
   "python": {
     "version": "0.4.12",

@@ -162,6 +162,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String PREF_MASK_SENSITIVE = "mask_sensitive";
     private static final String PREF_CONSOLE_HISTORY_CHARS = "console_history_chars";
     private static final String PREF_SHOW_OFFLINE_DEVICES = "show_offline_devices";
+    private static final String PREF_REVOKED_DEVICE_IDS = "revoked_device_ids";
     private static final String PREF_LANGUAGE_MODE = "language_mode";
     private static final String PREF_APP_CLIENT_ID = "app_client_id";
     private static final int CONSOLE_RENDER_INITIAL_CHARS = 60000;
@@ -2597,6 +2598,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     selectedDeviceId = "all";
                     prefs.edit().putString("selected_device_id", selectedDeviceId).apply();
                 }
+                rememberLocallyRevokedDevices(revokedIds);
+                removeDevicesFromCache(revokedIds);
                 statusText.setText(isEnglish() ? "Disconnected " + finalRevoked + " device(s)." : "已断联 " + finalRevoked + " 台设备。");
                 refreshDevices();
                 refreshRuns();
@@ -2852,8 +2855,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         executor.submit(() -> {
             try {
                 String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
-                JSONArray devices = new JSONObject(body).getJSONArray("devices");
-                prefs.edit().putString(CACHE_DEVICES, devices.toString()).apply();
+                JSONArray devices = mergeCloudDevicesWithCache(new JSONObject(body).getJSONArray("devices"));
                 handler.post(() -> renderDevices(devices));
             } catch (Exception ignored) {
                 Log.w(TAG, "refreshDevices failed for " + safeRequestLabel(requestUrl), ignored);
@@ -2891,6 +2893,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String name = deviceName == null || deviceName.trim().isEmpty() ? appDisplayName() + " device" : deviceName.trim();
         String seenAt = pairedAt == null ? "" : pairedAt.trim();
         try {
+            forgetLocallyRevokedDevice(id);
             JSONArray devices;
             String cached = prefs.getString(CACHE_DEVICES, "");
             if (cached == null || cached.isEmpty()) {
@@ -2919,6 +2922,103 @@ public class MainActivity extends Activity implements LifecycleOwner {
             prefs.edit().putString(CACHE_DEVICES, merged.toString()).apply();
         } catch (Exception ignored) {
         }
+    }
+
+    private JSONArray mergeCloudDevicesWithCache(JSONArray cloudDevices) {
+        Map<String, JSONObject> byId = new HashMap<>();
+        try {
+            String cached = prefs.getString(CACHE_DEVICES, "");
+            if (cached != null && !cached.isEmpty()) {
+                JSONArray cachedDevices = new JSONArray(cached);
+                for (int i = 0; i < cachedDevices.length(); i++) {
+                    JSONObject device = cachedDevices.optJSONObject(i);
+                    String id = device == null ? "" : device.optString("id", "").trim();
+                    if (!id.isEmpty() && !isLocallyRevokedDevice(id) && device.optString("revokedAt", "").trim().isEmpty()) {
+                        byId.put(id, new JSONObject(device.toString()));
+                    }
+                }
+            }
+            for (int i = 0; i < cloudDevices.length(); i++) {
+                JSONObject device = cloudDevices.optJSONObject(i);
+                String id = device == null ? "" : device.optString("id", "").trim();
+                if (id.isEmpty() || isLocallyRevokedDevice(id) || !device.optString("revokedAt", "").trim().isEmpty()) {
+                    continue;
+                }
+                JSONObject existing = byId.get(id);
+                JSONObject merged = new JSONObject(device.toString());
+                if (merged.optString("name", "").trim().isEmpty() && existing != null) {
+                    merged.put("name", existing.optString("name", id));
+                }
+                if (merged.optString("createdAt", "").trim().isEmpty() && existing != null) {
+                    merged.put("createdAt", existing.optString("createdAt", ""));
+                }
+                byId.put(id, merged);
+            }
+        } catch (Exception ignored) {
+            JSONArray fallback = cloudDevices == null ? new JSONArray() : cloudDevices;
+            prefs.edit().putString(CACHE_DEVICES, fallback.toString()).apply();
+            return fallback;
+        }
+        JSONArray merged = new JSONArray();
+        for (JSONObject device : byId.values()) {
+            merged.put(device);
+        }
+        prefs.edit().putString(CACHE_DEVICES, merged.toString()).apply();
+        return merged;
+    }
+
+    private void removeDevicesFromCache(Set<String> deviceIds) {
+        if (deviceIds == null || deviceIds.isEmpty()) {
+            return;
+        }
+        try {
+            String cached = prefs.getString(CACHE_DEVICES, "");
+            if (cached == null || cached.isEmpty()) {
+                return;
+            }
+            JSONArray devices = new JSONArray(cached);
+            JSONArray kept = new JSONArray();
+            for (int i = 0; i < devices.length(); i++) {
+                JSONObject device = devices.optJSONObject(i);
+                String id = device == null ? "" : device.optString("id", "").trim();
+                if (id.isEmpty() || deviceIds.contains(id)) {
+                    continue;
+                }
+                kept.put(device);
+            }
+            prefs.edit().putString(CACHE_DEVICES, kept.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void rememberLocallyRevokedDevices(Set<String> deviceIds) {
+        if (deviceIds == null || deviceIds.isEmpty()) {
+            return;
+        }
+        Set<String> stored = new HashSet<>(prefs.getStringSet(PREF_REVOKED_DEVICE_IDS, new HashSet<>()));
+        for (String id : deviceIds) {
+            if (id != null && !id.trim().isEmpty()) {
+                stored.add(id.trim());
+            }
+        }
+        prefs.edit().putStringSet(PREF_REVOKED_DEVICE_IDS, stored).apply();
+    }
+
+    private void forgetLocallyRevokedDevice(String deviceId) {
+        if (deviceId == null || deviceId.trim().isEmpty()) {
+            return;
+        }
+        Set<String> stored = new HashSet<>(prefs.getStringSet(PREF_REVOKED_DEVICE_IDS, new HashSet<>()));
+        if (stored.remove(deviceId.trim())) {
+            prefs.edit().putStringSet(PREF_REVOKED_DEVICE_IDS, stored).apply();
+        }
+    }
+
+    private boolean isLocallyRevokedDevice(String deviceId) {
+        if (deviceId == null || deviceId.trim().isEmpty()) {
+            return false;
+        }
+        return prefs.getStringSet(PREF_REVOKED_DEVICE_IDS, new HashSet<>()).contains(deviceId.trim());
     }
 
     private void renderDevices(JSONArray devices) {
@@ -3716,6 +3816,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         editor.remove("paired_device_id").remove("paired_device_name");
                     }
                     editor.apply();
+                    Set<String> revokedIds = new HashSet<>();
+                    revokedIds.add(deviceId);
+                    rememberLocallyRevokedDevices(revokedIds);
+                    removeDevicesFromCache(revokedIds);
                     statusText.setText(isEnglish() ? "Revoked " + label + "." : "已撤销 " + label + "。");
                     buildUi();
                     refreshDevices();
@@ -3953,7 +4057,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         continue;
                     }
                     String id = device.optString("id", "").trim();
-                    if (!id.isEmpty()) {
+                    if (!id.isEmpty() && !isLocallyRevokedDevice(id)) {
                         mergedById.put(id, device);
                     }
                 }
@@ -3965,7 +4069,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     continue;
                 }
                 String id = run.optString("deviceId", "").trim();
-                if (id.isEmpty()) {
+                if (id.isEmpty() || isLocallyRevokedDevice(id)) {
                     continue;
                 }
                 String name = run.optString("deviceName", "").trim();
