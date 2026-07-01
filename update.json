@@ -1,15 +1,15 @@
 {
   "android": {
-    "versionCode": 166,
-    "versionName": "0.9.31",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.31/Haoleme-0.9.31.apk",
+    "versionCode": 167,
+    "versionName": "0.9.32",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.32/Haoleme-0.9.32.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.31/Haoleme-0.9.31.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.32/Haoleme-0.9.32.apk"
     ],
-    "sha256": "93689bdf6e36998787f53647bba57393a76b3e7ac981499f63356f66f06a9352",
+    "sha256": "43c91dd2d968a06b6ec3e1506bf778b02a76bd2bd980f61e83636d8ee644379d",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "输出改为手机本地缓存优先：主页列表不再重复下载控制台大文本，Console 增量刷新会保存到本机，减轻服务器压力。"
+    "notes": "主页视觉升级：去掉单独三个点和卡片底部按钮，新增顶部状态卡、设备胶囊、筛选胶囊，运行卡片左滑可归档或删除。"
   },
   "python": {
     "version": "0.4.19",

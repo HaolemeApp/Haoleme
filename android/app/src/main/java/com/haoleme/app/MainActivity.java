@@ -472,7 +472,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         statusText.setTextSize(11);
         statusText.setTextColor(textSecondary());
         statusText.setGravity(Gravity.CENTER);
-        statusText.setPadding(0, dp(4), 0, dp(7));
+        statusText.setPadding(0, dp(1), 0, dp(4));
         root.addView(statusText, matchWrap());
 
         String rawSavedServerUrl = prefs.getString("server_url", "").trim();
@@ -609,6 +609,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
             buildPairOnboarding(content);
             return;
         }
+        content.addView(homeOverviewCard(), matchWrap());
+
         devicesScrollView = new HorizontalScrollView(this);
         devicesScrollView.setHorizontalScrollBarEnabled(false);
         devicesScrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -621,63 +623,25 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT
         ));
         LinearLayout.LayoutParams stripParams = matchWrap();
-        stripParams.setMargins(0, dp(2), 0, dp(8));
+        stripParams.setMargins(0, dp(10), 0, dp(6));
         content.addView(devicesScrollView, stripParams);
 
-        LinearLayout deviceHeader = new LinearLayout(this);
-        deviceHeader.setOrientation(LinearLayout.VERTICAL);
-
-        LinearLayout infoRow = new LinearLayout(this);
-        infoRow.setOrientation(LinearLayout.HORIZONTAL);
-        infoRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        deviceSummaryText = new TextView(this);
-        deviceSummaryText.setText("");
-        deviceSummaryText.setTextSize(11);
-        deviceSummaryText.setTextColor(textSecondary());
-        deviceSummaryText.setPadding(0, dp(6), dp(8), dp(6));
-        deviceSummaryText.setOnClickListener(v -> {
-            gpuExpanded = !gpuExpanded;
-            updateDeviceSummary();
-        });
-        infoRow.addView(deviceSummaryText, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
-        TextView deviceMenuButton = actionButton("⋯");
-        deviceMenuButton.setTextSize(22);
-        deviceMenuButton.setOnClickListener(v -> showDeviceActionsDialog());
-        LinearLayout.LayoutParams menuParams = new LinearLayout.LayoutParams(dp(42), dp(42));
-        infoRow.addView(deviceMenuButton, menuParams);
-
-        deviceHeader.addView(infoRow, matchWrap());
-
-        deviceGpuContainer = new LinearLayout(this);
-        deviceGpuContainer.setOrientation(LinearLayout.VERTICAL);
-        deviceGpuContainer.setVisibility(View.GONE);
-        attachGpuSwipe(deviceGpuContainer);
-        LinearLayout.LayoutParams gpuParams = matchWrap();
-        gpuParams.setMargins(0, 0, 0, dp(4));
-        deviceHeader.addView(deviceGpuContainer, gpuParams);
-
-        content.addView(deviceHeader, matchWrap());
-
-        // Status + project as two independent controls (device is chosen via the
-        // strip above). Separate buttons let you set both without reopening a menu.
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.HORIZONTAL);
         controls.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView statusFilterButton = actionButton(t("status") + ": " + statusFilterLabel(selectedStatusFilter));
+        TextView statusFilterButton = filterPill("●", t("status"), statusFilterLabel(selectedStatusFilter));
         statusFilterButton.setOnClickListener(v -> showStatusFilterDialog());
-        controls.addView(statusFilterButton, new LinearLayout.LayoutParams(0, dp(42), 1));
+        controls.addView(statusFilterButton, new LinearLayout.LayoutParams(0, dp(40), 1));
 
-        TextView projectFilterButton = actionButton(t("project") + ": " + projectFilterLabel(selectedProjectFilter));
+        TextView projectFilterButton = filterPill("⌘", t("project"), projectFilterLabel(selectedProjectFilter));
         projectFilterButton.setOnClickListener(v -> showProjectFilterDialog());
-        LinearLayout.LayoutParams pParams = new LinearLayout.LayoutParams(0, dp(42), 1);
-        pParams.setMargins(dp(8), 0, 0, 0);
+        LinearLayout.LayoutParams pParams = new LinearLayout.LayoutParams(0, dp(40), 1);
+        pParams.setMargins(dp(10), 0, 0, 0);
         controls.addView(projectFilterButton, pParams);
 
         LinearLayout.LayoutParams controlsParams = matchWrap();
-        controlsParams.setMargins(0, dp(2), 0, dp(2));
+        controlsParams.setMargins(0, dp(2), 0, dp(10));
         content.addView(controls, controlsParams);
 
         // The single run list (filtered by selected device + project + status).
@@ -698,6 +662,73 @@ public class MainActivity extends Activity implements LifecycleOwner {
         loadCachedRuns();
         updateDeviceSummary();
         updateDeviceActionButtons();
+    }
+
+    private View homeOverviewCard() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(14), dp(14), dp(12));
+        card.setBackground(roundedBg(homeHeroBg(), 22, homeHeroStroke()));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        left.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView eyebrow = new TextView(this);
+        eyebrow.setText(isEnglish() ? "COMMAND MONITOR" : "命令运行监控");
+        eyebrow.setTextSize(10);
+        eyebrow.setLetterSpacing(0.06f);
+        eyebrow.setTypeface(null, Typeface.BOLD);
+        eyebrow.setTextColor(textSecondary());
+        left.addView(eyebrow, matchWrap());
+
+        deviceSummaryText = new TextView(this);
+        deviceSummaryText.setText("");
+        deviceSummaryText.setTextSize(18);
+        deviceSummaryText.setTypeface(null, Typeface.BOLD);
+        deviceSummaryText.setTextColor(textPrimary());
+        deviceSummaryText.setSingleLine(true);
+        deviceSummaryText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        deviceSummaryText.setPadding(0, dp(4), 0, 0);
+        deviceSummaryText.setOnClickListener(v -> {
+            gpuExpanded = !gpuExpanded;
+            updateDeviceSummary();
+        });
+        left.addView(deviceSummaryText, matchWrap());
+
+        TextView hint = new TextView(this);
+        hint.setText(isEnglish() ? "Tap a run for console · swipe left for actions" : "点运行看控制台 · 左滑可操作");
+        hint.setTextSize(11);
+        hint.setTextColor(textSecondary());
+        hint.setPadding(0, dp(4), 0, 0);
+        left.addView(hint, matchWrap());
+
+        row.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        TextView refresh = circleIconButton("↻");
+        refresh.setTextSize(21);
+        refresh.setOnClickListener(v -> refreshHome(true));
+        LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(dp(46), dp(46));
+        refreshParams.setMargins(dp(12), 0, 0, 0);
+        row.addView(refresh, refreshParams);
+        card.addView(row, matchWrap());
+
+        deviceGpuContainer = new LinearLayout(this);
+        deviceGpuContainer.setOrientation(LinearLayout.VERTICAL);
+        deviceGpuContainer.setVisibility(View.GONE);
+        attachGpuSwipe(deviceGpuContainer);
+        LinearLayout.LayoutParams gpuParams = matchWrap();
+        gpuParams.setMargins(0, dp(10), 0, 0);
+        card.addView(deviceGpuContainer, gpuParams);
+
+        LinearLayout.LayoutParams params = matchWrap();
+        params.setMargins(0, dp(4), 0, 0);
+        card.setLayoutParams(params);
+        return card;
     }
 
     @ExperimentalGetImage
@@ -2703,6 +2734,53 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return button;
     }
 
+    private TextView filterPill(String icon, String label, String value) {
+        TextView button = new TextView(this);
+        String text = icon + "  " + label + " · " + value + "  ˅";
+        SpannableString span = new SpannableString(text);
+        span.setSpan(new RelativeSizeSpan(1.12f), 0, icon.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        span.setSpan(new StyleSpan(Typeface.BOLD), 0, Math.min(text.length(), icon.length() + 2 + label.length()), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        button.setText(span);
+        button.setTextSize(13);
+        button.setGravity(Gravity.CENTER);
+        button.setSingleLine(true);
+        button.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        button.setTypeface(null, Typeface.BOLD);
+        button.setTextColor(textPrimary());
+        button.setPadding(dp(12), 0, dp(12), 0);
+        button.setBackground(roundedBg(filterPillBg(), 99, filterPillStroke()));
+        button.setClickable(true);
+        button.setElevation(0);
+        return button;
+    }
+
+    private TextView circleIconButton(String icon) {
+        TextView button = new TextView(this);
+        button.setText(icon);
+        button.setGravity(Gravity.CENTER);
+        button.setTypeface(null, Typeface.BOLD);
+        button.setTextColor(textPrimary());
+        button.setBackground(roundedBg(circleButtonBg(), 99, circleButtonStroke()));
+        button.setClickable(true);
+        button.setElevation(0);
+        return button;
+    }
+
+    private TextView swipeActionButton(String icon, String label, int bg, int fg) {
+        TextView button = new TextView(this);
+        button.setText(icon + "\n" + label);
+        button.setTextSize(12);
+        button.setGravity(Gravity.CENTER);
+        button.setTypeface(null, Typeface.BOLD);
+        button.setTextColor(fg);
+        button.setIncludeFontPadding(false);
+        button.setLineSpacing(dp(3), 1.0f);
+        button.setBackground(roundedBg(bg, 18, Color.TRANSPARENT));
+        button.setClickable(true);
+        button.setElevation(0);
+        return button;
+    }
+
     private boolean hasAvailableUpdate() {
         return prefs.getInt("latest_version_code", 0) > currentVersionCode()
                 && !prefs.getString("latest_download_url", "").trim().isEmpty();
@@ -3196,11 +3274,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private View deviceButton(String id, String label, boolean online) {
         boolean selected = id.equals(selectedDeviceId);
         LinearLayout button = new LinearLayout(this);
-        button.setOrientation(LinearLayout.VERTICAL);
+        button.setOrientation(LinearLayout.HORIZONTAL);
         button.setGravity(Gravity.CENTER);
-        button.setMinimumHeight(dp(48));
-        button.setPadding(dp(12), 0, dp(12), 0);
-        button.setBackgroundColor(Color.TRANSPARENT);
+        button.setMinimumHeight(dp(42));
+        button.setPadding(dp(12), 0, dp(14), 0);
+        button.setBackground(roundedBg(selected ? deviceChipSelectedBg() : deviceChipBg(), 99, selected ? Color.TRANSPARENT : deviceChipStroke()));
         button.setClickable(true);
         button.setElevation(0);
 
@@ -3211,31 +3289,25 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (!"all".equals(id)) {
             View dot = statusDot(online ? color("#16A34A") : mutedDotColor());
             LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(7), dp(7));
-            dotParams.setMargins(0, 0, dp(6), 0);
+            dotParams.setMargins(0, 0, dp(7), 0);
             labelRow.addView(dot, dotParams);
-
-            ComputerIconView icon = new ComputerIconView(this, selected ? textPrimary() : textSecondary());
-            LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(17), dp(15));
-            iconParams.setMargins(0, 0, dp(5), 0);
-            labelRow.addView(icon, iconParams);
         }
+
+        ComputerIconView icon = new ComputerIconView(this, selected ? deviceChipSelectedText() : textSecondary());
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(18), dp(16));
+        iconParams.setMargins(0, 0, dp(7), 0);
+        labelRow.addView(icon, iconParams);
 
         TextView name = new TextView(this);
         name.setText(label == null || label.trim().isEmpty() ? ("all".equals(id) ? "All" : "Device") : label.trim());
         name.setSingleLine(true);
-        name.setTextSize(selected ? 18 : 17);
-        name.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
-        name.setTextColor(selected ? textPrimary() : topTabMutedText());
+        name.setTextSize(14);
+        name.setTypeface(null, Typeface.BOLD);
+        name.setTextColor(selected ? deviceChipSelectedText() : tabMutedText());
         name.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         labelRow.addView(name, nameParams);
         button.addView(labelRow, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        View underline = new View(this);
-        underline.setBackground(roundedBg(selected ? topTabAccent() : Color.TRANSPARENT, 99, Color.TRANSPARENT));
-        LinearLayout.LayoutParams underlineParams = new LinearLayout.LayoutParams(dp(36), dp(4));
-        underlineParams.setMargins(0, dp(7), 0, 0);
-        button.addView(underline, underlineParams);
 
         button.setOnClickListener(v -> {
             selectedDeviceId = id;
@@ -3256,9 +3328,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                dp(56)
+                dp(44)
         );
-        params.setMargins(0, 0, dp(16), 0);
+        params.setMargins(0, 0, dp(8), 0);
         button.setLayoutParams(params);
         return button;
     }
@@ -4045,7 +4117,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             renderRuns(new JSONArray(cached), true);
             long savedAt = prefs.getLong(cacheAtKey, 0L);
             if (savedAt > 0L && statusText != null) {
-            statusText.setText(isEnglish() ? "Saved results. Tap Refresh for latest." : "正在显示保存结果。点击刷新获取最新内容。");
+                statusText.setText(isEnglish() ? "Saved results. Pull down or tap ↻ for latest." : "正在显示保存结果。下拉或点 ↻ 获取最新内容。");
             }
         } catch (Exception ignored) {
         }
@@ -4243,17 +4315,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String runId = run.optString("id", "");
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(14), dp(12), dp(14), dp(12));
-        card.setBackground(roundedBg(cardBg(), 18, cardStroke()));
+        card.setPadding(dp(15), dp(13), dp(15), dp(13));
+        card.setBackground(roundedBg(cardBg(), 20, cardStroke()));
         card.setElevation(0);
         card.setClickable(true);
         card.setOnClickListener(v -> openRunDetail(runId));
 
         LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
+                Math.max(dp(280), getResources().getDisplayMetrics().widthPixels - dp(36)),
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        cardParams.setMargins(0, 0, 0, dp(10));
+        cardParams.setMargins(0, 0, dp(10), 0);
         card.setLayoutParams(cardParams);
 
         String status = run.optString("status", "unknown");
@@ -4261,11 +4333,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         topLine.setOrientation(LinearLayout.HORIZONTAL);
         topLine.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView dot = new TextView(this);
-        dot.setText("●");
-        dot.setTextSize(12);
-        dot.setTextColor(statusColor(status));
-        topLine.addView(dot, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        View dot = statusDot(statusColor(status));
+        LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(9), dp(9));
+        dotParams.setMargins(0, 0, dp(8), 0);
+        topLine.addView(dot, dotParams);
 
         TextView command = new TextView(this);
         command.setText(displayText(run.optString("commandText", isEnglish() ? "(unknown command)" : "（未知命令）")));
@@ -4313,31 +4384,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         outputParams.setMargins(0, dp(8), 0, 0);
         card.addView(output, outputParams);
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        actionParams.setMargins(0, dp(8), 0, 0);
-
-        TextView consoleButton = actionButton(actionLabel("▣", t("console"), 1.12f));
-        consoleButton.setOnClickListener(v -> openRunDetail(runId));
-        actions.addView(consoleButton, new LinearLayout.LayoutParams(0, dp(36), 1));
-
-        TextView deleteButton = actionButton(actionLabel("⌫", t("delete"), 1.12f));
-        deleteButton.setOnClickListener(v -> deleteRun(runId));
-        LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(
-                0,
-                dp(36),
-                1
-        );
-        deleteParams.setMargins(dp(8), 0, 0, 0);
-        actions.addView(deleteButton, deleteParams);
-        card.addView(actions, actionParams);
-
-        return card;
+        return swipeableRunCard(card, runId);
     }
 
     private View runRenderErrorView(JSONObject run, Throwable throwable) {
@@ -4375,6 +4422,65 @@ public class MainActivity extends Activity implements LifecycleOwner {
         cardParams.setMargins(0, 0, 0, dp(10));
         card.setLayoutParams(cardParams);
         return card;
+    }
+
+    private View swipeableRunCard(View card, String runId) {
+        HorizontalScrollView scroller = new HorizontalScrollView(this);
+        scroller.setHorizontalScrollBarEnabled(false);
+        scroller.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        scroller.setFillViewport(false);
+        scroller.setBackgroundColor(Color.TRANSPARENT);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(card);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER);
+        actions.setPadding(0, 0, 0, 0);
+
+        boolean archived = isRunArchived(runId);
+        TextView archive = swipeActionButton(archived ? "↩" : "◇", archived ? (isEnglish() ? "Restore" : "恢复") : (isEnglish() ? "Archive" : "归档"), archiveActionBg(), archiveActionText());
+        archive.setOnClickListener(v -> {
+            setRunArchived(runId, !archived);
+            if (statusText != null) {
+                statusText.setText(archived
+                        ? (isEnglish() ? "Run restored." : "已恢复。")
+                        : (isEnglish() ? "Run archived." : "已归档。"));
+            }
+            scroller.postDelayed(() -> scroller.smoothScrollTo(0, 0), 80);
+        });
+        actions.addView(archive, new LinearLayout.LayoutParams(dp(76), dp(86)));
+
+        TextView delete = swipeActionButton("⌫", t("delete"), deleteActionBg(), Color.WHITE);
+        delete.setOnClickListener(v -> {
+            scroller.postDelayed(() -> scroller.smoothScrollTo(0, 0), 80);
+            deleteRun(runId);
+        });
+        LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(dp(76), dp(86));
+        deleteParams.setMargins(dp(8), 0, 0, 0);
+        actions.addView(delete, deleteParams);
+
+        row.addView(actions, new LinearLayout.LayoutParams(dp(164), LinearLayout.LayoutParams.WRAP_CONTENT));
+        scroller.addView(row, new HorizontalScrollView.LayoutParams(
+                HorizontalScrollView.LayoutParams.WRAP_CONTENT,
+                HorizontalScrollView.LayoutParams.WRAP_CONTENT
+        ));
+        scroller.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                scroller.postDelayed(() -> {
+                    int target = scroller.getScrollX() > dp(48) ? dp(164) : 0;
+                    scroller.smoothScrollTo(target, 0);
+                }, 40);
+            }
+            return false;
+        });
+        LinearLayout.LayoutParams params = matchWrap();
+        params.setMargins(0, 0, 0, dp(11));
+        scroller.setLayoutParams(params);
+        return scroller;
     }
 
     private void openRunDetail(String id) {
@@ -7709,6 +7815,58 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private int buttonBg() {
         return isDarkTheme() ? color("#2B2B2F") : color("#FFFFFF");
+    }
+
+    private int homeHeroBg() {
+        return isDarkTheme() ? color("#1C1C20") : color("#FFFFFF");
+    }
+
+    private int homeHeroStroke() {
+        return isDarkTheme() ? color("#2D2D33") : color("#ECEEF3");
+    }
+
+    private int filterPillBg() {
+        return isDarkTheme() ? color("#202126") : color("#FFFFFF");
+    }
+
+    private int filterPillStroke() {
+        return isDarkTheme() ? color("#30313A") : color("#E8EAF0");
+    }
+
+    private int circleButtonBg() {
+        return isDarkTheme() ? color("#26272D") : color("#F6F7FA");
+    }
+
+    private int circleButtonStroke() {
+        return isDarkTheme() ? color("#353640") : color("#E7E9EF");
+    }
+
+    private int deviceChipBg() {
+        return isDarkTheme() ? color("#18191D") : color("#F3F5F8");
+    }
+
+    private int deviceChipStroke() {
+        return isDarkTheme() ? color("#2A2B31") : color("#E5E8EE");
+    }
+
+    private int deviceChipSelectedBg() {
+        return isDarkTheme() ? color("#F5F5F6") : color("#16181D");
+    }
+
+    private int deviceChipSelectedText() {
+        return isDarkTheme() ? color("#111217") : Color.WHITE;
+    }
+
+    private int archiveActionBg() {
+        return isDarkTheme() ? color("#2B2F3A") : color("#EEF2F8");
+    }
+
+    private int archiveActionText() {
+        return isDarkTheme() ? color("#E5E7EB") : color("#344054");
+    }
+
+    private int deleteActionBg() {
+        return isDarkTheme() ? color("#B42318") : color("#EF4444");
     }
 
     private int inputBg() {
