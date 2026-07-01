@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 160,
-    "versionName": "0.9.25",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.25/Haoleme-0.9.25.apk",
+    "versionCode": 161,
+    "versionName": "0.9.26",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.26/Haoleme-0.9.26.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.25/Haoleme-0.9.25.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.25.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.26/Haoleme-0.9.26.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.26.apk"
     ],
-    "sha256": "26ae77b59447c2f0ec8dd16e3feaa018aa6d31e5f72baeb413eb7f906dd06062",
+    "sha256": "d0e37df239955880eed80db50a12d440a3abe5954a68bfbc4335772443730076",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.25：更新检查优先读取 GitHub 最新清单，并完善发布链路校验，避免云端清单滞后导致 App 检查不到新版本。"
+    "notes": "0.9.26：配对成功后，如果设备名过长，App 会自动弹出重命名流程，方便改成短名称。"
   },
   "python": {
     "version": "0.4.12",

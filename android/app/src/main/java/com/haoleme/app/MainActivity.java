@@ -5740,6 +5740,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     statusText.setText(isEnglish() ? "Paired with " + finalDeviceName + ". Refreshing..." : "已配对 " + finalDeviceName + "，正在刷新...");
                     refreshDevices();
                     refreshRuns();
+                    maybePromptRenameLongPairedDevice(finalDeviceId, finalDeviceName);
                 });
             } catch (Exception e) {
                 handler.post(() -> {
@@ -5751,6 +5752,32 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 });
             }
         });
+    }
+
+    private void maybePromptRenameLongPairedDevice(String deviceId, String deviceName) {
+        if (deviceId == null || deviceId.trim().isEmpty() || !isLongDeviceName(deviceName)) {
+            return;
+        }
+        String finalDeviceId = deviceId.trim();
+        String finalDeviceName = deviceName == null ? "" : deviceName.trim();
+        handler.postDelayed(() -> {
+            if (isFinishing()) {
+                return;
+            }
+            statusText.setText(isEnglish()
+                    ? "This device name is long. Give it a shorter name."
+                    : "这个设备名有点长，建议改成更短的名字。");
+            showRenameDeviceDialog(finalDeviceId, finalDeviceName);
+        }, 500L);
+    }
+
+    private boolean isLongDeviceName(String deviceName) {
+        String name = deviceName == null ? "" : deviceName.trim();
+        if (name.length() > 18) {
+            return true;
+        }
+        String lower = name.toLowerCase(Locale.US);
+        return name.length() > 12 && (lower.contains(".local") || lower.contains(".lan") || lower.contains(".internal"));
     }
 
     private PairInfoResult fetchPairInfoWithFallback(String initialServer, String normalizedCode) throws Exception {
