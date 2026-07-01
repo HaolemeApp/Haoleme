@@ -5685,7 +5685,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 payload.put("appVersionCode", currentVersionCode());
                 payload.put("appVersionName", currentVersionName());
                 payload.put("platform", "android");
-                String reusableDeviceId = reusablePairDeviceId();
+                String pairDeviceId = info == null ? "" : info.optString("deviceId", "").trim();
+                String reusableDeviceId = reusablePairDeviceId(pairDeviceId);
                 if (!reusableDeviceId.isEmpty()) {
                     payload.put("replaceDeviceId", reusableDeviceId);
                 }
@@ -5831,13 +5832,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return e != null && ("pair_code_expired".equals(e.errorCode()) || e.statusCode == 404);
     }
 
-    private String reusablePairDeviceId() {
+    private String reusablePairDeviceId(String pairDeviceId) {
+        String pairId = pairDeviceId == null ? "" : pairDeviceId.trim();
         String deviceId = selectedDeviceId == null ? "" : selectedDeviceId.trim();
-        if (!deviceId.isEmpty() && !"all".equals(deviceId)) {
+        if (!pairId.isEmpty() && pairId.equals(deviceId)) {
             return deviceId;
         }
         String pairedId = prefs.getString("paired_device_id", "");
-        return pairedId == null ? "" : pairedId.trim();
+        pairedId = pairedId == null ? "" : pairedId.trim();
+        if (!pairId.isEmpty() && pairId.equals(pairedId)) {
+            return pairedId;
+        }
+        return "";
     }
 
     @ExperimentalGetImage

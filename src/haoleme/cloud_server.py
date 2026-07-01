@@ -656,9 +656,9 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         replace_device_id = str(payload.get("replaceDeviceId") or "").strip()
         reuse_device = None
         if is_valid_device_id(replace_device_id):
-            reuse_device = get_device(self.server.db_path, account_key, replace_device_id)
+            reuse_device = get_device(self.server.db_path, account_key, replace_device_id, include_revoked=True)
         if reuse_device is None:
-            reuse_device = get_device(self.server.db_path, account_key, confirmed_device_id)
+            reuse_device = get_device(self.server.db_path, account_key, confirmed_device_id, include_revoked=True)
         if reuse_device is not None:
             confirmed_device_id = reuse_device["id"]
             confirmed_device_name = reuse_device["name"] or confirmed_device_name
@@ -2272,15 +2272,16 @@ def rename_device(db_path: Path, account_key: str, device_id: str, name: str) ->
     return format_device(row)
 
 
-def get_device(db_path: Path, account_key: str, device_id: str) -> dict[str, Any] | None:
+def get_device(db_path: Path, account_key: str, device_id: str, include_revoked: bool = False) -> dict[str, Any] | None:
     if not account_key or not device_id:
         return None
+    revoked_filter = "" if include_revoked else "AND revoked_at = ''"
     with connect(db_path) as db:
         row = db.execute(
-            """
+            f"""
             SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at
             FROM devices
-            WHERE account_key = ? AND id = ? AND revoked_at = ''
+            WHERE account_key = ? AND id = ? {revoked_filter}
             """,
             (account_key, device_id),
         ).fetchone()

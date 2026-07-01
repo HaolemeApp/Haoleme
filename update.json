@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 161,
-    "versionName": "0.9.26",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.26/Haoleme-0.9.26.apk",
+    "versionCode": 162,
+    "versionName": "0.9.27",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.27/Haoleme-0.9.27.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.26/Haoleme-0.9.26.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.26.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.27/Haoleme-0.9.27.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.27.apk"
     ],
-    "sha256": "d0e37df239955880eed80db50a12d440a3abe5954a68bfbc4335772443730076",
+    "sha256": "96a59c6310f50757259a34018b58e42aca0361939570400ef6123ae6fcf234b4",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.26：配对成功后，如果设备名过长，App 会自动弹出重命名流程，方便改成短名称。"
+    "notes": "修复设备断联后重新配对失败、重连串到其他设备的问题。"
   },
   "python": {
-    "version": "0.4.12",
+    "version": "0.4.13",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.12-py3-none-any.whl",
-    "notes": "0.4.12: keeps devices online more reliably and reuses the existing device when re-pairing from the app."
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.13-py3-none-any.whl",
+    "notes": "修复断联设备重新配对后云端复活和 token 恢复。"
   }
 }

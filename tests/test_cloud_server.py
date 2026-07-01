@@ -288,6 +288,45 @@ class CloudServerDeviceTest(unittest.TestCase):
                 thread.join(timeout=2)
                 server.server_close()
 
+    def test_pair_confirm_revives_revoked_existing_device_for_app_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 66)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            app_token = "app-token-secret-for-reconnect"
+            account_key = token_hash(app_token)
+            try:
+                upsert_device(db_path, account_key, "dev_old123", "Server A", "2026-06-18T01:00:00Z")
+                self.assertTrue(revoke_device(db_path, account_key, "dev_old123"))
+                self.assertEqual(list_devices(db_path, account_key), [])
+                self.assertTrue(create_pair(db_path, "345678", "pair-secret", "dev_old123", "Fresh login name", time.time(), "public-key"))
+
+                confirmed = self.post_json(
+                    base + "/api/pair/confirm",
+                    {
+                        "code": "345678",
+                        "replaceDeviceId": "dev_old123",
+                        "appVersionCode": 157,
+                        "appVersionName": "0.9.22",
+                        "platform": "android",
+                    },
+                    token=app_token,
+                )
+
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["deviceId"], "dev_old123")
+                devices = list_devices(db_path, account_key)
+                self.assertEqual([device["id"] for device in devices], ["dev_old123"])
+                self.assertEqual(devices[0]["revokedAt"], "")
+                pair = get_pair(db_path, "345678")
+                self.assertIsNotNone(authenticate_device_token(db_path, token_hash(pair["token"])))
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
     def test_runs_can_be_filtered_by_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
