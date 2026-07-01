@@ -1,15 +1,15 @@
 {
   "android": {
-    "versionCode": 169,
-    "versionName": "0.9.34",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.34/Haoleme-0.9.34.apk",
+    "versionCode": 170,
+    "versionName": "0.9.35",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.35/Haoleme-0.9.35.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.34/Haoleme-0.9.34.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.35/Haoleme-0.9.35.apk"
     ],
-    "sha256": "0fa32ae5bce87e84c2adc5400312551791ae4dd055ee92030797ede90d9ec3c8",
+    "sha256": "86ce1209bc73906409cbc1116ccbe389578d0b161990829e41ea27b150f5e3b8",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "优化主页交互和刷新速度：运行卡片左滑更远可置顶，右侧只保留归档/删除且更不易误触；刷新按钮改为白色高级样式，控制台搜索更精致，旧版加密命令占位会显示为同步中。"
+    "notes": "修复云端刷新过多导致的限流：同类刷新请求会自动合并，缓存先显示、网络后台更新，后台控制台补同步降频；运行卡片改为向右滑露出左侧置顶，向左滑保留归档和删除。"
   },
   "python": {
     "version": "0.4.19",

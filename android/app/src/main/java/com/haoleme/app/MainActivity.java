@@ -138,14 +138,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String PREFS = "haoleme";
     private static final String CHANNEL_ID = "runs";
     private static final int CAMERA_REQUEST = 4108;
-    private static final long POLL_MS = 4000L;
-    private static final long LIST_ACTIVE_POLL_MS = 1800L;
+    private static final long POLL_MS = 6000L;
+    private static final long LIST_ACTIVE_POLL_MS = 3500L;
     private static final long PULL_REFRESH_COOLDOWN_MS = 1200L;
     private static final long CONSOLE_RUNNING_POLL_MS = 1000L;
+    private static final long BACKGROUND_OUTPUT_SYNC_COOLDOWN_MS = 15000L;
     private static final int HTTP_CONNECT_TIMEOUT_MS = 8000;
     private static final int HTTP_READ_TIMEOUT_MS = 12000;
     private static final int HTTP_LIST_READ_TIMEOUT_MS = 6500;
-    private static final int MAX_BACKGROUND_OUTPUT_SYNC = 3;
+    private static final int MAX_BACKGROUND_OUTPUT_SYNC = 1;
     private static final String CACHE_RUNS = "cached_runs_json";
     private static final String CACHE_RUNS_AT = "cached_runs_at";
     private static final String CACHE_RUNS_PREFIX = "cached_runs_json_";
@@ -262,6 +263,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean hasActiveRunVisible = false;
     private boolean homePullRefreshCoolingDown = false;
     private volatile boolean pendingRunDeleteSyncing = false;
+    private final Object refreshStateLock = new Object();
+    private boolean runsRefreshInFlight = false;
+    private boolean runsRefreshQueued = false;
+    private boolean runsRefreshQueuedManual = false;
+    private boolean devicesRefreshInFlight = false;
+    private boolean devicesRefreshQueued = false;
+    private boolean devicesRefreshQueuedManual = false;
+    private boolean runDetailRefreshInFlight = false;
+    private boolean runDetailRefreshQueued = false;
+    private String runDetailRefreshQueuedId = "";
+    private boolean runDetailRefreshQueuedShowLoading = false;
+    private volatile boolean backgroundOutputSyncInFlight = false;
+    private volatile long lastBackgroundOutputSyncAt = 0L;
 
     private final Runnable pollRunnable = new Runnable() {
         @Override
@@ -2946,6 +2960,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshRuns(boolean manual) {
+        if (!beginRunsRefresh(manual)) {
+            if (manual && hasCachedRuns()) {
+                mergeDevicesFromCachedRuns();
+                loadCachedDevices();
+                loadCachedRuns();
+            }
+            return;
+        }
         if (manual || !hasCachedRuns()) {
             statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
         }
@@ -2977,7 +2999,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     renderRuns(runs, false);
                 });
                 executor.submit(() -> saveRunsCache(runs));
-                executor.submit(() -> syncMissingLocalOutputs(runs));
+                scheduleMissingLocalOutputsSync(runs);
                 executor.submit(this::syncPendingRunDeletesBlocking);
             } catch (Exception e) {
                 Log.w(TAG, "refreshRuns failed for " + safeRequestLabel(requestUrl), e);
@@ -2993,6 +3015,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         statusText.setText(cloudFailureMessage(e));
                     }
                 });
+            } finally {
+                finishRunsRefresh();
             }
         });
     }
@@ -3002,6 +3026,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshDevices(boolean manual) {
+        if (!beginDevicesRefresh(manual)) {
+            if (manual) {
+                mergeDevicesFromCachedRuns();
+                if ("home".equals(currentTab)) {
+                    loadCachedDevices();
+                }
+            }
+            return;
+        }
         final String requestUrl = normalizedServerUrl() + "/api/devices";
         executor.submit(() -> {
             try {
@@ -3019,8 +3052,64 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         }
                     }
                 });
+            } finally {
+                finishDevicesRefresh();
             }
         });
+    }
+
+    private boolean beginRunsRefresh(boolean manual) {
+        synchronized (refreshStateLock) {
+            if (runsRefreshInFlight) {
+                runsRefreshQueued = true;
+                runsRefreshQueuedManual = runsRefreshQueuedManual || manual;
+                return false;
+            }
+            runsRefreshInFlight = true;
+            return true;
+        }
+    }
+
+    private void finishRunsRefresh() {
+        boolean queued;
+        boolean manual;
+        synchronized (refreshStateLock) {
+            runsRefreshInFlight = false;
+            queued = runsRefreshQueued;
+            manual = runsRefreshQueuedManual;
+            runsRefreshQueued = false;
+            runsRefreshQueuedManual = false;
+        }
+        if (queued) {
+            handler.post(() -> refreshRuns(manual));
+        }
+    }
+
+    private boolean beginDevicesRefresh(boolean manual) {
+        synchronized (refreshStateLock) {
+            if (devicesRefreshInFlight) {
+                devicesRefreshQueued = true;
+                devicesRefreshQueuedManual = devicesRefreshQueuedManual || manual;
+                return false;
+            }
+            devicesRefreshInFlight = true;
+            return true;
+        }
+    }
+
+    private void finishDevicesRefresh() {
+        boolean queued;
+        boolean manual;
+        synchronized (refreshStateLock) {
+            devicesRefreshInFlight = false;
+            queued = devicesRefreshQueued;
+            manual = devicesRefreshQueuedManual;
+            devicesRefreshQueued = false;
+            devicesRefreshQueuedManual = false;
+        }
+        if (queued) {
+            handler.post(() -> refreshDevices(manual));
+        }
     }
 
     private void loadCachedDevices() {
@@ -4507,6 +4596,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private View swipeableRunCard(View card, String runId) {
+        final int leftActionWidth = dp(88);
+        final int rightActionsWidth = dp(152);
         HorizontalScrollView scroller = new HorizontalScrollView(this);
         scroller.setHorizontalScrollBarEnabled(false);
         scroller.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -4516,6 +4607,24 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout leftActions = new LinearLayout(this);
+        leftActions.setOrientation(LinearLayout.HORIZONTAL);
+        leftActions.setGravity(Gravity.CENTER);
+        leftActions.setPadding(0, 0, dp(8), 0);
+        boolean pinned = isRunPinned(runId);
+        TextView pin = swipeActionButton(pinned ? "↓" : "↑", pinned ? (isEnglish() ? "Unpin" : "取消") : (isEnglish() ? "Pin" : "置顶"), pinActionBg(), pinActionText());
+        pin.setOnClickListener(v -> {
+            setRunPinned(runId, !pinned);
+            if (statusText != null) {
+                statusText.setText(pinned
+                        ? (isEnglish() ? "Run unpinned." : "已取消置顶。")
+                        : (isEnglish() ? "Run pinned." : "已置顶。"));
+            }
+            scroller.postDelayed(() -> scroller.smoothScrollTo(leftActionWidth, 0), 80);
+        });
+        leftActions.addView(pin, new LinearLayout.LayoutParams(dp(76), dp(86)));
+        row.addView(leftActions, new LinearLayout.LayoutParams(leftActionWidth, LinearLayout.LayoutParams.WRAP_CONTENT));
         row.addView(card);
 
         LinearLayout actions = new LinearLayout(this);
@@ -4532,7 +4641,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         ? (isEnglish() ? "Run restored." : "已恢复。")
                         : (isEnglish() ? "Run archived." : "已归档。"));
             }
-            scroller.postDelayed(() -> scroller.smoothScrollTo(0, 0), 80);
+            scroller.postDelayed(() -> scroller.smoothScrollTo(leftActionWidth, 0), 80);
         });
         LinearLayout.LayoutParams archiveParams = new LinearLayout.LayoutParams(dp(72), dp(86));
         archiveParams.setMargins(dp(8), 0, 0, 0);
@@ -4540,34 +4649,31 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         TextView delete = swipeActionButton("⌫", t("delete"), deleteActionBg(), Color.WHITE);
         delete.setOnClickListener(v -> {
-            scroller.postDelayed(() -> scroller.smoothScrollTo(0, 0), 80);
+            scroller.postDelayed(() -> scroller.smoothScrollTo(leftActionWidth, 0), 80);
             deleteRun(runId);
         });
         LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(dp(72), dp(86));
         deleteParams.setMargins(dp(8), 0, 0, 0);
         actions.addView(delete, deleteParams);
 
-        row.addView(actions, new LinearLayout.LayoutParams(dp(152), LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(actions, new LinearLayout.LayoutParams(rightActionsWidth, LinearLayout.LayoutParams.WRAP_CONTENT));
         scroller.addView(row, new HorizontalScrollView.LayoutParams(
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT,
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT
         ));
+        scroller.post(() -> scroller.scrollTo(leftActionWidth, 0));
         scroller.setOnTouchListener((v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
                 scroller.postDelayed(() -> {
                     int scrollX = scroller.getScrollX();
-                    if (scrollX > dp(128)) {
-                        boolean next = !isRunPinned(runId);
-                        setRunPinned(runId, next);
-                        if (statusText != null) {
-                            statusText.setText(next
-                                    ? (isEnglish() ? "Run pinned." : "已置顶。")
-                                    : (isEnglish() ? "Run unpinned." : "已取消置顶。"));
-                        }
-                        scroller.smoothScrollTo(0, 0);
-                        return;
+                    int leftOpen = leftActionWidth - dp(38);
+                    int rightOpen = leftActionWidth + dp(92);
+                    int target = leftActionWidth;
+                    if (scrollX < leftOpen) {
+                        target = 0;
+                    } else if (scrollX > rightOpen) {
+                        target = leftActionWidth + rightActionsWidth;
                     }
-                    int target = scrollX > dp(92) ? dp(152) : 0;
                     scroller.smoothScrollTo(target, 0);
                 }, 40);
             }
@@ -5195,6 +5301,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshRunDetail(String id, boolean showLoading) {
+        if (!beginRunDetailRefresh(id, showLoading)) {
+            return;
+        }
         if (showLoading && statusText != null) {
             statusText.setText(isEnglish() ? "Loading console..." : "正在加载控制台...");
         }
@@ -5229,8 +5338,41 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         statusText.setText((isEnglish() ? "Cannot load console: " : "无法加载控制台：") + e.getMessage());
                     }
                 });
+            } finally {
+                finishRunDetailRefresh();
             }
         });
+    }
+
+    private boolean beginRunDetailRefresh(String id, boolean showLoading) {
+        synchronized (refreshStateLock) {
+            if (runDetailRefreshInFlight) {
+                runDetailRefreshQueued = true;
+                runDetailRefreshQueuedId = id == null ? "" : id;
+                runDetailRefreshQueuedShowLoading = runDetailRefreshQueuedShowLoading || showLoading;
+                return false;
+            }
+            runDetailRefreshInFlight = true;
+            return true;
+        }
+    }
+
+    private void finishRunDetailRefresh() {
+        boolean queued;
+        String id;
+        boolean showLoading;
+        synchronized (refreshStateLock) {
+            runDetailRefreshInFlight = false;
+            queued = runDetailRefreshQueued;
+            id = runDetailRefreshQueuedId;
+            showLoading = runDetailRefreshQueuedShowLoading;
+            runDetailRefreshQueued = false;
+            runDetailRefreshQueuedId = "";
+            runDetailRefreshQueuedShowLoading = false;
+        }
+        if (queued && id != null && !id.isEmpty() && id.equals(selectedRunId)) {
+            handler.post(() -> refreshRunDetail(id, showLoading));
+        }
     }
 
     private void loadCachedRunDetail(String id) {
@@ -5257,6 +5399,25 @@ public class MainActivity extends Activity implements LifecycleOwner {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private void scheduleMissingLocalOutputsSync(JSONArray runs) {
+        if (runs == null || accountToken().isEmpty()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (backgroundOutputSyncInFlight || now - lastBackgroundOutputSyncAt < BACKGROUND_OUTPUT_SYNC_COOLDOWN_MS) {
+            return;
+        }
+        backgroundOutputSyncInFlight = true;
+        lastBackgroundOutputSyncAt = now;
+        executor.submit(() -> {
+            try {
+                syncMissingLocalOutputs(runs);
+            } finally {
+                backgroundOutputSyncInFlight = false;
+            }
+        });
     }
 
     private void syncMissingLocalOutputs(JSONArray runs) {
