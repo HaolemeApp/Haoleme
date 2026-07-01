@@ -1,15 +1,15 @@
 {
   "android": {
-    "versionCode": 168,
-    "versionName": "0.9.33",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.33/Haoleme-0.9.33.apk",
+    "versionCode": 169,
+    "versionName": "0.9.34",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.34/Haoleme-0.9.34.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.33/Haoleme-0.9.33.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.34/Haoleme-0.9.34.apk"
     ],
-    "sha256": "d7e3684aa13279b099caa031322e556f06e8c537ed467fcf831a9527687031bd",
+    "sha256": "0fa32ae5bce87e84c2adc5400312551791ae4dd055ee92030797ede90d9ec3c8",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "继续优化主页和控制台：左滑可置顶运行卡片，顶部状态卡显示设备心跳，控制台改为精致终端窗口样式，并统一按中国时区显示运行时间。"
+    "notes": "优化主页交互和刷新速度：运行卡片左滑更远可置顶，右侧只保留归档/删除且更不易误触；刷新按钮改为白色高级样式，控制台搜索更精致，旧版加密命令占位会显示为同步中。"
   },
   "python": {
     "version": "0.4.19",

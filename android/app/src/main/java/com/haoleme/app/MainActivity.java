@@ -138,13 +138,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String PREFS = "haoleme";
     private static final String CHANNEL_ID = "runs";
     private static final int CAMERA_REQUEST = 4108;
-    private static final long POLL_MS = 5000L;
-    private static final long LIST_ACTIVE_POLL_MS = 2500L;
+    private static final long POLL_MS = 4000L;
+    private static final long LIST_ACTIVE_POLL_MS = 1800L;
     private static final long PULL_REFRESH_COOLDOWN_MS = 1200L;
     private static final long CONSOLE_RUNNING_POLL_MS = 1000L;
     private static final int HTTP_CONNECT_TIMEOUT_MS = 8000;
     private static final int HTTP_READ_TIMEOUT_MS = 12000;
-    private static final int HTTP_LIST_READ_TIMEOUT_MS = 10000;
+    private static final int HTTP_LIST_READ_TIMEOUT_MS = 6500;
     private static final int MAX_BACKGROUND_OUTPUT_SYNC = 3;
     private static final String CACHE_RUNS = "cached_runs_json";
     private static final String CACHE_RUNS_AT = "cached_runs_at";
@@ -188,7 +188,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     };
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final ExecutorService executor = Executors.newFixedThreadPool(3);
+    private final ExecutorService executor = Executors.newFixedThreadPool(5);
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
     private final Map<String, String> knownStatuses = new HashMap<>();
     private final Map<String, String> deviceNames = new HashMap<>();
@@ -714,8 +714,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         row.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
-        TextView refresh = circleIconButton("↻");
-        refresh.setTextSize(21);
+        TextView refresh = refreshIconButton();
         refresh.setOnClickListener(v -> refreshHome(true));
         LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(dp(46), dp(46));
         refreshParams.setMargins(dp(12), 0, 0, 0);
@@ -2698,6 +2697,25 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return maskSensitiveEnabled() ? maskSensitive(value) : value;
     }
 
+    private String commandTextForDisplay(JSONObject run, String fallback) {
+        String value = run == null ? "" : run.optString("commandText", "");
+        if (value == null || value.trim().isEmpty()) {
+            return fallback;
+        }
+        if (!"Encrypted command".equals(value.trim())) {
+            return value;
+        }
+        String id = run.optString("id", "").trim();
+        JSONObject cached = id.isEmpty() ? null : loadCachedRunDetailJson(id);
+        if (cached != null) {
+            String cachedCommand = cached.optString("commandText", "").trim();
+            if (!cachedCommand.isEmpty() && !"Encrypted command".equals(cachedCommand)) {
+                return cachedCommand;
+            }
+        }
+        return isEnglish() ? "Syncing encrypted command..." : "正在同步命令...";
+    }
+
     private String maskSensitive(String raw) {
         String masked = raw == null ? "" : raw;
         masked = masked.replaceAll("(?i)(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|authorization)(\\s*[:=]\\s*)([^\\s'\"&]+)", "$1$2••••");
@@ -2770,6 +2788,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
         button.setBackground(roundedBg(circleButtonBg(), 99, circleButtonStroke()));
         button.setClickable(true);
         button.setElevation(0);
+        return button;
+    }
+
+    private TextView refreshIconButton() {
+        TextView button = new TextView(this);
+        button.setText("⟳");
+        button.setTextSize(22);
+        button.setGravity(Gravity.CENTER);
+        button.setTypeface(null, Typeface.BOLD);
+        button.setTextColor(color("#111827"));
+        button.setBackground(roundedBg(Color.WHITE, 99, color("#EEF0F4")));
+        button.setClickable(true);
+        button.setElevation(dp(2));
         return button;
     }
 
@@ -2894,6 +2925,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
             if (statusText != null) {
                 statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
             }
+            if (hasCachedRuns()) {
+                mergeDevicesFromCachedRuns();
+                loadCachedDevices();
+                loadCachedRuns();
+            }
+            syncPendingRunDeletesAsync(false);
             if (homeRunsScrollView != null) {
                 homeRunsScrollView.setRefreshCoolingDown(true);
             }
@@ -2929,7 +2966,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         final String targetDevice = (selectedDeviceId == null || "all".equals(selectedDeviceId)) ? "all" : selectedDeviceId;
         executor.submit(() -> {
             try {
-                syncPendingRunDeletesBlocking();
                 String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
                 final JSONArray runs = applyPendingRunDeletes(attachCachedConsolePreviews(decryptRuns(new JSONObject(body).getJSONArray("runs"))));
                 handler.post(() -> {
@@ -2942,6 +2978,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 });
                 executor.submit(() -> saveRunsCache(runs));
                 executor.submit(() -> syncMissingLocalOutputs(runs));
+                executor.submit(this::syncPendingRunDeletesBlocking);
             } catch (Exception e) {
                 Log.w(TAG, "refreshRuns failed for " + safeRequestLabel(requestUrl), e);
                 handler.post(() -> {
@@ -4384,7 +4421,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         topLine.addView(dot, dotParams);
 
         TextView command = new TextView(this);
-        command.setText(displayText(run.optString("commandText", isEnglish() ? "(unknown command)" : "（未知命令）")));
+        command.setText(displayText(commandTextForDisplay(run, isEnglish() ? "(unknown command)" : "（未知命令）")));
         command.setTextSize(14);
         command.setTextColor(textPrimary());
         command.setTypeface(null, Typeface.BOLD);
@@ -4447,7 +4484,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         card.addView(title, matchWrap());
 
         TextView command = new TextView(this);
-        command.setText(run == null ? (isEnglish() ? "(unknown run)" : "（未知运行）") : displayText(run.optString("commandText", isEnglish() ? "(unknown command)" : "（未知命令）")));
+        command.setText(run == null ? (isEnglish() ? "(unknown run)" : "（未知运行）") : displayText(commandTextForDisplay(run, isEnglish() ? "(unknown command)" : "（未知命令）")));
         command.setTextSize(13);
         command.setTextColor(textPrimary());
         command.setPadding(0, dp(6), 0, dp(6));
@@ -4486,19 +4523,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         actions.setGravity(Gravity.CENTER);
         actions.setPadding(0, 0, 0, 0);
 
-        boolean pinned = isRunPinned(runId);
-        TextView pin = swipeActionButton(pinned ? "↓" : "↑", pinned ? (isEnglish() ? "Unpin" : "取消") : (isEnglish() ? "Pin" : "置顶"), pinActionBg(), pinActionText());
-        pin.setOnClickListener(v -> {
-            setRunPinned(runId, !pinned);
-            if (statusText != null) {
-                statusText.setText(pinned
-                        ? (isEnglish() ? "Run unpinned." : "已取消置顶。")
-                        : (isEnglish() ? "Run pinned." : "已置顶。"));
-            }
-            scroller.postDelayed(() -> scroller.smoothScrollTo(0, 0), 80);
-        });
-        actions.addView(pin, new LinearLayout.LayoutParams(dp(72), dp(86)));
-
         boolean archived = isRunArchived(runId);
         TextView archive = swipeActionButton(archived ? "↩" : "◇", archived ? (isEnglish() ? "Restore" : "恢复") : (isEnglish() ? "Archive" : "归档"), archiveActionBg(), archiveActionText());
         archive.setOnClickListener(v -> {
@@ -4523,7 +4547,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         deleteParams.setMargins(dp(8), 0, 0, 0);
         actions.addView(delete, deleteParams);
 
-        row.addView(actions, new LinearLayout.LayoutParams(dp(232), LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(actions, new LinearLayout.LayoutParams(dp(152), LinearLayout.LayoutParams.WRAP_CONTENT));
         scroller.addView(row, new HorizontalScrollView.LayoutParams(
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT,
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT
@@ -4531,7 +4555,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
         scroller.setOnTouchListener((v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
                 scroller.postDelayed(() -> {
-                    int target = scroller.getScrollX() > dp(48) ? dp(232) : 0;
+                    int scrollX = scroller.getScrollX();
+                    if (scrollX > dp(128)) {
+                        boolean next = !isRunPinned(runId);
+                        setRunPinned(runId, next);
+                        if (statusText != null) {
+                            statusText.setText(next
+                                    ? (isEnglish() ? "Run pinned." : "已置顶。")
+                                    : (isEnglish() ? "Run unpinned." : "已取消置顶。"));
+                        }
+                        scroller.smoothScrollTo(0, 0);
+                        return;
+                    }
+                    int target = scrollX > dp(92) ? dp(152) : 0;
                     scroller.smoothScrollTo(target, 0);
                 }, 40);
             }
@@ -4598,7 +4634,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         String status = run.optString("status", "");
         addInfoRow(box, isEnglish() ? "Status" : "状态", statusLabel(status) + statusExitSuffix(run));
-        addInfoRow(box, isEnglish() ? "Command" : "命令", run.optString("commandText", ""));
+        addInfoRow(box, isEnglish() ? "Command" : "命令", commandTextForDisplay(run, ""));
         addInfoRow(box, isEnglish() ? "Server" : "服务器", normalizedServerUrl());
         addInfoRow(box, isEnglish() ? "Device" : "设备", run.optString("deviceName", ""));
         addInfoRow(box, isEnglish() ? "Project" : "项目", run.optString("project", ""));
@@ -4669,7 +4705,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         int pid = run.optInt("pid", -1);
         StringBuilder sb = new StringBuilder();
         sb.append(isEnglish() ? "Status: " : "状态：").append(statusLabel(run.optString("status", ""))).append(statusExitSuffix(run)).append('\n');
-        sb.append(isEnglish() ? "Command: " : "命令：").append(run.optString("commandText", "")).append('\n');
+        sb.append(isEnglish() ? "Command: " : "命令：").append(commandTextForDisplay(run, "")).append('\n');
         sb.append(isEnglish() ? "Server: " : "服务器：").append(normalizedServerUrl()).append('\n');
         sb.append(isEnglish() ? "Device: " : "设备：").append(run.optString("deviceName", "")).append('\n');
         sb.append(isEnglish() ? "Project: " : "项目：").append(run.optString("project", "")).append('\n');
@@ -4770,6 +4806,21 @@ public class MainActivity extends Activity implements LifecycleOwner {
         prefs.edit().putString(PREF_PINNED_RUNS, a.toString()).apply();
         loadCachedRuns();
         refreshRuns();
+    }
+
+    private void removePinnedRun(String id) {
+        if (id == null || id.isEmpty()) {
+            return;
+        }
+        Set<String> set = pinnedRunIds();
+        if (!set.remove(id)) {
+            return;
+        }
+        JSONArray a = new JSONArray();
+        for (String s : set) {
+            a.put(s);
+        }
+        prefs.edit().putString(PREF_PINNED_RUNS, a.toString()).apply();
     }
 
     private void setRunArchived(String id, boolean archived) {
@@ -4915,10 +4966,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         consoleSearchInput = new EditText(this);
         consoleSearchInput.setSingleLine(true);
         consoleSearchInput.setTextSize(14);
-        consoleSearchInput.setHint(isEnglish() ? "Search console" : "搜索控制台");
+        consoleSearchInput.setHint(isEnglish() ? "⌕  Search console output" : "⌕  搜索控制台输出");
         consoleSearchInput.setInputType(InputType.TYPE_CLASS_TEXT);
         consoleSearchInput.setVisibility(View.GONE);
-        styleInput(consoleSearchInput);
+        styleConsoleSearchInput(consoleSearchInput);
         consoleSearchInput.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {
@@ -5381,7 +5432,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (selectedRunId != null && selectedRunId.equals(run.optString("id", ""))) {
             selectedRunStatus = status;
         }
-        detailCommand.setText(displayText(run.optString("commandText", isEnglish() ? "(unknown command)" : "（未知命令）")));
+        detailCommand.setText(displayText(commandTextForDisplay(run, isEnglish() ? "(unknown command)" : "（未知命令）")));
         String projectName = run.optString("project", "").trim();
         String projectSuffix = projectName.isEmpty() ? "" : " · " + projectName;
         detailMeta.setText(status.toUpperCase(Locale.US) + projectSuffix + statusSuffix(run));
@@ -5629,7 +5680,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         rememberPendingRunDelete(id);
-        setRunPinned(id, false);
+        removePinnedRun(id);
         knownStatuses.remove(id);
         removeRunFromCaches(id);
         if (id.equals(selectedRunId)) {
@@ -5944,7 +5995,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 ? new android.app.Notification.Builder(this, CHANNEL_ID)
                 : new android.app.Notification.Builder(this);
 
-        String command = displayText(run.optString("commandText", "Command"));
+        String command = displayText(commandTextForDisplay(run, "Command"));
         String status = run.optString("status", "finished");
         String summary = notificationSummary(run, command, status);
         builder.setContentTitle(appDisplayName() + ": " + status)
@@ -8072,6 +8123,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return isDarkTheme() ? color("#9CA3AF") : color("#6B7280");
     }
 
+    private int searchInputBg() {
+        return isDarkTheme() ? color("#1D1E23") : color("#FFFFFF");
+    }
+
+    private int searchInputStroke() {
+        return isDarkTheme() ? color("#30323A") : color("#E7EAF0");
+    }
+
     private int surfaceStroke() {
         return isDarkTheme() ? color("#2C2C2E") : color("#E5E5EA");
     }
@@ -8101,6 +8160,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
         input.setHintTextColor(textSecondary());
         input.setBackground(roundedBg(inputBg(), 14, surfaceStroke()));
         input.setPadding(dp(12), 0, dp(12), 0);
+    }
+
+    private void styleConsoleSearchInput(EditText input) {
+        input.setTextColor(textPrimary());
+        input.setHintTextColor(consoleMutedText());
+        input.setBackground(roundedBg(searchInputBg(), 99, searchInputStroke()));
+        input.setPadding(dp(16), 0, dp(16), 0);
+        input.setMinHeight(dp(44));
+        input.setSingleLine(true);
     }
 
     private View statusDot(int fill) {
