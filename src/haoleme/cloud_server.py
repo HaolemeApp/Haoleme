@@ -38,6 +38,7 @@ MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_TAIL = 1_000_000
 MAX_OUTPUT_CHUNKS = 20_000
 MAX_LIST_OUTPUT_PREVIEW = 2000
+MAX_LIST_OUTPUT_CHUNK_PREVIEW = 3
 MAX_LIST_E2EE_CIPHERTEXT = 64 * 1024
 DEFAULT_LOG_MAX_BYTES = 50 * 1024 * 1024
 DEVICE_ONLINE_WINDOW_SECONDS = 240
@@ -1904,7 +1905,14 @@ def list_runs(
         ).fetchall()
         names = device_names(db, account_key)
     return [
-        decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=True, include_output_chunks=False)
+        decode_run(
+            row["payload"],
+            names,
+            output_limit=MAX_LIST_OUTPUT_PREVIEW,
+            include_e2ee=True,
+            include_output_chunks=True,
+            output_chunk_limit=MAX_LIST_OUTPUT_CHUNK_PREVIEW,
+        )
         for row in rows
     ]
 
@@ -1934,7 +1942,14 @@ def list_events(db_path: Path, account_key: str, since: str | None, limit: int) 
             ).fetchall()
         names = device_names(db, account_key)
     return [
-        decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=True, include_output_chunks=False)
+        decode_run(
+            row["payload"],
+            names,
+            output_limit=MAX_LIST_OUTPUT_PREVIEW,
+            include_e2ee=True,
+            include_output_chunks=True,
+            output_chunk_limit=MAX_LIST_OUTPUT_CHUNK_PREVIEW,
+        )
         for row in rows
     ]
 
@@ -2472,6 +2487,7 @@ def decode_run(
     output_limit: int = MAX_OUTPUT_TAIL,
     include_e2ee: bool = True,
     include_output_chunks: bool = True,
+    output_chunk_limit: int | None = None,
 ) -> dict[str, Any]:
     run = json.loads(payload_json)
     device_id = str(run.get("deviceId") or "")
@@ -2493,6 +2509,15 @@ def decode_run(
         chunks = run.pop("outputChunks", None)
         if isinstance(chunks, list):
             run["outputChunkCount"] = len(chunks)
+    elif output_chunk_limit is not None:
+        chunks = run.get("outputChunks")
+        if isinstance(chunks, list):
+            run["outputChunkCount"] = len(chunks)
+            if output_chunk_limit <= 0:
+                run.pop("outputChunks", None)
+            elif len(chunks) > output_chunk_limit:
+                run["outputChunks"] = chunks[-output_chunk_limit:]
+                run["outputChunkOffset"] = len(chunks) - output_chunk_limit
     return run
 
 

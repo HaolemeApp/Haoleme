@@ -12,9 +12,9 @@
     "notes": "删除任务改为离线优先：本地立即删除，联网后自动补删云端；云端尚未删除时 App 也不会再显示本地已删除任务。"
   },
   "python": {
-    "version": "0.4.17",
+    "version": "0.4.18",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.17-py3-none-any.whl",
-    "notes": "继续优化大输出刷新：列表会省略过大的旧版加密 payload，详情页仍可打开完整控制台。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.18-py3-none-any.whl",
+    "notes": "主页列表恢复运行输出预览：只返回最后几个加密输出片段，避免重复拉完整控制台。"
   }
 }

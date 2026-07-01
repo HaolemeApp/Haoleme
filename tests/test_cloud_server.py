@@ -789,7 +789,7 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertEqual(payload["outputChunks"][0]["ciphertext"], "abc")
             self.assertEqual(payload.get("outputLength"), 10)
 
-    def test_list_runs_omits_encrypted_console_chunks(self):
+    def test_list_runs_keeps_only_recent_encrypted_console_preview_chunks(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
             account_key = "account-key"
@@ -798,22 +798,25 @@ class CloudServerDeviceTest(unittest.TestCase):
             upsert_run(db_path, account_key, self.sample_run("run-1", device_id, "Server A", "running"))
             auth = AuthContext(account_key=account_key, token_hash="h", scope="write",
                                device_id=device_id, device_name="Server A")
-            append_run_update(db_path, account_key, {
-                "id": "run-1",
-                "status": "running",
-                "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n", "ciphertext": "abc"},
-                "outputLength": 10,
-            }, auth)
+            for index in range(5):
+                append_run_update(db_path, account_key, {
+                    "id": "run-1",
+                    "status": "running",
+                    "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n", "ciphertext": "chunk-" + str(index)},
+                    "outputLength": index + 1,
+                }, auth)
 
             listed = list_runs(db_path, account_key, 10)[0]
             event = list_events(db_path, account_key, None, 10)[0]
             detail = get_run(db_path, account_key, "run-1")
 
-            self.assertNotIn("outputChunks", listed)
-            self.assertEqual(listed["outputChunkCount"], 1)
-            self.assertNotIn("outputChunks", event)
-            self.assertEqual(event["outputChunkCount"], 1)
-            self.assertEqual(detail["outputChunks"][0]["ciphertext"], "abc")
+            self.assertEqual(listed["outputChunkCount"], 5)
+            self.assertEqual(listed["outputChunkOffset"], 2)
+            self.assertEqual([item["ciphertext"] for item in listed["outputChunks"]], ["chunk-2", "chunk-3", "chunk-4"])
+            self.assertEqual(event["outputChunkCount"], 5)
+            self.assertEqual(event["outputChunkOffset"], 2)
+            self.assertEqual([item["ciphertext"] for item in event["outputChunks"]], ["chunk-2", "chunk-3", "chunk-4"])
+            self.assertEqual(len(detail["outputChunks"]), 5)
 
     def test_list_runs_omits_oversized_legacy_e2ee_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
