@@ -13,9 +13,9 @@
     "notes": "修复设备断联后重新配对失败、重连串到其他设备的问题。"
   },
   "python": {
-    "version": "0.4.13",
+    "version": "0.4.14",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.13-py3-none-any.whl",
-    "notes": "修复断联设备重新配对后云端复活和 token 恢复。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.14-py3-none-any.whl",
+    "notes": "配对规则放宽：hao login 会携带本机 machine_id，断联/失效后可自动接回原设备，并避免旧 App 误把不同机器串到一起。"
   }
 }

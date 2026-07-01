@@ -400,12 +400,14 @@ class PairingClient:
         self.api_url = api_url.rstrip("/")
         self.timeout = timeout
 
-    def start(self, device_name: str, device_id: str = "", public_key: str = "") -> dict[str, Any]:
+    def start(self, device_name: str, device_id: str = "", public_key: str = "", machine_id: str = "") -> dict[str, Any]:
         payload = {"deviceName": device_name}
         if device_id:
             payload["deviceId"] = device_id
         if public_key:
             payload["publicKey"] = public_key
+        if machine_id:
+            payload["machineId"] = machine_id
         return self.request("POST", "/api/pair/start", payload)
 
     def status(self, code: str, pair_token: str) -> dict[str, Any]:

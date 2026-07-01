@@ -252,7 +252,7 @@ class CloudServerDeviceTest(unittest.TestCase):
                 thread.join(timeout=2)
                 server.server_close()
 
-    def test_pair_confirm_reuses_requested_existing_device_for_app_account(self):
+    def test_pair_confirm_reuses_matching_existing_device_for_app_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
             server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 66)
@@ -263,7 +263,7 @@ class CloudServerDeviceTest(unittest.TestCase):
             account_key = token_hash(app_token)
             try:
                 upsert_device(db_path, account_key, "dev_old123", "My Mac", "2026-06-18T01:00:00Z")
-                self.assertTrue(create_pair(db_path, "234567", "pair-secret", "dev_new", "My Mac", time.time(), "public-key"))
+                self.assertTrue(create_pair(db_path, "234567", "pair-secret", "dev_old123", "My Mac", time.time(), "public-key"))
 
                 confirmed = self.post_json(
                     base + "/api/pair/confirm",
@@ -322,6 +322,74 @@ class CloudServerDeviceTest(unittest.TestCase):
                 self.assertEqual(devices[0]["revokedAt"], "")
                 pair = get_pair(db_path, "345678")
                 self.assertIsNotNone(authenticate_device_token(db_path, token_hash(pair["token"])))
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
+    def test_pair_confirm_reuses_existing_device_by_machine_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 66)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            app_token = "app-token-secret-for-machine-reuse"
+            account_key = token_hash(app_token)
+            machine_id = "machine_test_reconnect_123456"
+            try:
+                upsert_device(db_path, account_key, "dev_old123", "My Mac", "2026-06-18T01:00:00Z", machine_id=machine_id)
+                self.assertTrue(create_pair(db_path, "456789", "pair-secret", "dev_new456", "My Mac fresh login", time.time(), "public-key", machine_id))
+
+                confirmed = self.post_json(
+                    base + "/api/pair/confirm",
+                    {
+                        "code": "456789",
+                        "appVersionCode": 162,
+                        "appVersionName": "0.9.27",
+                        "platform": "android",
+                    },
+                    token=app_token,
+                )
+
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["deviceId"], "dev_old123")
+                self.assertEqual([device["id"] for device in list_devices(db_path, account_key)], ["dev_old123"])
+                pair = get_pair(db_path, "456789")
+                self.assertEqual(pair["device_id"], "dev_old123")
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
+    def test_pair_confirm_ignores_mismatched_replace_device_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 66)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            app_token = "app-token-secret-for-mismatch"
+            account_key = token_hash(app_token)
+            try:
+                upsert_device(db_path, account_key, "dev_5090", "5090", "2026-06-18T01:00:00Z")
+                self.assertTrue(create_pair(db_path, "567890", "pair-secret", "dev_macbook", "MacBook", time.time(), "public-key"))
+
+                confirmed = self.post_json(
+                    base + "/api/pair/confirm",
+                    {
+                        "code": "567890",
+                        "replaceDeviceId": "dev_5090",
+                        "appVersionCode": 161,
+                        "appVersionName": "0.9.26",
+                        "platform": "android",
+                    },
+                    token=app_token,
+                )
+
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["deviceId"], "dev_macbook")
+                self.assertEqual({device["id"] for device in list_devices(db_path, account_key)}, {"dev_5090", "dev_macbook"})
             finally:
                 server.shutdown()
                 thread.join(timeout=2)

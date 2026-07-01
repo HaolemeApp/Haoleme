@@ -484,13 +484,14 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         payload = self.read_json()
         device_name = str(payload.get("deviceName") or "好了么 CLI")[:80]
         requested_device_id = str(payload.get("deviceId") or "").strip()
+        machine_id = normalize_machine_id(payload.get("machineId"))
         public_key = str(payload.get("publicKey") or "").strip()
         device_id = requested_device_id if is_valid_device_id(requested_device_id) else "dev_" + secrets.token_urlsafe(12).replace("-", "_")
         now = time.time()
         for _attempt in range(10):
             code = f"{secrets.randbelow(1000000):06d}"
             pair_token = secrets.token_urlsafe(32)
-            if create_pair(self.server.db_path, code, pair_token, device_id, device_name, now, public_key):
+            if create_pair(self.server.db_path, code, pair_token, device_id, device_name, now, public_key, machine_id):
                 self.send_json({
                     "code": code,
                     "pairToken": pair_token,
@@ -653,9 +654,12 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         e2ee_version = int_or_none(payload.get("e2eeVersion"))
         confirmed_device_id = pair["device_id"] or ""
         confirmed_device_name = pair["device_name"] or "好了么 CLI"
+        pair_machine_id = normalize_machine_id(safe_row_get(pair, "machine_id"))
         replace_device_id = str(payload.get("replaceDeviceId") or "").strip()
         reuse_device = None
-        if is_valid_device_id(replace_device_id):
+        if pair_machine_id:
+            reuse_device = get_device_by_machine_id(self.server.db_path, account_key, pair_machine_id, include_revoked=True)
+        if reuse_device is None and is_valid_device_id(replace_device_id) and replace_device_id == confirmed_device_id:
             reuse_device = get_device(self.server.db_path, account_key, replace_device_id, include_revoked=True)
         if reuse_device is None:
             reuse_device = get_device(self.server.db_path, account_key, confirmed_device_id, include_revoked=True)
@@ -691,6 +695,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             confirmed_device_id,
             confirmed_device_name,
             confirmed_at,
+            machine_id=pair_machine_id,
         )
         store_device_token(
             self.server.db_path,
@@ -1081,6 +1086,7 @@ def init_db(db_path: Path) -> None:
                 pair_token TEXT NOT NULL,
                 device_id TEXT NOT NULL DEFAULT '',
                 device_name TEXT NOT NULL,
+                machine_id TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
                 account TEXT,
                 token TEXT,
@@ -1121,6 +1127,7 @@ def init_db(db_path: Path) -> None:
                 created_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
                 manual_name INTEGER NOT NULL DEFAULT 0,
+                machine_id TEXT NOT NULL DEFAULT '',
                 revoked_at TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (account_key, id)
             )
@@ -1171,6 +1178,7 @@ def init_db(db_path: Path) -> None:
             """
         )
         ensure_column(db, "pairs", "device_id", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "pairs", "machine_id", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "pairs", "public_key", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "pairs", "encrypted_account_key", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "pairs", "encrypted_account_key_algorithm", "TEXT NOT NULL DEFAULT ''")
@@ -1180,6 +1188,7 @@ def init_db(db_path: Path) -> None:
         ensure_column(db, "runs", "device_name", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "runs", "project", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "devices", "manual_name", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(db, "devices", "machine_id", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "devices", "revoked_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "devices", "gpus", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "devices", "gpus_updated_at", "TEXT NOT NULL DEFAULT ''")
@@ -1191,6 +1200,7 @@ def init_db(db_path: Path) -> None:
         db.execute("CREATE INDEX IF NOT EXISTS idx_runs_account_device_updated ON runs(account_key, device_id, updated_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_runs_account_project_updated ON runs(account_key, project, updated_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_devices_account_seen ON devices(account_key, revoked_at, last_seen_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_devices_account_machine ON devices(account_key, machine_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_device_tokens_device ON device_tokens(account_key, device_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_app_tokens_account ON app_tokens(account_key, revoked_at, last_used_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_space_join_codes_account ON space_join_codes(account_key, status, expires_at)")
@@ -1482,15 +1492,16 @@ def create_pair(
     device_name: str,
     now: float,
     public_key: str = "",
+    machine_id: str = "",
 ) -> bool:
     try:
         with connect(db_path) as db:
             db.execute(
                 """
-                INSERT INTO pairs(code, pair_token, device_id, device_name, status, account, created_at, expires_at, public_key)
-                VALUES (?, ?, ?, ?, 'pending', 'default', ?, ?, ?)
+                INSERT INTO pairs(code, pair_token, device_id, device_name, machine_id, status, account, created_at, expires_at, public_key)
+                VALUES (?, ?, ?, ?, ?, 'pending', 'default', ?, ?, ?)
                 """,
-                (code, token_hash(pair_token), device_id, device_name, now, now + PAIR_TTL_SECONDS, public_key[:4096]),
+                (code, token_hash(pair_token), device_id, device_name, normalize_machine_id(machine_id), now, now + PAIR_TTL_SECONDS, public_key[:4096]),
             )
         return True
     except sqlite3.IntegrityError:
@@ -2185,23 +2196,28 @@ def delete_account(db_path: Path, account_key: str) -> int:
     return deleted
 
 
-def upsert_device(db_path: Path, account_key: str, device_id: str, name: str, seen_at: str) -> None:
+def upsert_device(db_path: Path, account_key: str, device_id: str, name: str, seen_at: str, machine_id: str = "") -> None:
     if not device_id:
         return
+    clean_machine_id = normalize_machine_id(machine_id)
     with connect(db_path) as db:
         db.execute(
             """
-            INSERT INTO devices(account_key, id, name, created_at, last_seen_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO devices(account_key, id, name, created_at, last_seen_at, machine_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_key, id) DO UPDATE SET
                 name = CASE
                     WHEN devices.manual_name = 1 THEN devices.name
                     ELSE excluded.name
                 END,
+                machine_id = CASE
+                    WHEN excluded.machine_id != '' THEN excluded.machine_id
+                    ELSE devices.machine_id
+                END,
                 last_seen_at = excluded.last_seen_at,
                 revoked_at = ''
             """,
-            (account_key, device_id, name or "好了么 CLI", seen_at, seen_at),
+            (account_key, device_id, name or "好了么 CLI", seen_at, seen_at, clean_machine_id),
         )
 
 
@@ -2284,6 +2300,25 @@ def get_device(db_path: Path, account_key: str, device_id: str, include_revoked:
             WHERE account_key = ? AND id = ? {revoked_filter}
             """,
             (account_key, device_id),
+        ).fetchone()
+    return None if row is None else format_device(row)
+
+
+def get_device_by_machine_id(db_path: Path, account_key: str, machine_id: str, include_revoked: bool = False) -> dict[str, Any] | None:
+    clean_machine_id = normalize_machine_id(machine_id)
+    if not account_key or not clean_machine_id:
+        return None
+    revoked_filter = "" if include_revoked else "AND revoked_at = ''"
+    with connect(db_path) as db:
+        row = db.execute(
+            f"""
+            SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at
+            FROM devices
+            WHERE account_key = ? AND machine_id = ? {revoked_filter}
+            ORDER BY last_seen_at DESC
+            LIMIT 1
+            """,
+            (account_key, clean_machine_id),
         ).fetchone()
     return None if row is None else format_device(row)
 
@@ -2517,6 +2552,13 @@ def normalize_project_filter(value: str) -> str:
     if value == "__none__":
         return value
     return normalize_project_name(value)
+
+
+def normalize_machine_id(value: object) -> str:
+    raw = str(value or "").strip()
+    if raw.startswith("machine_") and 16 <= len(raw) <= 96 and all(ch.isalnum() or ch == "_" for ch in raw):
+        return raw
+    return ""
 
 
 def is_e2ee_run(run: dict[str, Any]) -> bool:

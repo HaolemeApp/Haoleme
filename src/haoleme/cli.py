@@ -801,7 +801,7 @@ def pairing_login_command(argv: Sequence[str]) -> int:
     existing_device_id = reusable_login_device_id(existing_config, api_url, machine_id, ns.new_device, ns.reuse_saved_device)
     public_key, private_key = generate_pair_keypair()
     try:
-        started = client.start(ns.device, existing_device_id, public_key)
+        started = client.start(ns.device, existing_device_id, public_key, machine_id)
     except Exception as exc:
         print(f"hao: could not start login: {exc}", file=sys.stderr)
         print("If your 好了么 Cloud URL is different, use: hao login --api-url https://your-server.example.com", file=sys.stderr)
