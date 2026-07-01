@@ -1,20 +1,20 @@
 {
   "android": {
-    "versionCode": 165,
-    "versionName": "0.9.30",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.30/Haoleme-0.9.30.apk",
+    "versionCode": 166,
+    "versionName": "0.9.31",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.31/Haoleme-0.9.31.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.30/Haoleme-0.9.30.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.31/Haoleme-0.9.31.apk"
     ],
-    "sha256": "dc59f12f02326158de1733933fd4a350838bf52cd2f9aae13e540733d307503c",
+    "sha256": "93689bdf6e36998787f53647bba57393a76b3e7ac981499f63356f66f06a9352",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "删除任务改为离线优先：本地立即删除，联网后自动补删云端；云端尚未删除时 App 也不会再显示本地已删除任务。"
+    "notes": "输出改为手机本地缓存优先：主页列表不再重复下载控制台大文本，Console 增量刷新会保存到本机，减轻服务器压力。"
   },
   "python": {
-    "version": "0.4.18",
+    "version": "0.4.19",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.18-py3-none-any.whl",
-    "notes": "主页列表恢复运行输出预览：只返回最后几个加密输出片段，避免重复拉完整控制台。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.19-py3-none-any.whl",
+    "notes": "云端列表和事件接口不再返回输出块，详情增量接口只返回新增输出，降低长日志刷新压力。"
   }
 }

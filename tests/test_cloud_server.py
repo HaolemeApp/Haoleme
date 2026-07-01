@@ -789,7 +789,7 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertEqual(payload["outputChunks"][0]["ciphertext"], "abc")
             self.assertEqual(payload.get("outputLength"), 10)
 
-    def test_list_runs_keeps_only_recent_encrypted_console_preview_chunks(self):
+    def test_list_runs_omits_console_chunks_but_keeps_counts(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
             account_key = "account-key"
@@ -809,14 +809,19 @@ class CloudServerDeviceTest(unittest.TestCase):
             listed = list_runs(db_path, account_key, 10)[0]
             event = list_events(db_path, account_key, None, 10)[0]
             detail = get_run(db_path, account_key, "run-1")
+            incremental = build_run_fetch_payload(detail, output_since=3)
 
             self.assertEqual(listed["outputChunkCount"], 5)
-            self.assertEqual(listed["outputChunkOffset"], 2)
-            self.assertEqual([item["ciphertext"] for item in listed["outputChunks"]], ["chunk-2", "chunk-3", "chunk-4"])
+            self.assertNotIn("outputChunks", listed)
+            self.assertNotIn("outputChunkOffset", listed)
             self.assertEqual(event["outputChunkCount"], 5)
-            self.assertEqual(event["outputChunkOffset"], 2)
-            self.assertEqual([item["ciphertext"] for item in event["outputChunks"]], ["chunk-2", "chunk-3", "chunk-4"])
+            self.assertNotIn("outputChunks", event)
+            self.assertNotIn("outputChunkOffset", event)
             self.assertEqual(len(detail["outputChunks"]), 5)
+            self.assertTrue(incremental["incremental"])
+            self.assertNotIn("outputChunks", incremental["run"])
+            self.assertEqual(incremental["run"]["outputChunkCount"], 5)
+            self.assertEqual([item["ciphertext"] for item in incremental["outputChunks"]], ["chunk-3", "chunk-4"])
 
     def test_list_runs_omits_oversized_legacy_e2ee_payload(self):
         with tempfile.TemporaryDirectory() as tmp:

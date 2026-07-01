@@ -38,7 +38,6 @@ MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_TAIL = 1_000_000
 MAX_OUTPUT_CHUNKS = 20_000
 MAX_LIST_OUTPUT_PREVIEW = 2000
-MAX_LIST_OUTPUT_CHUNK_PREVIEW = 3
 MAX_LIST_E2EE_CIPHERTEXT = 64 * 1024
 DEFAULT_LOG_MAX_BYTES = 50 * 1024 * 1024
 DEVICE_ONLINE_WINDOW_SECONDS = 240
@@ -1910,8 +1909,7 @@ def list_runs(
             names,
             output_limit=MAX_LIST_OUTPUT_PREVIEW,
             include_e2ee=True,
-            include_output_chunks=True,
-            output_chunk_limit=MAX_LIST_OUTPUT_CHUNK_PREVIEW,
+            include_output_chunks=False,
         )
         for row in rows
     ]
@@ -1947,8 +1945,7 @@ def list_events(db_path: Path, account_key: str, since: str | None, limit: int) 
             names,
             output_limit=MAX_LIST_OUTPUT_PREVIEW,
             include_e2ee=True,
-            include_output_chunks=True,
-            output_chunk_limit=MAX_LIST_OUTPUT_CHUNK_PREVIEW,
+            include_output_chunks=False,
         )
         for row in rows
     ]
@@ -2101,6 +2098,8 @@ def build_run_fetch_payload(
         slim["stderrTail"] = ""
         slim["outputTail"] = ""
         new_chunks = chunks[output_since:] if output_since > 0 else chunks
+        slim["outputChunkCount"] = len(chunks)
+        slim.pop("outputChunks", None)
         return {
             "run": slim,
             "outputChunks": new_chunks,

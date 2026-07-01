@@ -145,6 +145,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final int HTTP_CONNECT_TIMEOUT_MS = 8000;
     private static final int HTTP_READ_TIMEOUT_MS = 12000;
     private static final int HTTP_LIST_READ_TIMEOUT_MS = 10000;
+    private static final int MAX_BACKGROUND_OUTPUT_SYNC = 3;
     private static final String CACHE_RUNS = "cached_runs_json";
     private static final String CACHE_RUNS_AT = "cached_runs_at";
     private static final String CACHE_RUNS_PREFIX = "cached_runs_json_";
@@ -2845,7 +2846,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             try {
                 syncPendingRunDeletesBlocking();
                 String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
-                final JSONArray runs = applyPendingRunDeletes(decryptRuns(new JSONObject(body).getJSONArray("runs")));
+                final JSONArray runs = applyPendingRunDeletes(attachCachedConsolePreviews(decryptRuns(new JSONObject(body).getJSONArray("runs"))));
                 handler.post(() -> {
                     String current = (selectedDeviceId == null || "all".equals(selectedDeviceId)) ? "all" : selectedDeviceId;
                     if (!targetDevice.equals(current)) {
@@ -2855,6 +2856,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     renderRuns(runs, false);
                 });
                 executor.submit(() -> saveRunsCache(runs));
+                executor.submit(() -> syncMissingLocalOutputs(runs));
             } catch (Exception e) {
                 Log.w(TAG, "refreshRuns failed for " + safeRequestLabel(requestUrl), e);
                 handler.post(() -> {
@@ -4074,6 +4076,46 @@ public class MainActivity extends Activity implements LifecycleOwner {
         editor.apply();
     }
 
+    private JSONArray attachCachedConsolePreviews(JSONArray runs) {
+        if (runs == null) {
+            return new JSONArray();
+        }
+        for (int i = 0; i < runs.length(); i++) {
+            JSONObject run = runs.optJSONObject(i);
+            if (run == null) {
+                continue;
+            }
+            attachCachedConsolePreview(run);
+        }
+        return runs;
+    }
+
+    private void attachCachedConsolePreview(JSONObject run) {
+        String id = run == null ? "" : run.optString("id", "").trim();
+        if (id.isEmpty() || hasConsoleOutput(run)) {
+            return;
+        }
+        JSONObject cached = loadCachedRunDetailJson(id);
+        if (cached == null) {
+            return;
+        }
+        String output = cachedConsoleOutput(cached);
+        if (output.isEmpty() || isNoOutputPlaceholder(output)) {
+            return;
+        }
+        try {
+            run.put("outputTail", output);
+            if (cached.has("outputLength")) {
+                run.put("outputLength", Math.max(run.optInt("outputLength", 0), cached.optInt("outputLength", 0)));
+            }
+            int localChunks = cachedLocalOutputChunkCount(cached);
+            if (localChunks > 0) {
+                run.put("localOutputChunkCount", localChunks);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     private void mergeDevicesFromRuns(JSONArray runs) {
         if (runs == null) {
             return;
@@ -4851,9 +4893,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 }
                 JSONObject payload = new JSONObject(httpGet(url.toString()));
                 final boolean incremental = payload.optBoolean("incremental", false);
-                final JSONObject run = decryptRun(payload.getJSONObject("run"), payload.optJSONArray("outputChunks"));
+                final JSONObject run = decryptRun(payload.getJSONObject("run"), incremental ? null : payload.optJSONArray("outputChunks"));
                 if (!incremental) {
-                    prefs.edit().putString(CACHE_RUN_PREFIX + id, run.toString()).apply();
+                    prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, consoleOutput(run)).toString()).apply();
                 }
                 handler.post(() -> {
                     if (id.equals(selectedRunId)) {
@@ -4875,13 +4917,108 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void loadCachedRunDetail(String id) {
-        String cached = prefs.getString(CACHE_RUN_PREFIX + id, "");
-        if (cached == null || cached.isEmpty()) {
+        JSONObject cached = loadCachedRunDetailJson(id);
+        if (cached == null) {
             return;
         }
         try {
-            updateRunDetail(new JSONObject(cached), true);
+            updateRunDetail(cached, true);
         } catch (Exception ignored) {
+        }
+    }
+
+    private JSONObject loadCachedRunDetailJson(String id) {
+        if (id == null || id.trim().isEmpty()) {
+            return null;
+        }
+        String cached = prefs.getString(CACHE_RUN_PREFIX + id, "");
+        if (cached == null || cached.isEmpty()) {
+            return null;
+        }
+        try {
+            return new JSONObject(cached);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void syncMissingLocalOutputs(JSONArray runs) {
+        if (runs == null || accountToken().isEmpty()) {
+            return;
+        }
+        int synced = 0;
+        for (int i = 0; i < runs.length() && synced < MAX_BACKGROUND_OUTPUT_SYNC; i++) {
+            JSONObject run = runs.optJSONObject(i);
+            if (run == null || !needsLocalOutputSync(run)) {
+                continue;
+            }
+            syncRunOutputForCache(run);
+            synced++;
+        }
+    }
+
+    private boolean needsLocalOutputSync(JSONObject run) {
+        String id = run.optString("id", "").trim();
+        if (id.isEmpty()) {
+            return false;
+        }
+        String status = run.optString("status", "");
+        boolean active = "running".equals(status) || "created".equals(status);
+        JSONObject cached = loadCachedRunDetailJson(id);
+        int remoteChunks = run.optInt("outputChunkCount", -1);
+        int remoteLength = run.optInt("outputLength", 0);
+        int localChunks = cachedLocalOutputChunkCount(cached);
+        int localLength = cachedOutputLength(cached);
+        boolean hasLocalOutput = cached != null && !cachedConsoleOutput(cached).isEmpty() && !isNoOutputPlaceholder(cachedConsoleOutput(cached));
+
+        if (remoteChunks > localChunks) {
+            return active || hasLocalOutput || localChunks > 0 || remoteChunks <= 20;
+        }
+        if (remoteChunks < 0 && remoteLength > localLength) {
+            return active || hasLocalOutput;
+        }
+        return false;
+    }
+
+    private void syncRunOutputForCache(JSONObject listRun) {
+        String id = listRun.optString("id", "").trim();
+        if (id.isEmpty()) {
+            return;
+        }
+        try {
+            JSONObject cached = loadCachedRunDetailJson(id);
+            int localChunks = cachedLocalOutputChunkCount(cached);
+            int localLength = cachedOutputLength(cached);
+            StringBuilder url = new StringBuilder(normalizedServerUrl()).append("/api/runs/").append(id);
+            if (localChunks > 0) {
+                url.append("?outputSince=").append(localChunks);
+            } else if (localLength > 0) {
+                url.append("?outputLength=").append(localLength);
+            }
+            JSONObject payload = new JSONObject(httpGet(url.toString(), HTTP_LIST_READ_TIMEOUT_MS));
+            boolean incremental = payload.optBoolean("incremental", false);
+            JSONObject run = decryptRun(payload.getJSONObject("run"), incremental ? null : payload.optJSONArray("outputChunks"));
+            if (incremental) {
+                String output = cachedConsoleOutput(cached);
+                String append = payload.optString("outputAppend", "");
+                if (!append.isEmpty()) {
+                    output += append;
+                }
+                JSONArray chunks = payload.optJSONArray("outputChunks");
+                if (chunks != null && chunks.length() > 0) {
+                    output += decryptOutputChunks(id, chunks);
+                    localChunks += chunks.length();
+                }
+                if (localChunks <= 0) {
+                    localChunks = run.optInt("outputChunkCount", 0);
+                }
+                int length = Math.max(output.length(), payload.optInt("outputLength", run.optInt("outputLength", output.length())));
+                prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, output, localChunks, length).toString()).apply();
+            } else {
+                prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, consoleOutput(run)).toString()).apply();
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "local output sync failed for " + id, e);
         }
     }
 
@@ -4912,6 +5049,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (payload.has("outputLength")) {
             consoleOutputSyncedLength = Math.max(consoleOutputSyncedLength, payload.optInt("outputLength", consoleOutputSyncedLength));
         }
+        persistCurrentRunDetail(run);
 
         renderConsoleText();
         maybeNotify(run);
@@ -4921,6 +5059,46 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (statusText != null && !isConsoleRenderClipped() && (consoleSearchInput == null || consoleSearchInput.getText().toString().trim().isEmpty())) {
             statusText.setText(isEnglish() ? "Console updated." : "控制台已更新。");
         }
+    }
+
+    private void persistCurrentRunDetail(JSONObject run) {
+        String id = run == null ? "" : run.optString("id", "").trim();
+        if (id.isEmpty()) {
+            return;
+        }
+        try {
+            JSONObject base = currentRunDetail == null ? new JSONObject(run.toString()) : new JSONObject(currentRunDetail.toString());
+            prefs.edit()
+                    .putString(CACHE_RUN_PREFIX + id, localRunSnapshot(base, currentConsoleOutput, outputChunkSyncedCount, consoleOutputSyncedLength).toString())
+                    .apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private JSONObject localRunSnapshot(JSONObject run, String output) {
+        JSONArray chunks = run == null ? null : run.optJSONArray("outputChunks");
+        int chunkCount = chunks == null ? cachedLocalOutputChunkCount(run) : chunks.length();
+        int outputLength = Math.max(run == null ? 0 : run.optInt("outputLength", 0), output == null ? 0 : output.length());
+        return localRunSnapshot(run, output, chunkCount, outputLength);
+    }
+
+    private JSONObject localRunSnapshot(JSONObject run, String output, int chunkCount, int outputLength) {
+        JSONObject snapshot;
+        try {
+            snapshot = run == null ? new JSONObject() : new JSONObject(run.toString());
+            String safeOutput = output == null || isNoOutputPlaceholder(output) ? "" : limitConsoleOutput(output);
+            snapshot.remove("outputChunks");
+            snapshot.remove("e2ee");
+            snapshot.put("outputTail", safeOutput);
+            snapshot.put("stdoutTail", "");
+            snapshot.put("stderrTail", "");
+            snapshot.put("localOutputChunkCount", Math.max(0, chunkCount));
+            snapshot.put("outputChunkCount", Math.max(snapshot.optInt("outputChunkCount", 0), Math.max(0, chunkCount)));
+            snapshot.put("outputLength", Math.max(0, outputLength));
+        } catch (Exception ignored) {
+            snapshot = new JSONObject();
+        }
+        return snapshot;
     }
 
     private void updateRunDetail(JSONObject run) {
@@ -4944,9 +5122,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
         currentConsoleOutput = consoleOutput(run);
         JSONArray chunks = run.optJSONArray("outputChunks");
-        outputChunkSyncedCount = chunks == null ? 0 : chunks.length();
-        consoleIncrementalUsesChunks = outputChunkSyncedCount > 0;
-        consoleOutputSyncedLength = currentConsoleOutput == null ? 0 : currentConsoleOutput.length();
+        outputChunkSyncedCount = chunks == null ? cachedLocalOutputChunkCount(run) : chunks.length();
+        consoleIncrementalUsesChunks = outputChunkSyncedCount > 0 || run.optInt("outputChunkCount", -1) >= 0;
+        consoleOutputSyncedLength = Math.max(currentConsoleOutput == null ? 0 : currentConsoleOutput.length(), run.optInt("outputLength", 0));
         renderConsoleText();
         if (("running".equals(status) || "created".equals(status)) && consoleAutoScroll && consoleVerticalScroll != null) {
             consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_DOWN));
@@ -5095,6 +5273,65 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return isEnglish() ? "No output yet." : "还没有输出。";
         }
         return limitConsoleOutput(combined.toString());
+    }
+
+    private boolean hasConsoleOutput(JSONObject run) {
+        return run != null
+                && (!run.optString("outputTail", "").isEmpty()
+                || !run.optString("stdoutTail", "").isEmpty()
+                || !run.optString("stderrTail", "").isEmpty());
+    }
+
+    private String cachedConsoleOutput(JSONObject cached) {
+        if (cached == null) {
+            return "";
+        }
+        String output = cached.optString("outputTail", "");
+        if (!output.isEmpty()) {
+            return output;
+        }
+        String stdout = cached.optString("stdoutTail", "");
+        String stderr = cached.optString("stderrTail", "");
+        if (stdout.isEmpty()) {
+            return stderr;
+        }
+        if (stderr.isEmpty()) {
+            return stdout;
+        }
+        return stdout + "\n" + stderr;
+    }
+
+    private int cachedLocalOutputChunkCount(JSONObject cached) {
+        if (cached == null) {
+            return 0;
+        }
+        if (cached.has("localOutputChunkCount")) {
+            return Math.max(0, cached.optInt("localOutputChunkCount", 0));
+        }
+        JSONArray chunks = cached.optJSONArray("outputChunks");
+        if (chunks != null) {
+            return chunks.length();
+        }
+        return Math.max(0, cached.optInt("outputChunkCount", 0));
+    }
+
+    private int cachedOutputLength(JSONObject cached) {
+        if (cached == null) {
+            return 0;
+        }
+        int length = cached.optInt("outputLength", 0);
+        if (length > 0) {
+            return length;
+        }
+        return cachedConsoleOutput(cached).length();
+    }
+
+    private boolean isNoOutputPlaceholder(String output) {
+        if (output == null) {
+            return true;
+        }
+        String value = output.trim();
+        return value.isEmpty() || "No output yet.".equals(value) || "还没有输出。".equals(value);
     }
 
     private String limitConsoleOutput(String output) {
