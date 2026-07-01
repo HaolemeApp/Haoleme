@@ -154,6 +154,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String CACHE_RUN_PREFIX = "cached_run_";
     private static final String PREF_STATUS_FILTER = "status_filter";
     private static final String PREF_ARCHIVED_RUNS = "archived_run_ids";
+    private static final String PREF_PINNED_RUNS = "pinned_run_ids";
     private static final String PREF_PROJECT_FILTER = "project_filter";
     private static final String PREF_THEME_MODE = "theme_mode";
     private static final String PREF_NOTIFY_SUCCESS = "notify_success";
@@ -202,6 +203,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView connectionSubtitleText;
     private TextView statusText;
     private TextView deviceSummaryText;
+    private TextView deviceHeartbeatText;
     private LinearLayout deviceGpuContainer;
     private int gpuMetricIndex = 0;
     private boolean gpuExpanded = false;
@@ -403,6 +405,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         pairInput = null;
         pairButton = null;
+        deviceHeartbeatText = null;
         devicesScrollView = null;
         devicesContainer = null;
         runsContainer = null;
@@ -700,12 +703,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         });
         left.addView(deviceSummaryText, matchWrap());
 
-        TextView hint = new TextView(this);
-        hint.setText(isEnglish() ? "Tap a run for console · swipe left for actions" : "点运行看控制台 · 左滑可操作");
-        hint.setTextSize(11);
-        hint.setTextColor(textSecondary());
-        hint.setPadding(0, dp(4), 0, 0);
-        left.addView(hint, matchWrap());
+        deviceHeartbeatText = new TextView(this);
+        deviceHeartbeatText.setText("");
+        deviceHeartbeatText.setTextSize(11);
+        deviceHeartbeatText.setTextColor(textSecondary());
+        deviceHeartbeatText.setSingleLine(true);
+        deviceHeartbeatText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        deviceHeartbeatText.setPadding(0, dp(4), 0, 0);
+        left.addView(deviceHeartbeatText, matchWrap());
 
         row.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
@@ -2213,6 +2218,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return CACHE_RUNS.equals(key)
                 || CACHE_RUNS_AT.equals(key)
                 || CACHE_DEVICES.equals(key)
+                || PREF_PINNED_RUNS.equals(key)
                 || key.startsWith(CACHE_RUNS_PREFIX)
                 || key.startsWith(CACHE_RUNS_AT_PREFIX)
                 || key.startsWith(CACHE_RUN_PREFIX)
@@ -2418,6 +2424,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             if (CACHE_RUNS.equals(key)
                     || CACHE_RUNS_AT.equals(key)
                     || PREF_PENDING_RUN_DELETES.equals(key)
+                    || PREF_PINNED_RUNS.equals(key)
                     || key.startsWith(CACHE_RUNS_PREFIX)
                     || key.startsWith(CACHE_RUNS_AT_PREFIX)
                     || key.startsWith(CACHE_RUN_PREFIX)
@@ -3429,22 +3436,33 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         if (selectedDeviceId == null || "all".equals(selectedDeviceId)) {
             deviceSummaryText.setText(isEnglish() ? "All active devices" : "全部活跃设备");
+            if (deviceHeartbeatText != null) {
+                int online = onlineDeviceCount();
+                int total = deviceNames.isEmpty() ? cachedDevicesArray().length() : deviceNames.size();
+                deviceHeartbeatText.setText(isEnglish()
+                        ? online + " online · " + total + " devices"
+                        : online + " 在线 · 共 " + total + " 台设备");
+            }
             if (deviceGpuContainer != null) {
                 deviceGpuContainer.setVisibility(View.GONE);
             }
             return;
         }
         String lastSeen = formatDeviceTimestamp(deviceLastSeen.get(selectedDeviceId));
-        StringBuilder text = new StringBuilder(selectedDeviceName());
         boolean online = Boolean.TRUE.equals(deviceOnline.get(selectedDeviceId));
-        text.append(" · ").append(online ? (isEnglish() ? "Online" : "在线") : (isEnglish() ? "Offline" : "离线"));
+        deviceSummaryText.setText(selectedDeviceName() + " · " + (online ? (isEnglish() ? "Online" : "在线") : (isEnglish() ? "Offline" : "离线")));
+        StringBuilder text = new StringBuilder();
         if (!lastSeen.isEmpty()) {
-            text.append(" · ").append(isEnglish() ? "seen " : "心跳 ").append(lastSeen);
+            text.append(isEnglish() ? "Heartbeat " : "心跳 ").append(lastSeen);
+        } else {
+            text.append(isEnglish() ? "Waiting for heartbeat" : "等待心跳");
         }
         if (selectedDeviceGpuCount() > 0) {
             text.append(gpuExpanded ? (isEnglish() ? " · GPU ▴" : " · GPU ▴") : (isEnglish() ? " · GPU ▾" : " · GPU ▾"));
         }
-        deviceSummaryText.setText(text.toString());
+        if (deviceHeartbeatText != null) {
+            deviceHeartbeatText.setText(text.toString());
+        }
         updateDeviceGpu();
     }
 
@@ -4019,12 +4037,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private String runsSignature(JSONArray runs) {
         StringBuilder sb = new StringBuilder();
+        Set<String> pinned = pinnedRunIds();
         for (int i = 0; i < runs.length(); i++) {
             JSONObject r = runs.optJSONObject(i);
             if (r == null) {
                 continue;
             }
             sb.append(r.optString("id", "")).append('|')
+              .append(pinned.contains(r.optString("id", "")) ? 'P' : '-').append('|')
               .append(r.optString("status", "")).append('|')
               .append(r.optString("updatedAt", "")).append('|')
               .append(r.optInt("outputLength", r.optString("outputTail", "").length())).append(';');
@@ -4068,7 +4088,32 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
             filtered.put(run);
         }
-        return filtered;
+        return orderPinnedRuns(filtered);
+    }
+
+    private JSONArray orderPinnedRuns(JSONArray runs) {
+        Set<String> pinned = pinnedRunIds();
+        if (pinned.isEmpty()) {
+            return runs;
+        }
+        JSONArray ordered = new JSONArray();
+        JSONArray rest = new JSONArray();
+        for (int i = 0; i < runs.length(); i++) {
+            JSONObject run = runs.optJSONObject(i);
+            if (run == null) {
+                continue;
+            }
+            String id = run.optString("id", "");
+            if (!id.isEmpty() && pinned.contains(id)) {
+                ordered.put(run);
+            } else {
+                rest.put(run);
+            }
+        }
+        for (int i = 0; i < rest.length(); i++) {
+            ordered.put(rest.optJSONObject(i));
+        }
+        return ordered;
     }
 
     private boolean projectMatchesFilter(String project, String filter) {
@@ -4441,6 +4486,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
         actions.setGravity(Gravity.CENTER);
         actions.setPadding(0, 0, 0, 0);
 
+        boolean pinned = isRunPinned(runId);
+        TextView pin = swipeActionButton(pinned ? "↓" : "↑", pinned ? (isEnglish() ? "Unpin" : "取消") : (isEnglish() ? "Pin" : "置顶"), pinActionBg(), pinActionText());
+        pin.setOnClickListener(v -> {
+            setRunPinned(runId, !pinned);
+            if (statusText != null) {
+                statusText.setText(pinned
+                        ? (isEnglish() ? "Run unpinned." : "已取消置顶。")
+                        : (isEnglish() ? "Run pinned." : "已置顶。"));
+            }
+            scroller.postDelayed(() -> scroller.smoothScrollTo(0, 0), 80);
+        });
+        actions.addView(pin, new LinearLayout.LayoutParams(dp(72), dp(86)));
+
         boolean archived = isRunArchived(runId);
         TextView archive = swipeActionButton(archived ? "↩" : "◇", archived ? (isEnglish() ? "Restore" : "恢复") : (isEnglish() ? "Archive" : "归档"), archiveActionBg(), archiveActionText());
         archive.setOnClickListener(v -> {
@@ -4452,18 +4510,20 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
             scroller.postDelayed(() -> scroller.smoothScrollTo(0, 0), 80);
         });
-        actions.addView(archive, new LinearLayout.LayoutParams(dp(76), dp(86)));
+        LinearLayout.LayoutParams archiveParams = new LinearLayout.LayoutParams(dp(72), dp(86));
+        archiveParams.setMargins(dp(8), 0, 0, 0);
+        actions.addView(archive, archiveParams);
 
         TextView delete = swipeActionButton("⌫", t("delete"), deleteActionBg(), Color.WHITE);
         delete.setOnClickListener(v -> {
             scroller.postDelayed(() -> scroller.smoothScrollTo(0, 0), 80);
             deleteRun(runId);
         });
-        LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(dp(76), dp(86));
+        LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(dp(72), dp(86));
         deleteParams.setMargins(dp(8), 0, 0, 0);
         actions.addView(delete, deleteParams);
 
-        row.addView(actions, new LinearLayout.LayoutParams(dp(164), LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(actions, new LinearLayout.LayoutParams(dp(232), LinearLayout.LayoutParams.WRAP_CONTENT));
         scroller.addView(row, new HorizontalScrollView.LayoutParams(
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT,
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT
@@ -4471,7 +4531,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         scroller.setOnTouchListener((v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
                 scroller.postDelayed(() -> {
-                    int target = scroller.getScrollX() > dp(48) ? dp(164) : 0;
+                    int target = scroller.getScrollX() > dp(48) ? dp(232) : 0;
                     scroller.smoothScrollTo(target, 0);
                 }, 40);
             }
@@ -4641,7 +4701,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
             java.text.SimpleDateFormat in = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US);
             in.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
             java.util.Date dt = in.parse(s);
-            java.text.SimpleDateFormat out = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
+            java.text.SimpleDateFormat out = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA);
+            out.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Shanghai"));
             return dt == null ? iso : out.format(dt);
         } catch (Exception e) {
             return iso;
@@ -4670,6 +4731,47 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return id != null && !id.isEmpty() && archivedRunIds().contains(id);
     }
 
+    private Set<String> pinnedRunIds() {
+        Set<String> set = new HashSet<>();
+        String raw = prefs.getString(PREF_PINNED_RUNS, "");
+        if (raw != null && !raw.isEmpty()) {
+            try {
+                JSONArray a = new JSONArray(raw);
+                for (int i = 0; i < a.length(); i++) {
+                    String s = a.optString(i, "");
+                    if (!s.isEmpty()) {
+                        set.add(s);
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return set;
+    }
+
+    private boolean isRunPinned(String id) {
+        return id != null && !id.isEmpty() && pinnedRunIds().contains(id);
+    }
+
+    private void setRunPinned(String id, boolean pinned) {
+        if (id == null || id.isEmpty()) {
+            return;
+        }
+        Set<String> set = pinnedRunIds();
+        if (pinned) {
+            set.add(id);
+        } else {
+            set.remove(id);
+        }
+        JSONArray a = new JSONArray();
+        for (String s : set) {
+            a.put(s);
+        }
+        prefs.edit().putString(PREF_PINNED_RUNS, a.toString()).apply();
+        loadCachedRuns();
+        refreshRuns();
+    }
+
     private void setRunArchived(String id, boolean archived) {
         if (id == null || id.isEmpty()) {
             return;
@@ -4695,27 +4797,30 @@ public class MainActivity extends Activity implements LifecycleOwner {
         consoleRenderLimit = CONSOLE_RENDER_INITIAL_CHARS;
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), statusBarHeight() + dp(18), dp(18), navigationBarHeight() + dp(18));
+        root.setPadding(dp(16), statusBarHeight() + dp(12), dp(16), navigationBarHeight() + dp(14));
         root.setBackgroundColor(appBg());
 
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView backButton = actionButton(actionLabel("‹", t("back"), 1.25f));
+        TextView backButton = circleIconButton("‹");
+        backButton.setTextSize(28);
         backButton.setOnClickListener(v -> returnToList());
-        top.addView(backButton, new LinearLayout.LayoutParams(dp(86), dp(46)));
+        top.addView(backButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
         TextView title = new TextView(this);
         title.setText(t("console"));
-        title.setTextSize(24);
+        title.setTextSize(22);
         title.setTextColor(textPrimary());
         title.setTypeface(null, Typeface.BOLD);
+        title.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        titleParams.setMargins(dp(10), 0, 0, 0);
+        titleParams.setMargins(dp(12), 0, dp(8), 0);
         top.addView(title, titleParams);
 
-        TextView searchToggle = actionButton(actionLabel("⌕", t("search"), 1.12f));
+        TextView searchToggle = circleIconButton("⌕");
+        searchToggle.setTextSize(20);
         searchToggle.setOnClickListener(v -> {
             consoleSearchVisible = !consoleSearchVisible;
             if (consoleSearchInput != null) {
@@ -4727,47 +4832,45 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 }
             }
         });
+        top.addView(searchToggle, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+        TextView copyButton = circleIconButton("⧉");
+        copyButton.setTextSize(18);
+        copyButton.setOnClickListener(v -> copyConsoleOutput());
+        LinearLayout.LayoutParams copyParams = new LinearLayout.LayoutParams(dp(44), dp(44));
+        copyParams.setMargins(dp(8), 0, 0, 0);
+        top.addView(copyButton, copyParams);
+
+        TextView infoButton = circleIconButton("ⓘ");
+        infoButton.setTextSize(18);
+        infoButton.setOnClickListener(v -> showRunInfoDialog());
+        LinearLayout.LayoutParams infoParams = new LinearLayout.LayoutParams(dp(44), dp(44));
+        infoParams.setMargins(dp(8), 0, 0, 0);
+        top.addView(infoButton, infoParams);
+
         root.addView(top, matchWrap());
 
-        LinearLayout consoleActions = new LinearLayout(this);
-        consoleActions.setOrientation(LinearLayout.HORIZONTAL);
-        consoleActions.setGravity(Gravity.CENTER_VERTICAL);
-        consoleActions.addView(searchToggle, new LinearLayout.LayoutParams(0, dp(44), 1));
+        LinearLayout commandCard = new LinearLayout(this);
+        commandCard.setOrientation(LinearLayout.VERTICAL);
+        commandCard.setPadding(dp(14), dp(12), dp(14), dp(12));
+        commandCard.setBackground(roundedBg(cardBg(), 20, cardStroke()));
+        LinearLayout.LayoutParams commandCardParams = matchWrap();
+        commandCardParams.setMargins(0, dp(12), 0, dp(10));
 
-        TextView copyButton = actionButton(actionLabel("⧉", t("copy"), 1.12f));
-        copyButton.setOnClickListener(v -> copyConsoleOutput());
-        LinearLayout.LayoutParams copyParams = new LinearLayout.LayoutParams(0, dp(44), 1);
-        copyParams.setMargins(dp(8), 0, 0, 0);
-        consoleActions.addView(copyButton, copyParams);
-
-        consoleAutoScrollButton = actionButton(actionLabel("↓", "Auto", 1.12f));
-        consoleAutoScrollButton.setOnClickListener(v -> {
-            consoleAutoScroll = !consoleAutoScroll;
-            updateConsoleAutoScrollButton();
-            if (consoleAutoScroll && consoleVerticalScroll != null) {
-                consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_DOWN));
-            }
-        });
-        LinearLayout.LayoutParams autoParams = new LinearLayout.LayoutParams(0, dp(44), 1);
-        autoParams.setMargins(dp(8), 0, 0, 0);
-        consoleActions.addView(consoleAutoScrollButton, autoParams);
-
-        TextView infoButton = actionButton(actionLabel("ⓘ", isEnglish() ? "Info" : "信息", 1.12f));
-        infoButton.setOnClickListener(v -> showRunInfoDialog());
-        LinearLayout.LayoutParams infoParams = new LinearLayout.LayoutParams(0, dp(44), 1);
-        infoParams.setMargins(dp(8), 0, 0, 0);
-        consoleActions.addView(infoButton, infoParams);
-
-        LinearLayout.LayoutParams actionRowParams = matchWrap();
-        actionRowParams.setMargins(0, dp(8), 0, dp(8));
-        root.addView(consoleActions, actionRowParams);
+        TextView commandLabel = new TextView(this);
+        commandLabel.setText(isEnglish() ? "COMMAND" : "运行命令");
+        commandLabel.setTextSize(10);
+        commandLabel.setLetterSpacing(0.06f);
+        commandLabel.setTypeface(null, Typeface.BOLD);
+        commandLabel.setTextColor(textSecondary());
+        commandCard.addView(commandLabel, matchWrap());
 
         detailCommand = new TextView(this);
         detailCommand.setText(isEnglish() ? "Loading command..." : "正在加载命令...");
-        detailCommand.setTextSize(16);
+        detailCommand.setTextSize(15);
         detailCommand.setTextColor(textPrimary());
         detailCommand.setTypeface(null, Typeface.BOLD);
-        detailCommand.setPadding(0, dp(12), 0, 0);
+        detailCommand.setPadding(0, dp(6), 0, 0);
         // Long commands are clamped so they don't crowd the console; tap to see the full command.
         detailCommand.setMaxLines(2);
         detailCommand.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -4785,29 +4888,29 @@ public class MainActivity extends Activity implements LifecycleOwner {
             applyDialogStyle(d);
             d.show();
         });
-        root.addView(detailCommand, matchWrap());
+        commandCard.addView(detailCommand, matchWrap());
 
         detailMeta = new TextView(this);
         detailMeta.setText("");
-        detailMeta.setTextSize(13);
+        detailMeta.setTextSize(11);
+        detailMeta.setTypeface(null, Typeface.BOLD);
         detailMeta.setTextColor(textSecondary());
-        detailMeta.setPadding(0, dp(5), 0, dp(8));
-        root.addView(detailMeta, matchWrap());
+        detailMeta.setPadding(dp(9), dp(4), dp(9), dp(4));
+        LinearLayout.LayoutParams metaParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        metaParams.setMargins(0, dp(9), 0, 0);
+        commandCard.addView(detailMeta, metaParams);
 
         consoleInterruptButton = actionButton(actionLabel("■", t("interrupt"), 1.12f));
         consoleInterruptButton.setTextColor(color("#B42318"));
         consoleInterruptButton.setOnClickListener(v -> confirmInterruptRun());
         LinearLayout.LayoutParams interruptParams = matchWrap();
-        interruptParams.setMargins(0, dp(4), 0, dp(4));
+        interruptParams.setMargins(0, dp(10), 0, 0);
         consoleInterruptButton.setVisibility(View.GONE);
-        root.addView(consoleInterruptButton, interruptParams);
-
-        statusText = new TextView(this);
-        statusText.setText(isEnglish() ? "Loading console..." : "正在加载控制台...");
-        statusText.setTextSize(13);
-        statusText.setTextColor(textSecondary());
-        statusText.setPadding(0, 0, 0, dp(8));
-        root.addView(statusText, matchWrap());
+        commandCard.addView(consoleInterruptButton, interruptParams);
+        root.addView(commandCard, commandCardParams);
 
         consoleSearchInput = new EditText(this);
         consoleSearchInput.setSingleLine(true);
@@ -4830,10 +4933,47 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 renderConsoleText();
             }
         });
-        root.addView(consoleSearchInput, matchWrap());
+        LinearLayout.LayoutParams searchParams = matchWrap();
+        searchParams.setMargins(0, 0, 0, dp(10));
+        root.addView(consoleSearchInput, searchParams);
+
+        LinearLayout terminalFrame = new LinearLayout(this);
+        terminalFrame.setOrientation(LinearLayout.VERTICAL);
+        terminalFrame.setPadding(0, 0, 0, 0);
+        terminalFrame.setBackground(roundedBg(consoleBg(), 20, consoleStroke()));
+
+        LinearLayout terminalHeader = new LinearLayout(this);
+        terminalHeader.setOrientation(LinearLayout.HORIZONTAL);
+        terminalHeader.setGravity(Gravity.CENTER_VERTICAL);
+        terminalHeader.setPadding(dp(14), dp(10), dp(10), dp(8));
+        terminalHeader.setBackground(roundedBg(terminalHeaderBg(), 20, Color.TRANSPARENT));
+        terminalHeader.addView(terminalDots(), new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        statusText = new TextView(this);
+        statusText.setText(isEnglish() ? "Loading console..." : "正在加载控制台...");
+        statusText.setTextSize(11);
+        statusText.setTextColor(consoleMutedText());
+        statusText.setSingleLine(true);
+        statusText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        statusParams.setMargins(dp(10), 0, dp(8), 0);
+        terminalHeader.addView(statusText, statusParams);
+
+        consoleAutoScrollButton = filterPill("↓", "Auto", t("auto_on"));
+        consoleAutoScrollButton.setTextSize(11);
+        consoleAutoScrollButton.setOnClickListener(v -> {
+            consoleAutoScroll = !consoleAutoScroll;
+            updateConsoleAutoScrollButton();
+            if (consoleAutoScroll && consoleVerticalScroll != null) {
+                consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_DOWN));
+            }
+        });
+        terminalHeader.addView(consoleAutoScrollButton, new LinearLayout.LayoutParams(dp(104), dp(34)));
+        terminalFrame.addView(terminalHeader, matchWrap());
 
         consoleVerticalScroll = new ScrollView(this);
-        consoleVerticalScroll.setBackground(roundedBg(consoleBg(), 14, consoleStroke()));
+        consoleVerticalScroll.setFillViewport(false);
+        consoleVerticalScroll.setBackgroundColor(Color.TRANSPARENT);
         consoleVerticalScroll.getViewTreeObserver().addOnScrollChangedListener(() -> {
             if (consoleVerticalScroll == null) {
                 return;
@@ -4872,8 +5012,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailConsole.setTextSize(12);
         detailConsole.setTextColor(consoleText());
         detailConsole.setBackgroundColor(Color.TRANSPARENT);
-        detailConsole.setPadding(dp(12), dp(12), dp(12), dp(12));
+        detailConsole.setPadding(dp(14), dp(14), dp(14), dp(16));
         detailConsole.setTypeface(android.graphics.Typeface.MONOSPACE);
+        detailConsole.setLineSpacing(dp(2), 1.0f);
         detailConsole.setHorizontallyScrolling(true);
         horizontalScroll.addView(detailConsole, new HorizontalScrollView.LayoutParams(
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT,
@@ -4887,7 +5028,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT
         ));
-        root.addView(consoleVerticalScroll, new LinearLayout.LayoutParams(
+        terminalFrame.addView(consoleVerticalScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
+        root.addView(terminalFrame, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
                 1
@@ -4900,8 +5046,22 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void updateConsoleAutoScrollButton() {
         if (consoleAutoScrollButton != null) {
-            consoleAutoScrollButton.setText(actionLabel("↓", consoleAutoScroll ? t("auto_on") : t("auto_off"), 1.12f));
+            consoleAutoScrollButton.setText(actionLabel("↓", consoleAutoScroll ? t("auto_on") : t("auto_off"), 1.05f));
         }
+    }
+
+    private LinearLayout terminalDots() {
+        LinearLayout dots = new LinearLayout(this);
+        dots.setOrientation(LinearLayout.HORIZONTAL);
+        dots.setGravity(Gravity.CENTER_VERTICAL);
+        int[] colors = new int[]{color("#EF4444"), color("#F59E0B"), color("#22C55E")};
+        for (int fill : colors) {
+            View dot = statusDot(fill);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(8), dp(8));
+            params.setMargins(0, 0, dp(6), 0);
+            dots.addView(dot, params);
+        }
+        return dots;
     }
 
     private void updateConsoleMoreButton() {
@@ -5138,6 +5298,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String projectSuffix = projectName.isEmpty() ? "" : " · " + projectName;
         detailMeta.setText(status.toUpperCase(Locale.US) + projectSuffix + statusSuffix(run));
         detailMeta.setTextColor(statusColor(status));
+        detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
 
         String appendText = payload.optString("outputAppend", "");
@@ -5225,6 +5386,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String projectSuffix = projectName.isEmpty() ? "" : " · " + projectName;
         detailMeta.setText(status.toUpperCase(Locale.US) + projectSuffix + statusSuffix(run));
         detailMeta.setTextColor(statusColor(status));
+        detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
         currentConsoleOutput = consoleOutput(run);
         JSONArray chunks = run.optJSONArray("outputChunks");
@@ -5467,6 +5629,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         rememberPendingRunDelete(id);
+        setRunPinned(id, false);
         knownStatuses.remove(id);
         removeRunFromCaches(id);
         if (id.equals(selectedRunId)) {
@@ -7531,9 +7694,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String ended = run.optString("endedAt", "");
         String time = ended.isEmpty() || "null".equals(ended) ? started : ended;
         if (exitCode == Integer.MIN_VALUE) {
-            return " · " + time;
+            return " · " + formatIsoLocal(time);
         }
-        return " · exit " + exitCode + " · " + time;
+        return " · exit " + exitCode + " · " + formatIsoLocal(time);
     }
 
     private String statusExitSuffix(JSONObject run) {
@@ -7865,6 +8028,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return isDarkTheme() ? color("#E5E7EB") : color("#344054");
     }
 
+    private int pinActionBg() {
+        return isDarkTheme() ? color("#173A31") : color("#E8F7F0");
+    }
+
+    private int pinActionText() {
+        return isDarkTheme() ? color("#A7F3D0") : color("#087443");
+    }
+
     private int deleteActionBg() {
         return isDarkTheme() ? color("#B42318") : color("#EF4444");
     }
@@ -7891,6 +8062,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private int consoleStroke() {
         return isDarkTheme() ? color("#2C2D33") : color("#DDE3EC");
+    }
+
+    private int terminalHeaderBg() {
+        return isDarkTheme() ? color("#15161A") : color("#F5F7FA");
+    }
+
+    private int consoleMutedText() {
+        return isDarkTheme() ? color("#9CA3AF") : color("#6B7280");
     }
 
     private int surfaceStroke() {
