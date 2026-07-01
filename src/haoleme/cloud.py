@@ -305,7 +305,7 @@ class CloudClient:
                 patch["stderrDelta"] = stderr_delta
         self.request("POST", "/api/runs", {"append": True, "run": patch})
 
-    def heartbeat(self, gpus: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def heartbeat(self, gpus: list[dict[str, Any]] | None = None, cpu: dict[str, Any] | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         if self.config.device_id:
             payload["deviceId"] = self.config.device_id
@@ -313,6 +313,8 @@ class CloudClient:
             payload["deviceName"] = self.config.device_name
         if gpus is not None:
             payload["gpus"] = gpus
+        if cpu is not None:
+            payload["cpu"] = cpu
         return self.request("POST", "/api/devices/heartbeat", payload)
 
     def get_run(self, run_id: str) -> dict[str, Any]:

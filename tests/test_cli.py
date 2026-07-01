@@ -16,6 +16,7 @@ from haoleme.cli import (
     ORPHANED_RUN_GRACE_SECONDS,
     command_needs_shell,
     compare_versions,
+    collect_cpu_stats,
     heartbeat_initial_delay,
     heartbeat_state_path,
     main,
@@ -213,6 +214,14 @@ class CliPairingTest(unittest.TestCase):
         self.assertGreaterEqual(second_delay, 0)
         self.assertLess(second_delay, HEARTBEAT_INTERVAL_SECONDS)
         self.assertNotEqual(first_delay, second_delay)
+
+    def test_collect_cpu_stats_returns_bounded_snapshot(self):
+        stats = collect_cpu_stats()
+
+        self.assertGreaterEqual(stats.get("cores", 0), 1)
+        if "utilization" in stats:
+            self.assertGreaterEqual(stats["utilization"], 0)
+            self.assertLessEqual(stats["utilization"], 100)
 
     def test_heartbeat_recovers_orphaned_running_run(self):
         with tempfile.TemporaryDirectory() as tmp:

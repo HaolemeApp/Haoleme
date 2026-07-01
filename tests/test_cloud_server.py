@@ -48,6 +48,7 @@ from haoleme.cloud_server import (
     permission_audit,
     rename_device,
     record_device_heartbeat,
+    sanitize_cpu,
     sanitize_gpus,
     request_run_interrupt,
     revoke_device,
@@ -138,7 +139,7 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertEqual(stats["appTotalAccounts"], 4)   # acc1..acc4 (revoked excluded)
             self.assertEqual(stats["appInstalls"], 5)        # non-revoked tokens
 
-    def test_device_heartbeat_stores_and_returns_gpus(self):
+    def test_device_heartbeat_stores_and_returns_gpus_and_cpu(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
             account_key = "account-key"
@@ -150,19 +151,24 @@ class CloudServerDeviceTest(unittest.TestCase):
                  "memoryUsed": "1024", "memoryTotal": "81920", "temperature": "45"},
                 "junk",
             ])
+            cpu = sanitize_cpu({"utilization": "42", "cores": "64", "load1": "12.5"})
             device = record_device_heartbeat(
-                db_path, account_key, device_id, "GPU box", "2026-06-23T01:00:00Z", gpus=gpus
+                db_path, account_key, device_id, "GPU box", "2026-06-23T01:00:00Z", gpus=gpus, cpu=cpu
             )
             self.assertEqual(len(device["gpus"]), 1)
             self.assertEqual(device["gpus"][0]["utilization"], 37)
             self.assertEqual(device["gpus"][0]["name"], "NVIDIA A100")
+            self.assertEqual(device["cpu"]["utilization"], 42)
+            self.assertEqual(device["cpu"]["cores"], 64)
 
             listed = list_devices(db_path, account_key)
             self.assertEqual(listed[0]["gpus"][0]["memoryTotal"], 81920)
+            self.assertEqual(listed[0]["cpu"]["load1"], 12.5)
 
-            # A heartbeat without gpus must not wipe the last known values.
+            # A heartbeat without gpus/cpu must not wipe the last known values.
             record_device_heartbeat(db_path, account_key, device_id, "GPU box", "2026-06-23T01:01:00Z")
             self.assertEqual(list_devices(db_path, account_key)[0]["gpus"][0]["utilization"], 37)
+            self.assertEqual(list_devices(db_path, account_key)[0]["cpu"]["utilization"], 42)
 
     def test_device_token_is_write_scoped_hashed_and_revocable(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -385,6 +385,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             return
 
         gpus = sanitize_gpus(payload.get("gpus")) if "gpus" in payload else None
+        cpu = sanitize_cpu(payload.get("cpu")) if "cpu" in payload else None
         seen_at = iso_now()
         device = record_device_heartbeat(
             self.server.db_path,
@@ -393,6 +394,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             device_name or "好了么 CLI",
             seen_at,
             gpus=gpus,
+            cpu=cpu,
         )
         touch_token(self.server.db_path, auth.token_hash, seen_at)
         self.send_json({"ok": True, "device": device, "onlineWindowSeconds": DEVICE_ONLINE_WINDOW_SECONDS})
@@ -1194,6 +1196,8 @@ def init_db(db_path: Path) -> None:
         ensure_column(db, "devices", "revoked_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "devices", "gpus", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "devices", "gpus_updated_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "devices", "cpu", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "devices", "cpu_updated_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "app_tokens", "revoked_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "space_join_codes", "encryption_key", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "space_join_codes", "client_name", "TEXT NOT NULL DEFAULT ''")
@@ -2268,6 +2272,7 @@ def record_device_heartbeat(
     name: str,
     seen_at: str,
     gpus: list[dict[str, Any]] | None = None,
+    cpu: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     upsert_device(db_path, account_key, device_id, name, seen_at)
     if gpus is not None:
@@ -2275,6 +2280,12 @@ def record_device_heartbeat(
             db.execute(
                 "UPDATE devices SET gpus = ?, gpus_updated_at = ? WHERE account_key = ? AND id = ?",
                 (json.dumps(gpus, ensure_ascii=False), seen_at, account_key, device_id),
+            )
+    if cpu is not None:
+        with connect(db_path) as db:
+            db.execute(
+                "UPDATE devices SET cpu = ?, cpu_updated_at = ? WHERE account_key = ? AND id = ?",
+                (json.dumps(cpu, ensure_ascii=False), seen_at, account_key, device_id),
             )
     return get_device(db_path, account_key, device_id)
 
@@ -2294,6 +2305,22 @@ def sanitize_gpus(value: Any) -> list[dict[str, Any]]:
             "memoryTotal": int_or_none(item.get("memoryTotal")),
             "temperature": int_or_none(item.get("temperature")),
         })
+    return out
+
+
+def sanitize_cpu(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, Any] = {}
+    utilization = int_or_none(value.get("utilization"))
+    if utilization is not None:
+        out["utilization"] = max(0, min(100, utilization))
+    cores = int_or_none(value.get("cores"))
+    if cores is not None:
+        out["cores"] = max(1, min(4096, cores))
+    load1 = float_or_none(value.get("load1"))
+    if load1 is not None:
+        out["load1"] = round(max(0.0, min(100000.0, load1)), 2)
     return out
 
 
@@ -2335,7 +2362,7 @@ def get_device(db_path: Path, account_key: str, device_id: str, include_revoked:
     with connect(db_path) as db:
         row = db.execute(
             f"""
-            SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at
+            SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at, cpu, cpu_updated_at
             FROM devices
             WHERE account_key = ? AND id = ? {revoked_filter}
             """,
@@ -2352,7 +2379,7 @@ def get_device_by_machine_id(db_path: Path, account_key: str, machine_id: str, i
     with connect(db_path) as db:
         row = db.execute(
             f"""
-            SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at
+            SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at, cpu, cpu_updated_at
             FROM devices
             WHERE account_key = ? AND machine_id = ? {revoked_filter}
             ORDER BY last_seen_at DESC
@@ -2374,6 +2401,8 @@ def list_devices(db_path: Path, account_key: str) -> list[dict[str, Any]]:
                    d.revoked_at,
                    d.gpus,
                    d.gpus_updated_at,
+                   d.cpu,
+                   d.cpu_updated_at,
                    MAX(t.last_used_at) AS token_last_used_at
             FROM devices d
             LEFT JOIN device_tokens t
@@ -2381,7 +2410,7 @@ def list_devices(db_path: Path, account_key: str) -> list[dict[str, Any]]:
                AND t.device_id = d.id
                AND t.revoked_at = ''
             WHERE d.account_key = ? AND d.revoked_at = ''
-            GROUP BY d.id, d.name, d.created_at, d.last_seen_at, d.revoked_at, d.gpus, d.gpus_updated_at
+            GROUP BY d.id, d.name, d.created_at, d.last_seen_at, d.revoked_at, d.gpus, d.gpus_updated_at, d.cpu, d.cpu_updated_at
             ORDER BY last_seen_at DESC
             """,
             (account_key,),
@@ -2399,6 +2428,15 @@ def format_device(row: sqlite3.Row) -> dict[str, Any]:
                 gpus = parsed
         except (TypeError, ValueError):
             gpus = []
+    cpu: dict[str, Any] = {}
+    raw_cpu = safe_row_get(row, "cpu")
+    if raw_cpu:
+        try:
+            parsed_cpu = json.loads(raw_cpu)
+            if isinstance(parsed_cpu, dict):
+                cpu = sanitize_cpu(parsed_cpu)
+        except (TypeError, ValueError):
+            cpu = {}
     return {
         "id": row["id"],
         "name": row["name"],
@@ -2410,6 +2448,8 @@ def format_device(row: sqlite3.Row) -> dict[str, Any]:
         "onlineWindowSeconds": DEVICE_ONLINE_WINDOW_SECONDS,
         "gpus": gpus,
         "gpusUpdatedAt": safe_row_get(row, "gpus_updated_at") or "",
+        "cpu": cpu,
+        "cpuUpdatedAt": safe_row_get(row, "cpu_updated_at") or "",
     }
 
 
@@ -2645,6 +2685,13 @@ def first_query_value(query: dict[str, list[str]], name: str) -> str:
 def int_or_none(value: object) -> int | None:
     try:
         return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def float_or_none(value: object) -> float | None:
+    try:
+        return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
 

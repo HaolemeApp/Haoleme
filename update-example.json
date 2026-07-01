@@ -1,20 +1,20 @@
 {
   "android": {
-    "versionCode": 172,
-    "versionName": "0.9.37",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.37/Haoleme-0.9.37.apk",
+    "versionCode": 173,
+    "versionName": "0.9.38",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.38/Haoleme-0.9.38.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.37/Haoleme-0.9.37.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.38/Haoleme-0.9.38.apk"
     ],
-    "sha256": "660293c747434f4b02c614e45360a663ce17cd5d25043c3b2a6265e892369322",
+    "sha256": "523f1cd6669cc290bc7b35f23d7f503c806151978a1177b434d91847bf0c5cf9",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "优化首页观感和刷新体验：顶部标题真正居中并去掉左上角猫猫图标，右上角更新提示移到设置页；运行列表刷新时原地更新卡片内容，减少运行中任务抖动，同时保持服务器压力可控。"
+    "notes": "新增设备指标面板：命令监控卡上滑可查看 GPU 当前信息和 CPU 利用率折线；运行卡片滑动不会从一侧动作直接穿到另一侧；置顶卡片去掉四角阴影，刷新继续保持原地更新。"
   },
   "python": {
-    "version": "0.4.19",
+    "version": "0.4.20",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.19-py3-none-any.whl",
-    "notes": "云端列表和事件接口不再返回输出块，详情增量接口只返回新增输出，降低长日志刷新压力。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.20-py3-none-any.whl",
+    "notes": "heartbeat 现在会上报 CPU 利用率快照，云端保存当前 CPU 指标供 App 绘制本地折线。"
   }
 }

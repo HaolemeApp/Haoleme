@@ -153,6 +153,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String CACHE_RUNS_AT_PREFIX = "cached_runs_at_";
     private static final String CACHE_DEVICES = "cached_devices_json";
     private static final String CACHE_RUN_PREFIX = "cached_run_";
+    private static final String CPU_HISTORY_PREFIX = "cpu_history_";
     private static final String PREF_STATUS_FILTER = "status_filter";
     private static final String PREF_ARCHIVED_RUNS = "archived_run_ids";
     private static final String PREF_PINNED_RUNS = "pinned_run_ids";
@@ -172,12 +173,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String PREF_LANGUAGE_MODE = "language_mode";
     private static final String PREF_APP_CLIENT_ID = "app_client_id";
     private static final String TAG_RUN_PREFIX = "run:";
+    private static final String TAG_RUN_DOT = "run_dot";
     private static final String TAG_RUN_COMMAND = "run_command";
     private static final String TAG_RUN_STATUS = "run_status";
     private static final String TAG_RUN_META = "run_meta";
     private static final String TAG_RUN_OUTPUT = "run_output";
     private static final int CONSOLE_RENDER_INITIAL_CHARS = 60000;
     private static final int CONSOLE_RENDER_STEP_CHARS = 60000;
+    private static final int CPU_HISTORY_MAX_POINTS = 36;
     private static final String THEME_LIGHT = "light";
     private static final String THEME_DARK = "dark";
     private static final String LANG_ZH = "zh";
@@ -215,6 +218,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean gpuExpanded = false;
     private static final int GPU_METRIC_COUNT = 3;
     private android.view.GestureDetector gpuGestureDetector;
+    private android.view.GestureDetector monitorGestureDetector;
     private HorizontalScrollView devicesScrollView;
     private LinearLayout devicesContainer;
     private LinearLayout runsContainer;
@@ -674,6 +678,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(14), dp(14), dp(12));
         card.setBackground(roundedBg(homeHeroBg(), 22, homeHeroStroke()));
+        attachMonitorVerticalSwipe(card);
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -3238,6 +3243,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void renderDevices(JSONArray devices) {
         int scrollX = devicesScrollView == null ? 0 : devicesScrollView.getScrollX();
+        recordCpuHistoryFromDevices(devices);
         deviceNames.clear();
         deviceLastSeen.clear();
         deviceTokenLastUsed.clear();
@@ -3329,6 +3335,101 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (devicesScrollView != null) {
             devicesScrollView.post(() -> devicesScrollView.scrollTo(finalScrollX, 0));
         }
+    }
+
+    private void recordCpuHistoryFromDevices(JSONArray devices) {
+        if (devices == null || prefs == null) {
+            return;
+        }
+        SharedPreferences.Editor editor = prefs.edit();
+        boolean changed = false;
+        for (int i = 0; i < devices.length(); i++) {
+            JSONObject device = devices.optJSONObject(i);
+            if (device == null) {
+                continue;
+            }
+            String id = device.optString("id", "").trim();
+            JSONObject cpu = device.optJSONObject("cpu");
+            if (id.isEmpty() || cpu == null || !cpu.has("utilization")) {
+                continue;
+            }
+            int util = Math.max(0, Math.min(100, cpu.optInt("utilization", -1)));
+            if (util < 0) {
+                continue;
+            }
+            long ts = parseTimestamp(device.optString("cpuUpdatedAt", ""));
+            if (ts <= 0L) {
+                ts = parseTimestamp(device.optString("lastSeenAt", ""));
+            }
+            if (ts <= 0L) {
+                ts = System.currentTimeMillis();
+            }
+            String key = cpuHistoryKey(id);
+            JSONArray history = loadCpuHistoryArray(id);
+            JSONObject last = history.length() > 0 ? history.optJSONObject(history.length() - 1) : null;
+            if (last != null && last.optLong("t", 0L) == ts && last.optInt("u", -1) == util) {
+                continue;
+            }
+            JSONArray next = new JSONArray();
+            int start = Math.max(0, history.length() - CPU_HISTORY_MAX_POINTS + 1);
+            for (int h = start; h < history.length(); h++) {
+                JSONObject point = history.optJSONObject(h);
+                if (point != null && point.optLong("t", 0L) != ts) {
+                    next.put(point);
+                }
+            }
+            JSONObject point = new JSONObject();
+            try {
+                point.put("t", ts);
+                point.put("u", util);
+            } catch (Exception ignored) {
+            }
+            next.put(point);
+            editor.putString(key, next.toString());
+            changed = true;
+        }
+        if (changed) {
+            editor.apply();
+        }
+    }
+
+    private String cpuHistoryKey(String deviceId) {
+        return CPU_HISTORY_PREFIX + cachePart(deviceId);
+    }
+
+    private JSONArray loadCpuHistoryArray(String deviceId) {
+        String raw = prefs.getString(cpuHistoryKey(deviceId), "");
+        if (raw == null || raw.isEmpty()) {
+            return new JSONArray();
+        }
+        try {
+            return new JSONArray(raw);
+        } catch (Exception ignored) {
+            return new JSONArray();
+        }
+    }
+
+    private int[] cpuHistoryValues(String deviceId, int latestValue) {
+        JSONArray history = loadCpuHistoryArray(deviceId);
+        List<Integer> values = new ArrayList<>();
+        for (int i = 0; i < history.length(); i++) {
+            JSONObject point = history.optJSONObject(i);
+            if (point == null) {
+                continue;
+            }
+            int value = point.optInt("u", -1);
+            if (value >= 0) {
+                values.add(Math.max(0, Math.min(100, value)));
+            }
+        }
+        if (values.isEmpty() && latestValue >= 0) {
+            values.add(Math.max(0, Math.min(100, latestValue)));
+        }
+        int[] out = new int[values.size()];
+        for (int i = 0; i < values.size(); i++) {
+            out[i] = values.get(i);
+        }
+        return out;
     }
 
     private void updateConnectionSubtitle() {
@@ -3558,8 +3659,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         } else {
             text.append(isEnglish() ? "Waiting for heartbeat" : "等待心跳");
         }
-        if (selectedDeviceGpuCount() > 0) {
-            text.append(gpuExpanded ? (isEnglish() ? " · GPU ▴" : " · GPU ▴") : (isEnglish() ? " · GPU ▾" : " · GPU ▾"));
+        if (selectedDeviceMetricAvailable()) {
+            text.append(gpuExpanded ? (isEnglish() ? " · Metrics ▴" : " · 指标 ▴") : (isEnglish() ? " · Metrics ▾" : " · 指标 ▾"));
         }
         if (deviceHeartbeatText != null) {
             deviceHeartbeatText.setText(text.toString());
@@ -3567,19 +3668,23 @@ public class MainActivity extends Activity implements LifecycleOwner {
         updateDeviceGpu();
     }
 
-    private int selectedDeviceGpuCount() {
+    private boolean selectedDeviceMetricAvailable() {
         if (selectedDeviceId == null || "all".equals(selectedDeviceId)) {
-            return 0;
+            return false;
         }
         JSONArray devices = cachedDevicesArray();
         for (int i = 0; i < devices.length(); i++) {
             JSONObject d = devices.optJSONObject(i);
             if (d != null && selectedDeviceId.equals(d.optString("id", ""))) {
                 JSONArray g = d.optJSONArray("gpus");
-                return g == null ? 0 : g.length();
+                if (g != null && g.length() > 0) {
+                    return true;
+                }
+                JSONObject cpu = d.optJSONObject("cpu");
+                return cpu != null && cpu.has("utilization");
             }
         }
-        return 0;
+        return false;
     }
 
     private void updateDeviceGpu() {
@@ -3593,12 +3698,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         JSONArray devices = cachedDevicesArray();
+        JSONObject selectedDevice = null;
         List<JSONObject> deviceGpus = new ArrayList<>();
         for (int i = 0; i < devices.length(); i++) {
             JSONObject device = devices.optJSONObject(i);
             if (device == null) continue;
             String id = device.optString("id", "");
             if (id.equals(selectedDeviceId)) {
+                selectedDevice = device;
                 JSONArray gpus = device.optJSONArray("gpus");
                 if (gpus != null) {
                     for (int g = 0; g < gpus.length(); g++) {
@@ -3609,13 +3716,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 break;
             }
         }
-        if (deviceGpus.isEmpty()) {
+        JSONObject cpu = selectedDevice == null ? null : selectedDevice.optJSONObject("cpu");
+        boolean hasCpu = cpu != null && cpu.has("utilization");
+        if (deviceGpus.isEmpty() && !hasCpu) {
             deviceGpuContainer.setVisibility(View.GONE);
             return;
         }
         if (!gpuExpanded) {
             // Folded by default to keep the home page tidy; tap the device
-            // status line to expand the swipeable GPU panel.
+            // status line or swipe up on the card to expand the metrics panel.
             deviceGpuContainer.setVisibility(View.GONE);
             return;
         }
@@ -3623,13 +3732,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
             gpuMetricIndex = 0;
         }
 
-        deviceGpuContainer.addView(buildGpuMetricHeader());
+        if (!deviceGpus.isEmpty()) {
+            deviceGpuContainer.addView(buildGpuMetricHeader());
 
-        int gpusPerRow = 4;
-        int total = deviceGpus.size();
-        int rows = (total + gpusPerRow - 1) / gpusPerRow;
+            int gpusPerRow = 4;
+            int total = deviceGpus.size();
+            int rows = (total + gpusPerRow - 1) / gpusPerRow;
 
-        for (int r = 0; r < rows; r++) {
+            for (int r = 0; r < rows; r++) {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
@@ -3704,6 +3814,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 row.addView(item);
             }
             deviceGpuContainer.addView(row, matchWrap());
+            }
+        }
+        if (hasCpu) {
+            LinearLayout.LayoutParams cpuParams = matchWrap();
+            cpuParams.setMargins(0, deviceGpus.isEmpty() ? 0 : dp(8), 0, 0);
+            deviceGpuContainer.addView(buildCpuMetricPanel(cpu), cpuParams);
         }
         deviceGpuContainer.setVisibility(View.VISIBLE);
     }
@@ -3717,6 +3833,48 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (value >= 95) return color("#EF4444");
         if (value >= 75) return color("#EAB308");
         return color("#22C55E");
+    }
+
+    private View buildCpuMetricPanel(JSONObject cpu) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(10), dp(8), dp(10), dp(10));
+        box.setBackground(roundedBg(outputPreviewBg(), 14, outputPreviewStroke()));
+
+        int util = Math.max(0, Math.min(100, cpu.optInt("utilization", 0)));
+        int cores = Math.max(0, cpu.optInt("cores", 0));
+        double load1 = cpu.optDouble("load1", -1);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView title = new TextView(this);
+        title.setText(isEnglish() ? "CPU usage" : "CPU 利用率");
+        title.setTextSize(10f);
+        title.setTypeface(null, Typeface.BOLD);
+        title.setTextColor(textPrimary());
+        head.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        TextView value = new TextView(this);
+        StringBuilder valueText = new StringBuilder(util + "%");
+        if (cores > 0) {
+            valueText.append(" · ").append(cores).append(isEnglish() ? " cores" : " 核");
+        }
+        if (load1 >= 0) {
+            valueText.append(" · L1 ").append(String.format(Locale.US, "%.2f", load1));
+        }
+        value.setText(valueText.toString());
+        value.setTextSize(9f);
+        value.setTextColor(textSecondary());
+        head.addView(value, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        box.addView(head, matchWrap());
+
+        CpuChartView chart = new CpuChartView(this, cpuHistoryValues(selectedDeviceId, util), cpuChartLineColor(), cpuChartFillColor(), gpuTrackColor());
+        LinearLayout.LayoutParams chartParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
+        chartParams.setMargins(0, dp(6), 0, 0);
+        box.addView(chart, chartParams);
+        return box;
     }
 
     private String gpuMetricName() {
@@ -3755,6 +3913,32 @@ public class MainActivity extends Activity implements LifecycleOwner {
         dotView.setTextColor(textSecondary());
         head.addView(dotView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         return head;
+    }
+
+    private void attachMonitorVerticalSwipe(View target) {
+        monitorGestureDetector = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onFling(android.view.MotionEvent e1, android.view.MotionEvent e2, float velocityX, float velocityY) {
+                if (e1 == null || e2 == null || !selectedDeviceMetricAvailable()) {
+                    return false;
+                }
+                float dx = e2.getX() - e1.getX();
+                float dy = e2.getY() - e1.getY();
+                if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > dp(36)) {
+                    gpuExpanded = dy < 0;
+                    updateDeviceSummary();
+                    return true;
+                }
+                return false;
+            }
+        });
+        target.setOnTouchListener((v, ev) -> {
+            boolean handled = monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(ev);
+            if (handled && ev.getAction() == android.view.MotionEvent.ACTION_UP) {
+                v.performClick();
+            }
+            return handled;
+        });
     }
 
     private void attachGpuSwipe(View target) {
@@ -4146,8 +4330,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 continue;
             }
             sb.append(r.optString("id", "")).append('|')
-              .append(pinned.contains(r.optString("id", "")) ? 'P' : '-').append('|')
-              .append(r.optString("status", "")).append(';');
+              .append(pinned.contains(r.optString("id", "")) ? 'P' : '-').append(';');
         }
         return sb.toString();
     }
@@ -4181,8 +4364,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
             command.setText(displayText(commandTextForDisplay(run, isEnglish() ? "(unknown command)" : "（未知命令）")));
         }
         TextView status = taggedTextView(root, TAG_RUN_STATUS);
+        String statusValue = run.optString("status", "unknown");
         if (status != null) {
-            status.setText(statusLabel(run.optString("status", "unknown")));
+            status.setText(statusLabel(statusValue));
+            status.setTextColor(statusColor(statusValue));
+            status.setBackground(roundedBg(statusBadgeColor(statusValue), 7, Color.TRANSPARENT));
+        }
+        View dot = taggedView(root, TAG_RUN_DOT);
+        if (dot != null) {
+            dot.setBackground(roundedBg(statusColor(statusValue), 99, Color.TRANSPARENT));
         }
         TextView meta = taggedTextView(root, TAG_RUN_META);
         if (meta != null) {
@@ -4198,17 +4388,22 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private TextView taggedTextView(View root, String tag) {
+        View view = taggedView(root, tag);
+        return view instanceof TextView ? (TextView) view : null;
+    }
+
+    private View taggedView(View root, String tag) {
         if (root == null) {
             return null;
         }
         Object current = root.getTag();
-        if (tag.equals(current) && root instanceof TextView) {
-            return (TextView) root;
+        if (tag.equals(current)) {
+            return root;
         }
         if (root instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) root;
             for (int i = 0; i < group.getChildCount(); i++) {
-                TextView found = taggedTextView(group.getChildAt(i), tag);
+                View found = taggedView(group.getChildAt(i), tag);
                 if (found != null) {
                     return found;
                 }
@@ -4539,9 +4734,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(15), dp(13), dp(15), dp(13));
         card.setBackground(roundedBg(pinned ? pinnedRunCardBg() : cardBg(), 20, pinned ? pinnedRunCardStroke() : cardStroke()));
-        card.setElevation(pinned ? dp(3) : 0);
+        card.setElevation(0);
         if (Build.VERSION.SDK_INT >= 21) {
-            card.setTranslationZ(pinned ? dp(1) : 0);
+            card.setTranslationZ(0);
         }
         card.setClickable(true);
         card.setOnClickListener(v -> openRunDetail(runId));
@@ -4559,6 +4754,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         topLine.setGravity(Gravity.CENTER_VERTICAL);
 
         View dot = statusDot(statusColor(status));
+        dot.setTag(TAG_RUN_DOT);
         LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(9), dp(9));
         dotParams.setMargins(0, 0, dp(8), 0);
         topLine.addView(dot, dotParams);
@@ -4740,14 +4936,24 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 HorizontalScrollView.LayoutParams.WRAP_CONTENT
         ));
         scroller.post(() -> scroller.scrollTo(leftActionWidth, 0));
+        final int[] gestureStartScrollX = new int[]{leftActionWidth};
         scroller.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                gestureStartScrollX[0] = scroller.getScrollX();
+            }
             if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
                 scroller.postDelayed(() -> {
                     int scrollX = scroller.getScrollX();
                     int leftOpen = leftActionWidth - dp(38);
                     int rightOpen = leftActionWidth + dp(92);
                     int target = leftActionWidth;
-                    if (scrollX < leftOpen) {
+                    boolean startedLeftOpen = gestureStartScrollX[0] < leftActionWidth / 2;
+                    boolean startedRightOpen = gestureStartScrollX[0] > leftActionWidth + rightActionsWidth / 2;
+                    if (startedLeftOpen && scrollX > leftActionWidth) {
+                        target = leftActionWidth;
+                    } else if (startedRightOpen && scrollX < leftActionWidth) {
+                        target = leftActionWidth;
+                    } else if (scrollX < leftOpen) {
                         target = 0;
                     } else if (scrollX > rightOpen) {
                         target = leftActionWidth + rightActionsWidth;
@@ -8401,6 +8607,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return isDarkTheme() ? color("#9CA3AF") : color("#6B7280");
     }
 
+    private int cpuChartLineColor() {
+        return isDarkTheme() ? color("#60A5FA") : color("#2563EB");
+    }
+
+    private int cpuChartFillColor() {
+        return isDarkTheme() ? color("#1E3A5F") : color("#DBEAFE");
+    }
+
     private int blendColors(int base, int overlay, float amount) {
         float clamped = Math.max(0f, Math.min(1f, amount));
         int r = Math.round(Color.red(base) * (1f - clamped) + Color.red(overlay) * clamped);
@@ -8790,6 +9004,82 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
             paint.setStyle(Paint.Style.FILL);
             canvas.drawCircle(cx, cy - size * 0.15f, size * 0.04f, paint);
+        }
+    }
+
+    private static class CpuChartView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int[] values;
+        private final int lineColor;
+        private final int fillColor;
+        private final int gridColor;
+
+        CpuChartView(Context context, int[] values, int lineColor, int fillColor, int gridColor) {
+            super(context);
+            this.values = values == null ? new int[0] : values;
+            this.lineColor = lineColor;
+            this.fillColor = fillColor;
+            this.gridColor = gridColor;
+            setWillNotDraw(false);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float w = getWidth();
+            float h = getHeight();
+            if (w <= 0 || h <= 0) {
+                return;
+            }
+            float padX = Math.max(8f, w * 0.025f);
+            float padY = Math.max(6f, h * 0.14f);
+            float left = padX;
+            float right = w - padX;
+            float top = padY;
+            float bottom = h - padY;
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(fillColor);
+            paint.setAlpha(80);
+            canvas.drawRoundRect(left, top, right, bottom, 10f, 10f, paint);
+            paint.setAlpha(255);
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(1f, h * 0.025f));
+            paint.setColor(gridColor);
+            paint.setAlpha(95);
+            canvas.drawLine(left, top + (bottom - top) * 0.5f, right, top + (bottom - top) * 0.5f, paint);
+            paint.setAlpha(255);
+
+            if (values.length == 0) {
+                return;
+            }
+            paint.setColor(lineColor);
+            paint.setStrokeWidth(Math.max(2.4f, h * 0.065f));
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            if (values.length == 1) {
+                float y = valueY(values[0], top, bottom);
+                canvas.drawLine(left, y, right, y, paint);
+                canvas.drawCircle(right, y, Math.max(3f, h * 0.075f), paint);
+                return;
+            }
+            float span = right - left;
+            float prevX = left;
+            float prevY = valueY(values[0], top, bottom);
+            for (int i = 1; i < values.length; i++) {
+                float x = left + span * i / (values.length - 1);
+                float y = valueY(values[i], top, bottom);
+                canvas.drawLine(prevX, prevY, x, y, paint);
+                prevX = x;
+                prevY = y;
+            }
+            canvas.drawCircle(prevX, prevY, Math.max(3f, h * 0.075f), paint);
+        }
+
+        private float valueY(int raw, float top, float bottom) {
+            int value = Math.max(0, Math.min(100, raw));
+            return bottom - (bottom - top) * value / 100f;
         }
     }
 

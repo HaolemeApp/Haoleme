@@ -1120,6 +1120,54 @@ def collect_gpu_stats() -> list:
     return gpus
 
 
+def _linux_cpu_totals() -> tuple[int, int] | None:
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as fh:
+            first = fh.readline().strip().split()
+    except Exception:
+        return None
+    if not first or first[0] != "cpu":
+        return None
+    values = []
+    for part in first[1:]:
+        parsed = _parse_int(part)
+        if parsed is not None:
+            values.append(parsed)
+    if len(values) < 4:
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    total = sum(values)
+    return total, idle
+
+
+def collect_cpu_stats() -> dict:
+    """Snapshot host CPU utilization. Best effort and dependency-free."""
+    cores = os.cpu_count() or 1
+    utilization = None
+    first = _linux_cpu_totals()
+    if first is not None:
+        time.sleep(0.08)
+        second = _linux_cpu_totals()
+        if second is not None:
+            total_delta = second[0] - first[0]
+            idle_delta = second[1] - first[1]
+            if total_delta > 0:
+                utilization = round(max(0.0, min(100.0, (1.0 - idle_delta / total_delta) * 100.0)))
+    load1 = None
+    try:
+        load1 = os.getloadavg()[0]
+    except (AttributeError, OSError):
+        load1 = None
+    if utilization is None and load1 is not None:
+        utilization = round(max(0.0, min(100.0, load1 * 100.0 / max(1, cores))))
+    cpu = {"cores": cores}
+    if utilization is not None:
+        cpu["utilization"] = int(utilization)
+    if load1 is not None:
+        cpu["load1"] = round(float(load1), 2)
+    return cpu
+
+
 def heartbeat_run_foreground() -> int:
     config = CloudConfig.load()
     if config is None:
@@ -1153,7 +1201,7 @@ def heartbeat_run_foreground() -> int:
                 if synced:
                     print(f"Synced {synced} pending run(s).", flush=True)
                     write_heartbeat_state(lastSyncAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), lastSyncedRuns=synced)
-                client.heartbeat(gpus=collect_gpu_stats())
+                client.heartbeat(gpus=collect_gpu_stats(), cpu=collect_cpu_stats())
                 now_text = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 write_heartbeat_state(
                     haolemeVersion=__version__,
