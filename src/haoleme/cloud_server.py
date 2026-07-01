@@ -38,6 +38,8 @@ MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_TAIL = 1_000_000
 MAX_OUTPUT_CHUNKS = 20_000
 MAX_LIST_OUTPUT_PREVIEW = 2000
+MAX_LIST_E2EE_CIPHERTEXT = 64 * 1024
+DEFAULT_LOG_MAX_BYTES = 50 * 1024 * 1024
 DEVICE_ONLINE_WINDOW_SECONDS = 240
 STALE_RUNNING_GRACE_SECONDS = 240
 STALE_RUNNING_SECONDS = DEVICE_ONLINE_WINDOW_SECONDS + STALE_RUNNING_GRACE_SECONDS
@@ -1478,10 +1480,28 @@ def cloud_log(payload: dict[str, Any]) -> None:
     if log_path:
         path = Path(log_path).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
+        rotate_cloud_log_if_needed(path)
         with path.open("a", encoding="utf-8") as file:
             file.write(line + "\n")
         return
     print(line, file=sys.stderr, flush=True)
+
+
+def rotate_cloud_log_if_needed(path: Path) -> None:
+    try:
+        max_bytes = int(os.environ.get("HAOLEME_CLOUD_LOG_MAX_BYTES", str(DEFAULT_LOG_MAX_BYTES)))
+    except ValueError:
+        max_bytes = DEFAULT_LOG_MAX_BYTES
+    if max_bytes <= 0:
+        return
+    try:
+        if not path.exists() or path.stat().st_size < max_bytes:
+            return
+        rotated = path.with_name(path.name + ".1")
+        unlink_missing(rotated)
+        path.replace(rotated)
+    except OSError:
+        return
 
 
 def create_pair(
@@ -1883,7 +1903,10 @@ def list_runs(
             values,
         ).fetchall()
         names = device_names(db, account_key)
-    return [decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=True) for row in rows]
+    return [
+        decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=True, include_output_chunks=False)
+        for row in rows
+    ]
 
 
 def list_events(db_path: Path, account_key: str, since: str | None, limit: int) -> list[dict[str, Any]]:
@@ -1910,7 +1933,10 @@ def list_events(db_path: Path, account_key: str, since: str | None, limit: int) 
                 (account_key, limit),
             ).fetchall()
         names = device_names(db, account_key)
-    return [decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=True) for row in rows]
+    return [
+        decode_run(row["payload"], names, output_limit=MAX_LIST_OUTPUT_PREVIEW, include_e2ee=True, include_output_chunks=False)
+        for row in rows
+    ]
 
 
 def get_run(db_path: Path, account_key: str, run_id: str) -> dict[str, Any] | None:
@@ -2445,6 +2471,7 @@ def decode_run(
     names: dict[str, str],
     output_limit: int = MAX_OUTPUT_TAIL,
     include_e2ee: bool = True,
+    include_output_chunks: bool = True,
 ) -> dict[str, Any]:
     run = json.loads(payload_json)
     device_id = str(run.get("deviceId") or "")
@@ -2457,6 +2484,15 @@ def decode_run(
                 run[key] = value[-output_limit:]
     if not include_e2ee:
         run.pop("e2ee", None)
+    elif output_limit < MAX_OUTPUT_TAIL:
+        e2ee = run.get("e2ee")
+        if isinstance(e2ee, dict) and len(str(e2ee.get("ciphertext") or "")) > MAX_LIST_E2EE_CIPHERTEXT:
+            run.pop("e2ee", None)
+            run["e2eeOmitted"] = True
+    if not include_output_chunks:
+        chunks = run.pop("outputChunks", None)
+        if isinstance(chunks, list):
+            run["outputChunkCount"] = len(chunks)
     return run
 
 

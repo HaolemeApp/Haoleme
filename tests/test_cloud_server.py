@@ -40,6 +40,7 @@ from haoleme.cloud_server import (
     delete_run,
     delete_runs_for_device,
     list_devices,
+    list_events,
     list_pending_interrupts,
     list_runs,
     latest_backup_status,
@@ -787,6 +788,49 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertEqual(len(payload.get("outputChunks") or []), 1)
             self.assertEqual(payload["outputChunks"][0]["ciphertext"], "abc")
             self.assertEqual(payload.get("outputLength"), 10)
+
+    def test_list_runs_omits_encrypted_console_chunks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_1"
+            init_db(db_path)
+            upsert_run(db_path, account_key, self.sample_run("run-1", device_id, "Server A", "running"))
+            auth = AuthContext(account_key=account_key, token_hash="h", scope="write",
+                               device_id=device_id, device_name="Server A")
+            append_run_update(db_path, account_key, {
+                "id": "run-1",
+                "status": "running",
+                "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n", "ciphertext": "abc"},
+                "outputLength": 10,
+            }, auth)
+
+            listed = list_runs(db_path, account_key, 10)[0]
+            event = list_events(db_path, account_key, None, 10)[0]
+            detail = get_run(db_path, account_key, "run-1")
+
+            self.assertNotIn("outputChunks", listed)
+            self.assertEqual(listed["outputChunkCount"], 1)
+            self.assertNotIn("outputChunks", event)
+            self.assertEqual(event["outputChunkCount"], 1)
+            self.assertEqual(detail["outputChunks"][0]["ciphertext"], "abc")
+
+    def test_list_runs_omits_oversized_legacy_e2ee_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            init_db(db_path)
+            run = self.sample_run("run-1", "dev_1", "Server A", "running")
+            run["e2ee"] = {"v": 1, "alg": "AES-256-GCM", "nonce": "n", "ciphertext": "x" * (70 * 1024)}
+            run["commandText"] = "Encrypted command"
+            upsert_run(db_path, account_key, run)
+
+            listed = list_runs(db_path, account_key, 10)[0]
+            detail = get_run(db_path, account_key, "run-1")
+
+            self.assertNotIn("e2ee", listed)
+            self.assertTrue(listed["e2eeOmitted"])
+            self.assertIn("e2ee", detail)
 
     def sample_run(self, run_id, device_id, device_name, status="succeeded"):
         return {
