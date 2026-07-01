@@ -1,5 +1,6 @@
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -7,7 +8,7 @@ from unittest.mock import patch
 import haoleme.cloud as cloud_module
 from haoleme.cloud import CloudClient, CloudConfig, CloudSyncer, DEFAULT_CLOUD_URL, generate_account_token, get_or_create_machine_id, normalize_cloud_url
 from haoleme.crypto import generate_account_key
-from haoleme.store import RunRecord
+from haoleme.store import RunRecord, RunStore
 
 
 class TieredSyncIntervalTest(unittest.TestCase):
@@ -29,6 +30,39 @@ class TieredSyncIntervalTest(unittest.TestCase):
                 cur = syncer._running_sync_interval()
             self.assertGreaterEqual(cur + 1e-9, prev)
             prev = cur
+
+
+class CloudSyncerReliabilityTest(unittest.TestCase):
+    def test_failed_sync_marks_run_pending_for_later_replay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-1", ["sleep", "60"], "/tmp")
+            store.mark_running("run-1", 123)
+            store.mark_cloud_synced("run-1")
+
+            syncer = CloudSyncer.__new__(CloudSyncer)
+            syncer.store = store
+            syncer.run_id = "run-1"
+            syncer.client = FailingSyncClient()
+            syncer._event = threading.Event()
+            syncer._stop = threading.Event()
+            syncer._thread = None
+            syncer.last_error = None
+            syncer._last_sync_at = 0.0
+            syncer._started_at = 0.0
+            syncer._last_output_at = 0.0
+            syncer._initial_synced = True
+            syncer._synced_output_len = 0
+            syncer._synced_stdout_len = 0
+            syncer._synced_stderr_len = 0
+            syncer._failure_count = 0
+            syncer._next_retry_at = 0.0
+
+            syncer._sync_once(force=True)
+
+            self.assertEqual(store.get_run("run-1").cloud_synced_at, "")
+            self.assertIn("offline", syncer.last_error)
+            self.assertGreater(syncer._next_retry_at, 0)
 
 
 class CloudConfigTest(unittest.TestCase):
@@ -163,6 +197,14 @@ class CapturingCloudClient(CloudClient):
     def request(self, method, path, payload=None):
         self.requests.append((method, path, payload))
         return {"ok": True}
+
+
+class FailingSyncClient:
+    def append_run_update(self, _run, _deltas):
+        raise RuntimeError("offline")
+
+    def upsert_run(self, _run, *, include_output=True):
+        raise RuntimeError("offline")
 
 
 def sample_run_record():

@@ -49,6 +49,7 @@ def client_run_metadata() -> dict[str, str]:
 RUNNING_SYNC_MIN_INTERVAL_SECONDS = 1.0
 RUNNING_SYNC_MAX_INTERVAL_SECONDS = 10.0
 SYNC_COALESCE_SECONDS = 0.35
+SYNC_RETRY_MAX_SECONDS = 30.0
 INTERRUPT_POLL_SECONDS = 1.0
 LEGACY_CLOUD_URLS = {
     "http://106.14.246.204",
@@ -494,6 +495,8 @@ class CloudSyncer:
         self._synced_output_len = 0
         self._synced_stdout_len = 0
         self._synced_stderr_len = 0
+        self._failure_count = 0
+        self._next_retry_at = 0.0
         if self.client is not None:
             self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
@@ -516,11 +519,14 @@ class CloudSyncer:
             self._event.wait(timeout=1)
             if self._stop.is_set():
                 break
-            if not self._event.is_set():
+            retry_due = self._next_retry_at > 0 and time.monotonic() >= self._next_retry_at
+            event_set = self._event.is_set()
+            if not event_set and not retry_due:
                 continue
-            self._event.clear()
-            time.sleep(SYNC_COALESCE_SECONDS)
-            self._sync_once()
+            if event_set:
+                self._event.clear()
+                time.sleep(SYNC_COALESCE_SECONDS)
+            self._sync_once(force=retry_due)
 
     def _running_sync_interval(self) -> float:
         # Tiered cadence by how long output has been idle, NOT by run age: a job
@@ -580,6 +586,15 @@ class CloudSyncer:
             self.store.mark_cloud_synced(run.id)
             self._mark_output_synced(run)
             self._last_sync_at = time.monotonic()
+            self._failure_count = 0
+            self._next_retry_at = 0.0
             self.last_error = None
         except Exception as exc:  # best-effort telemetry should not break commands
             self.last_error = str(exc)
+            try:
+                self.store.mark_cloud_pending(run.id)
+            except Exception:
+                pass
+            self._failure_count = min(self._failure_count + 1, 8)
+            delay = min(SYNC_RETRY_MAX_SECONDS, 2.0 ** min(self._failure_count - 1, 5))
+            self._next_retry_at = time.monotonic() + delay

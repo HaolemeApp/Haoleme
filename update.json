@@ -13,9 +13,9 @@
     "notes": "下拉刷新增加可见刷新小球：下拉时出现进度小球，触发后短暂旋转提示正在刷新。"
   },
   "python": {
-    "version": "0.4.14",
+    "version": "0.4.15",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.14-py3-none-any.whl",
-    "notes": "配对规则放宽：hao login 会携带本机 machine_id，断联/失效后可自动接回原设备，并避免旧 App 误把不同机器串到一起。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.15-py3-none-any.whl",
+    "notes": "断网/睡眠恢复后会自动重试同步，并定期补传仍在运行的任务状态。"
   }
 }

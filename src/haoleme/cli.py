@@ -47,6 +47,7 @@ PUBLIC_URL_RE = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
 HEARTBEAT_INTERVAL_SECONDS = 45
 HEARTBEAT_STAGGER_SECONDS = 20
 HEARTBEAT_ACTIVE_POLL_SECONDS = 3
+ACTIVE_RUN_RESYNC_SECONDS = 30
 GITHUB_UPDATE_JSON_URL = "https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json"
 ORPHANED_RUN_GRACE_SECONDS = 30
 INTERRUPT_NOTE = "\n[好了么] Interrupted from mobile app.\n"
@@ -1145,6 +1146,9 @@ def heartbeat_run_foreground() -> int:
                 recovered = reconcile_orphaned_running_runs(store, client)
                 if recovered:
                     print(f"Recovered {recovered} orphaned run(s).", flush=True)
+                refreshed = mark_stale_active_runs_pending(store)
+                if refreshed:
+                    print(f"Queued {refreshed} active run(s) for cloud refresh.", flush=True)
                 synced = sync_pending_runs(store, client, limit=100)
                 if synced:
                     print(f"Synced {synced} pending run(s).", flush=True)
@@ -1199,6 +1203,23 @@ def sync_pending_runs(store: RunStore, client: CloudClient, limit: int = 100) ->
         store.mark_cloud_synced(run.id)
         synced += 1
     return synced
+
+
+def mark_stale_active_runs_pending(
+    store: RunStore,
+    *,
+    max_age_seconds: int = ACTIVE_RUN_RESYNC_SECONDS,
+    now_timestamp: float | None = None,
+) -> int:
+    marked = 0
+    for run in store.list_active_runs(limit=100):
+        if not run.cloud_synced_at:
+            continue
+        if run_age_seconds(run.cloud_synced_at, now_timestamp) < max_age_seconds:
+            continue
+        store.mark_cloud_pending(run.id)
+        marked += 1
+    return marked
 
 
 def run_age_seconds(updated_at: str, now_timestamp: float | None = None) -> float:

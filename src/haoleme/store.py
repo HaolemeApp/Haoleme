@@ -298,6 +298,10 @@ class RunStore:
                 (utc_now(), run_id),
             )
 
+    def mark_cloud_pending(self, run_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute("UPDATE runs SET cloud_synced_at = '' WHERE id = ?", (run_id,))
+
     def list_unsynced_runs(self, limit: int = 100) -> list[RunRecord]:
         with self.connect() as conn:
             rows = conn.execute(

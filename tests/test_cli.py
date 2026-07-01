@@ -19,6 +19,7 @@ from haoleme.cli import (
     heartbeat_initial_delay,
     heartbeat_state_path,
     main,
+    mark_stale_active_runs_pending,
     pairing_login_command,
     update_command,
     version_command,
@@ -257,6 +258,21 @@ class CliPairingTest(unittest.TestCase):
             self.assertEqual(recovered, 0)
             self.assertEqual(updated.status, "running")
             self.assertEqual(client.synced, [])
+
+    def test_heartbeat_marks_stale_active_run_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-live", ["sleep", "10"], "/tmp")
+            store.mark_running("run-live", 123)
+            store.mark_cloud_synced("run-live")
+            run = store.get_run("run-live")
+            now_timestamp = datetime.fromisoformat(run.cloud_synced_at.replace("Z", "+00:00")).timestamp()
+            now_timestamp += 31
+
+            marked = mark_stale_active_runs_pending(store, max_age_seconds=30, now_timestamp=now_timestamp)
+
+            self.assertEqual(marked, 1)
+            self.assertEqual(store.get_run("run-live").cloud_synced_at, "")
 
     def test_heartbeat_state_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
