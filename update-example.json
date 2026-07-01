@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 163,
-    "versionName": "0.9.28",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.28/Haoleme-0.9.28.apk",
+    "versionCode": 164,
+    "versionName": "0.9.29",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.29/Haoleme-0.9.29.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.28/Haoleme-0.9.28.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.28.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.29/Haoleme-0.9.29.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.29.apk"
     ],
-    "sha256": "b2ce2374fff7641f9a636b56b90f35367d5d6b00839750313f05809f01fa22f0",
+    "sha256": "887e10cc270b1f3ac9083451dbb454b7da1dcea8acd35c59f1e32a422d617f27",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "主页刷新体验优化：移除顶部刷新按钮，支持下拉刷新，并继续自动刷新运行状态。"
+    "notes": "下拉刷新增加可见刷新小球：下拉时出现进度小球，触发后短暂旋转提示正在刷新。"
   },
   "python": {
     "version": "0.4.14",

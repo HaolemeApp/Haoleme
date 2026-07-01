@@ -676,7 +676,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         content.addView(controls, controlsParams);
 
         // The single run list (filtered by selected device + project + status).
-        PullRefreshScrollView scrollView = new PullRefreshScrollView(this, dp(74));
+        PullRefreshScrollView scrollView = new PullRefreshScrollView(this, dp(74), color("#2563EB"), cardBg(), surfaceStroke());
         homeRunsScrollView = scrollView;
         scrollView.setOnRefreshListener(() -> refreshHome(true));
         runsContainer = new LinearLayout(this);
@@ -7762,16 +7762,27 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private static class PullRefreshScrollView extends ScrollView {
         private final float triggerDistancePx;
+        private final int accentColor;
+        private final int ballColor;
+        private final int strokeColor;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF arcRect = new RectF();
         private Runnable refreshListener;
         private float downY = 0f;
+        private float pullDistance = 0f;
         private boolean trackingPull = false;
         private boolean refreshCoolingDown = false;
+        private long refreshStartedAt = 0L;
 
-        PullRefreshScrollView(Context context, int triggerDistancePx) {
+        PullRefreshScrollView(Context context, int triggerDistancePx, int accentColor, int ballColor, int strokeColor) {
             super(context);
             this.triggerDistancePx = Math.max(48, triggerDistancePx);
+            this.accentColor = accentColor;
+            this.ballColor = ballColor;
+            this.strokeColor = strokeColor;
             setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
             setVerticalScrollBarEnabled(false);
+            setWillNotDraw(false);
         }
 
         void setOnRefreshListener(Runnable listener) {
@@ -7780,6 +7791,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         void setRefreshCoolingDown(boolean coolingDown) {
             this.refreshCoolingDown = coolingDown;
+            if (coolingDown) {
+                refreshStartedAt = System.currentTimeMillis();
+                pullDistance = Math.max(pullDistance, triggerDistancePx * 0.54f);
+            } else {
+                pullDistance = 0f;
+                refreshStartedAt = 0L;
+            }
+            invalidate();
         }
 
         @Override
@@ -7788,10 +7807,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 case MotionEvent.ACTION_DOWN:
                     downY = event.getY();
                     trackingPull = getScrollY() <= 0;
+                    if (!refreshCoolingDown) {
+                        pullDistance = 0f;
+                        invalidate();
+                    }
                     break;
                 case MotionEvent.ACTION_MOVE:
                     if (getScrollY() <= 0 && event.getY() > downY) {
                         trackingPull = true;
+                        if (!refreshCoolingDown) {
+                            pullDistance = Math.min(triggerDistancePx, (event.getY() - downY) * 0.62f);
+                            invalidate();
+                        }
                     }
                     break;
                 case MotionEvent.ACTION_UP:
@@ -7800,7 +7827,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         float dy = event.getY() - downY;
                         if (getScrollY() <= 0 && dy >= triggerDistancePx) {
                             refreshListener.run();
+                        } else {
+                            pullDistance = 0f;
+                            invalidate();
                         }
+                    } else if (!refreshCoolingDown) {
+                        pullDistance = 0f;
+                        invalidate();
                     }
                     trackingPull = false;
                     break;
@@ -7808,6 +7841,55 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     break;
             }
             return super.onTouchEvent(event);
+        }
+
+        @Override
+        protected void dispatchDraw(Canvas canvas) {
+            super.dispatchDraw(canvas);
+            drawRefreshBall(canvas);
+        }
+
+        private void drawRefreshBall(Canvas canvas) {
+            if (pullDistance <= 1f && !refreshCoolingDown) {
+                return;
+            }
+            float progress = refreshCoolingDown ? 1f : Math.min(1f, pullDistance / triggerDistancePx);
+            float radius = 7f + 10f * progress;
+            float cx = getWidth() / 2f;
+            float cy = getScrollY() + 9f + (triggerDistancePx * 0.42f * progress);
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb((int) (54 + 42 * progress), 0, 0, 0));
+            canvas.drawCircle(cx, cy + radius * 0.28f, radius * 1.08f, paint);
+
+            paint.setColor(ballColor);
+            canvas.drawCircle(cx, cy, radius, paint);
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2.2f, radius * 0.17f));
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setColor(strokeColor);
+            canvas.drawCircle(cx, cy, radius, paint);
+
+            float inset = radius * 0.36f;
+            arcRect.set(cx - radius + inset, cy - radius + inset, cx + radius - inset, cy + radius - inset);
+            paint.setColor(accentColor);
+            paint.setStrokeWidth(Math.max(2.4f, radius * 0.19f));
+            float start = -92f;
+            float sweep = 32f + 280f * progress;
+            if (refreshCoolingDown) {
+                long elapsed = Math.max(0L, System.currentTimeMillis() - refreshStartedAt);
+                start = (elapsed % 900L) * 360f / 900f - 90f;
+                sweep = 245f;
+            }
+            canvas.drawArc(arcRect, start, sweep, false, paint);
+
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawCircle(cx + radius * 0.48f, cy - radius * 0.22f, Math.max(2f, radius * 0.14f), paint);
+
+            if (refreshCoolingDown) {
+                postInvalidateOnAnimation();
+            }
         }
     }
 }
