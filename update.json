@@ -1,15 +1,15 @@
 {
   "android": {
-    "versionCode": 170,
-    "versionName": "0.9.35",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.35/Haoleme-0.9.35.apk",
+    "versionCode": 171,
+    "versionName": "0.9.36",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.36/Haoleme-0.9.36.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.35/Haoleme-0.9.35.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.36/Haoleme-0.9.36.apk"
     ],
-    "sha256": "86ce1209bc73906409cbc1116ccbe389578d0b161990829e41ea27b150f5e3b8",
+    "sha256": "527bb03afad283e2c758fb238946df87b2bb74ae9f98df55dcd55721f3ef46f3",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "修复云端刷新过多导致的限流：同类刷新请求会自动合并，缓存先显示、网络后台更新，后台控制台补同步降频；运行卡片改为向右滑露出左侧置顶，向左滑保留归档和删除。"
+    "notes": "置顶运行现在会立即稳定排到列表最前，并使用独立描边、浅色底和置顶标识突出显示；首页下拉刷新逻辑已移除，刷新改为按钮和后台自动刷新。"
   },
   "python": {
     "version": "0.4.19",

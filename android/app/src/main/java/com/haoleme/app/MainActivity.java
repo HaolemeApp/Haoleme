@@ -140,7 +140,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final int CAMERA_REQUEST = 4108;
     private static final long POLL_MS = 6000L;
     private static final long LIST_ACTIVE_POLL_MS = 3500L;
-    private static final long PULL_REFRESH_COOLDOWN_MS = 1200L;
     private static final long CONSOLE_RUNNING_POLL_MS = 1000L;
     private static final long BACKGROUND_OUTPUT_SYNC_COOLDOWN_MS = 15000L;
     private static final int HTTP_CONNECT_TIMEOUT_MS = 8000;
@@ -213,7 +212,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private HorizontalScrollView devicesScrollView;
     private LinearLayout devicesContainer;
     private LinearLayout runsContainer;
-    private PullRefreshScrollView homeRunsScrollView;
+    private ScrollView homeRunsScrollView;
     private Button renameDeviceButton;
     private Button revokeDeviceButton;
     private Button clearDeviceRunsButton;
@@ -261,7 +260,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private String lastRunsSig = "";
     private String lastDevicesSig = "";
     private boolean hasActiveRunVisible = false;
-    private boolean homePullRefreshCoolingDown = false;
     private volatile boolean pendingRunDeleteSyncing = false;
     private final Object refreshStateLock = new Object();
     private boolean runsRefreshInFlight = false;
@@ -662,9 +660,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         content.addView(controls, controlsParams);
 
         // The single run list (filtered by selected device + project + status).
-        PullRefreshScrollView scrollView = new PullRefreshScrollView(this, dp(74), color("#2563EB"), cardBg(), surfaceStroke());
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        scrollView.setVerticalScrollBarEnabled(false);
         homeRunsScrollView = scrollView;
-        scrollView.setOnRefreshListener(() -> refreshHome(true));
         runsContainer = new LinearLayout(this);
         runsContainer.setOrientation(LinearLayout.VERTICAL);
         scrollView.addView(runsContainer);
@@ -2932,10 +2931,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void refreshHome(boolean manual) {
         if (manual) {
-            if (homePullRefreshCoolingDown) {
-                return;
-            }
-            homePullRefreshCoolingDown = true;
             if (statusText != null) {
                 statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
             }
@@ -2945,15 +2940,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 loadCachedRuns();
             }
             syncPendingRunDeletesAsync(false);
-            if (homeRunsScrollView != null) {
-                homeRunsScrollView.setRefreshCoolingDown(true);
-            }
-            handler.postDelayed(() -> {
-                homePullRefreshCoolingDown = false;
-                if (homeRunsScrollView != null) {
-                    homeRunsScrollView.setRefreshCoolingDown(false);
-                }
-            }, PULL_REFRESH_COOLDOWN_MS);
         }
         refreshDevices(manual);
         refreshRuns(manual);
@@ -4218,10 +4204,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private JSONArray orderPinnedRuns(JSONArray runs) {
-        Set<String> pinned = pinnedRunIds();
-        if (pinned.isEmpty()) {
+        List<String> pinnedOrder = pinnedRunIdList();
+        if (pinnedOrder.isEmpty()) {
             return runs;
         }
+        Map<String, JSONObject> pinnedById = new HashMap<>();
         JSONArray ordered = new JSONArray();
         JSONArray rest = new JSONArray();
         for (int i = 0; i < runs.length(); i++) {
@@ -4230,10 +4217,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 continue;
             }
             String id = run.optString("id", "");
-            if (!id.isEmpty() && pinned.contains(id)) {
-                ordered.put(run);
+            if (!id.isEmpty() && pinnedOrder.contains(id)) {
+                pinnedById.put(id, run);
             } else {
                 rest.put(run);
+            }
+        }
+        for (String id : pinnedOrder) {
+            JSONObject run = pinnedById.get(id);
+            if (run != null) {
+                ordered.put(run);
             }
         }
         for (int i = 0; i < rest.length(); i++) {
@@ -4288,7 +4281,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             renderRuns(new JSONArray(cached), true);
             long savedAt = prefs.getLong(cacheAtKey, 0L);
             if (savedAt > 0L && statusText != null) {
-                statusText.setText(isEnglish() ? "Saved results. Pull down or tap ↻ for latest." : "正在显示保存结果。下拉或点 ↻ 获取最新内容。");
+                statusText.setText(isEnglish() ? "Saved results. Tap refresh for latest." : "正在显示保存结果。点刷新获取最新内容。");
             }
         } catch (Exception ignored) {
         }
@@ -4484,11 +4477,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private View runView(JSONObject run) {
         String runId = run.optString("id", "");
+        boolean pinned = isRunPinned(runId);
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(15), dp(13), dp(15), dp(13));
-        card.setBackground(roundedBg(cardBg(), 20, cardStroke()));
-        card.setElevation(0);
+        card.setBackground(roundedBg(pinned ? pinnedRunCardBg() : cardBg(), 20, pinned ? pinnedRunCardStroke() : cardStroke()));
+        card.setElevation(pinned ? dp(3) : 0);
+        if (Build.VERSION.SDK_INT >= 21) {
+            card.setTranslationZ(pinned ? dp(1) : 0);
+        }
         card.setClickable(true);
         card.setOnClickListener(v -> openRunDetail(runId));
 
@@ -4527,6 +4524,21 @@ public class MainActivity extends Activity implements LifecycleOwner {
         label.setTextColor(statusColor(status));
         label.setPadding(dp(6), dp(2), dp(6), dp(2));
         label.setBackground(roundedBg(statusBadgeColor(status), 7, Color.TRANSPARENT));
+        if (pinned) {
+            TextView pinnedBadge = new TextView(this);
+            pinnedBadge.setText(isEnglish() ? "↑ PINNED" : "↑ 置顶");
+            pinnedBadge.setTextSize(10);
+            pinnedBadge.setTypeface(null, Typeface.BOLD);
+            pinnedBadge.setTextColor(pinnedRunText());
+            pinnedBadge.setPadding(dp(7), dp(2), dp(7), dp(2));
+            pinnedBadge.setBackground(roundedBg(pinnedRunBadgeBg(), 99, Color.TRANSPARENT));
+            LinearLayout.LayoutParams pinnedParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            pinnedParams.setMargins(0, 0, dp(6), 0);
+            topLine.addView(pinnedBadge, pinnedParams);
+        }
         topLine.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         card.addView(topLine, matchWrap());
 
@@ -4874,21 +4886,27 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private Set<String> pinnedRunIds() {
-        Set<String> set = new HashSet<>();
+        return new HashSet<>(pinnedRunIdList());
+    }
+
+    private List<String> pinnedRunIdList() {
+        List<String> list = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
         String raw = prefs.getString(PREF_PINNED_RUNS, "");
         if (raw != null && !raw.isEmpty()) {
             try {
                 JSONArray a = new JSONArray(raw);
                 for (int i = 0; i < a.length(); i++) {
                     String s = a.optString(i, "");
-                    if (!s.isEmpty()) {
-                        set.add(s);
+                    if (!s.isEmpty() && !seen.contains(s)) {
+                        list.add(s);
+                        seen.add(s);
                     }
                 }
             } catch (Exception ignored) {
             }
         }
-        return set;
+        return list;
     }
 
     private boolean isRunPinned(String id) {
@@ -4899,17 +4917,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (id == null || id.isEmpty()) {
             return;
         }
-        Set<String> set = pinnedRunIds();
+        List<String> list = pinnedRunIdList();
+        list.remove(id);
         if (pinned) {
-            set.add(id);
-        } else {
-            set.remove(id);
+            list.add(0, id);
         }
         JSONArray a = new JSONArray();
-        for (String s : set) {
+        for (String s : list) {
             a.put(s);
         }
         prefs.edit().putString(PREF_PINNED_RUNS, a.toString()).apply();
+        lastRunsSig = "";
         loadCachedRuns();
         refreshRuns();
     }
@@ -4918,15 +4936,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (id == null || id.isEmpty()) {
             return;
         }
-        Set<String> set = pinnedRunIds();
-        if (!set.remove(id)) {
+        List<String> list = pinnedRunIdList();
+        if (!list.remove(id)) {
             return;
         }
         JSONArray a = new JSONArray();
-        for (String s : set) {
+        for (String s : list) {
             a.put(s);
         }
         prefs.edit().putString(PREF_PINNED_RUNS, a.toString()).apply();
+        lastRunsSig = "";
     }
 
     private void setRunArchived(String id, boolean archived) {
@@ -8096,6 +8115,22 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return isDarkTheme() ? color("#2C2C2E") : color("#E5E5EA");
     }
 
+    private int pinnedRunCardBg() {
+        return isDarkTheme() ? color("#231F18") : color("#FFFDF7");
+    }
+
+    private int pinnedRunCardStroke() {
+        return isDarkTheme() ? color("#7A5A1E") : color("#E7C66A");
+    }
+
+    private int pinnedRunBadgeBg() {
+        return isDarkTheme() ? color("#3A2B12") : color("#FFF1C2");
+    }
+
+    private int pinnedRunText() {
+        return isDarkTheme() ? color("#FACC6B") : color("#8A5A00");
+    }
+
     private int settingsHeroBg() {
         return isDarkTheme() ? color("#1B1B20") : color("#FFFFFF");
     }
@@ -8702,136 +8737,4 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
     }
 
-    private static class PullRefreshScrollView extends ScrollView {
-        private final float triggerDistancePx;
-        private final int accentColor;
-        private final int ballColor;
-        private final int strokeColor;
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF arcRect = new RectF();
-        private Runnable refreshListener;
-        private float downY = 0f;
-        private float pullDistance = 0f;
-        private boolean trackingPull = false;
-        private boolean refreshCoolingDown = false;
-        private long refreshStartedAt = 0L;
-
-        PullRefreshScrollView(Context context, int triggerDistancePx, int accentColor, int ballColor, int strokeColor) {
-            super(context);
-            this.triggerDistancePx = Math.max(48, triggerDistancePx);
-            this.accentColor = accentColor;
-            this.ballColor = ballColor;
-            this.strokeColor = strokeColor;
-            setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
-            setVerticalScrollBarEnabled(false);
-            setWillNotDraw(false);
-        }
-
-        void setOnRefreshListener(Runnable listener) {
-            this.refreshListener = listener;
-        }
-
-        void setRefreshCoolingDown(boolean coolingDown) {
-            this.refreshCoolingDown = coolingDown;
-            if (coolingDown) {
-                refreshStartedAt = System.currentTimeMillis();
-                pullDistance = Math.max(pullDistance, triggerDistancePx * 0.54f);
-            } else {
-                pullDistance = 0f;
-                refreshStartedAt = 0L;
-            }
-            invalidate();
-        }
-
-        @Override
-        public boolean onTouchEvent(MotionEvent event) {
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    downY = event.getY();
-                    trackingPull = getScrollY() <= 0;
-                    if (!refreshCoolingDown) {
-                        pullDistance = 0f;
-                        invalidate();
-                    }
-                    break;
-                case MotionEvent.ACTION_MOVE:
-                    if (getScrollY() <= 0 && event.getY() > downY) {
-                        trackingPull = true;
-                        if (!refreshCoolingDown) {
-                            pullDistance = Math.min(triggerDistancePx, (event.getY() - downY) * 0.62f);
-                            invalidate();
-                        }
-                    }
-                    break;
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    if (trackingPull && !refreshCoolingDown && refreshListener != null) {
-                        float dy = event.getY() - downY;
-                        if (getScrollY() <= 0 && dy >= triggerDistancePx) {
-                            refreshListener.run();
-                        } else {
-                            pullDistance = 0f;
-                            invalidate();
-                        }
-                    } else if (!refreshCoolingDown) {
-                        pullDistance = 0f;
-                        invalidate();
-                    }
-                    trackingPull = false;
-                    break;
-                default:
-                    break;
-            }
-            return super.onTouchEvent(event);
-        }
-
-        @Override
-        protected void dispatchDraw(Canvas canvas) {
-            super.dispatchDraw(canvas);
-            drawRefreshBall(canvas);
-        }
-
-        private void drawRefreshBall(Canvas canvas) {
-            if (pullDistance <= 1f && !refreshCoolingDown) {
-                return;
-            }
-            float progress = refreshCoolingDown ? 1f : Math.min(1f, pullDistance / triggerDistancePx);
-            float radius = 7f + 10f * progress;
-            float cx = getWidth() / 2f;
-            float cy = getScrollY() + 9f + (triggerDistancePx * 0.42f * progress);
-
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.argb((int) (54 + 42 * progress), 0, 0, 0));
-            canvas.drawCircle(cx, cy + radius * 0.28f, radius * 1.08f, paint);
-
-            paint.setColor(ballColor);
-            canvas.drawCircle(cx, cy, radius, paint);
-
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(2.2f, radius * 0.17f));
-            paint.setStrokeCap(Paint.Cap.ROUND);
-            paint.setColor(strokeColor);
-            canvas.drawCircle(cx, cy, radius, paint);
-
-            float inset = radius * 0.36f;
-            arcRect.set(cx - radius + inset, cy - radius + inset, cx + radius - inset, cy + radius - inset);
-            paint.setColor(accentColor);
-            paint.setStrokeWidth(Math.max(2.4f, radius * 0.19f));
-            float start = -92f;
-            float sweep = 32f + 280f * progress;
-            if (refreshCoolingDown) {
-                long elapsed = Math.max(0L, System.currentTimeMillis() - refreshStartedAt);
-                start = (elapsed % 900L) * 360f / 900f - 90f;
-                sweep = 245f;
-            }
-            canvas.drawArc(arcRect, start, sweep, false, paint);
-
-            paint.setStyle(Paint.Style.FILL);
-            canvas.drawCircle(cx + radius * 0.48f, cy - radius * 0.22f, Math.max(2f, radius * 0.14f), paint);
-
-            if (refreshCoolingDown) {
-                postInvalidateOnAnimation();
-            }
-        }
-    }
 }
