@@ -44,6 +44,7 @@ import android.util.Size;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.widget.Button;
 import android.widget.CheckedTextView;
@@ -170,6 +171,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String PREF_PENDING_RUN_DELETES = "pending_run_delete_ids";
     private static final String PREF_LANGUAGE_MODE = "language_mode";
     private static final String PREF_APP_CLIENT_ID = "app_client_id";
+    private static final String TAG_RUN_PREFIX = "run:";
+    private static final String TAG_RUN_COMMAND = "run_command";
+    private static final String TAG_RUN_STATUS = "run_status";
+    private static final String TAG_RUN_META = "run_meta";
+    private static final String TAG_RUN_OUTPUT = "run_output";
     private static final int CONSOLE_RENDER_INITIAL_CHARS = 60000;
     private static final int CONSOLE_RENDER_STEP_CHARS = 60000;
     private static final String THEME_LIGHT = "light";
@@ -438,9 +444,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         FrameLayout header = new FrameLayout(this);
         header.setMinimumHeight(dp(40));
 
-        FrameLayout.LayoutParams iconParams = new FrameLayout.LayoutParams(dp(38), dp(38), Gravity.START | Gravity.CENTER_VERTICAL);
-        header.addView(appIconView(), iconParams);
-
         LinearLayout headerText = new LinearLayout(this);
         headerText.setOrientation(LinearLayout.VERTICAL);
         headerText.setGravity(Gravity.CENTER);
@@ -458,27 +461,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
         updateConnectionSubtitle();
         headerText.addView(connectionSubtitleText, matchWrap());
         FrameLayout.LayoutParams headerTextParams = new FrameLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER
         );
         header.addView(headerText, headerTextParams);
 
-        updateBadgeButton = new TextView(this);
-        updateBadgeButton.setTextSize(12);
-        updateBadgeButton.setGravity(Gravity.CENTER);
-        updateBadgeButton.setTextColor(updateAccent());
-        updateBadgeButton.setTypeface(null, Typeface.BOLD);
-        updateBadgeButton.setPadding(dp(8), 0, dp(8), 0);
-        updateBadgeButton.setVisibility(View.GONE);
-        updateBadgeButton.setOnClickListener(v -> confirmUpdateDownload());
-        restoreUpdateBadgeFromPrefs();
-        FrameLayout.LayoutParams updateParams = new FrameLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                dp(42),
-                Gravity.END | Gravity.CENTER_VERTICAL
-        );
-        header.addView(updateBadgeButton, updateParams);
+        updateBadgeButton = null;
 
         root.addView(header, matchWrap());
 
@@ -4111,8 +4100,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         // Skip the expensive full-list rebuild when nothing visible changed
         // (avoids re-inflating every run card on each poll).
-        String runsSig = runsSignature(visibleRuns);
+        String runsSig = runsLayoutSignature(visibleRuns);
         if (runsContainer != null && runsContainer.getChildCount() > 0 && runsSig.equals(lastRunsSig)) {
+            updateRunCardsInPlace(visibleRuns);
             if (!fromCache) {
                 firstLoad = false;
             }
@@ -4147,7 +4137,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
     }
 
-    private String runsSignature(JSONArray runs) {
+    private String runsLayoutSignature(JSONArray runs) {
         StringBuilder sb = new StringBuilder();
         Set<String> pinned = pinnedRunIds();
         for (int i = 0; i < runs.length(); i++) {
@@ -4157,11 +4147,78 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
             sb.append(r.optString("id", "")).append('|')
               .append(pinned.contains(r.optString("id", "")) ? 'P' : '-').append('|')
-              .append(r.optString("status", "")).append('|')
-              .append(r.optString("updatedAt", "")).append('|')
-              .append(r.optInt("outputLength", r.optString("outputTail", "").length())).append(';');
+              .append(r.optString("status", "")).append(';');
         }
         return sb.toString();
+    }
+
+    private boolean updateRunCardsInPlace(JSONArray runs) {
+        if (runsContainer == null || runs == null || runsContainer.getChildCount() != runs.length()) {
+            return false;
+        }
+        for (int i = 0; i < runs.length(); i++) {
+            JSONObject run = runs.optJSONObject(i);
+            View child = runsContainer.getChildAt(i);
+            String id = run == null ? "" : run.optString("id", "");
+            if (id.isEmpty() || child == null || !runViewTag(id).equals(child.getTag())) {
+                return false;
+            }
+        }
+        for (int i = 0; i < runs.length(); i++) {
+            JSONObject run = runs.optJSONObject(i);
+            View child = runsContainer.getChildAt(i);
+            updateRunCardInPlace(child, run);
+        }
+        return true;
+    }
+
+    private void updateRunCardInPlace(View root, JSONObject run) {
+        if (root == null || run == null) {
+            return;
+        }
+        TextView command = taggedTextView(root, TAG_RUN_COMMAND);
+        if (command != null) {
+            command.setText(displayText(commandTextForDisplay(run, isEnglish() ? "(unknown command)" : "（未知命令）")));
+        }
+        TextView status = taggedTextView(root, TAG_RUN_STATUS);
+        if (status != null) {
+            status.setText(statusLabel(run.optString("status", "unknown")));
+        }
+        TextView meta = taggedTextView(root, TAG_RUN_META);
+        if (meta != null) {
+            meta.setText(runMetaText(run));
+        }
+        TextView output = taggedTextView(root, TAG_RUN_OUTPUT);
+        if (output != null) {
+            String latest = latestOutputLine(run);
+            boolean hasOutput = !latest.isEmpty();
+            output.setText(hasOutput ? displayText(latest) : (isEnglish() ? "(no output)" : "（暂无输出）"));
+            output.setTextColor(hasOutput ? textPrimary() : textSecondary());
+        }
+    }
+
+    private TextView taggedTextView(View root, String tag) {
+        if (root == null) {
+            return null;
+        }
+        Object current = root.getTag();
+        if (tag.equals(current) && root instanceof TextView) {
+            return (TextView) root;
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                TextView found = taggedTextView(group.getChildAt(i), tag);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    private String runViewTag(String runId) {
+        return TAG_RUN_PREFIX + (runId == null ? "" : runId);
     }
 
     private JSONArray filterRuns(JSONArray runs) {
@@ -4507,6 +4564,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         topLine.addView(dot, dotParams);
 
         TextView command = new TextView(this);
+        command.setTag(TAG_RUN_COMMAND);
         command.setText(displayText(commandTextForDisplay(run, isEnglish() ? "(unknown command)" : "（未知命令）")));
         command.setTextSize(14);
         command.setTextColor(textPrimary());
@@ -4518,6 +4576,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         topLine.addView(command, commandParams);
 
         TextView label = new TextView(this);
+        label.setTag(TAG_RUN_STATUS);
         label.setText(statusLabel(status));
         label.setTextSize(11);
         label.setTypeface(null, Typeface.BOLD);
@@ -4542,12 +4601,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         topLine.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         card.addView(topLine, matchWrap());
 
-        String deviceName = run.optString("deviceName", "");
-        String projectName = run.optString("project", "").trim();
         TextView meta = new TextView(this);
-        String shownDevice = deviceName.isEmpty() ? appDisplayName() + " CLI" : deviceName;
-        String projectPrefix = projectName.isEmpty() ? "" : projectName + " · ";
-        meta.setText(durationText(run) + " · " + projectPrefix + shownDevice + statusExitSuffix(run));
+        meta.setTag(TAG_RUN_META);
+        meta.setText(runMetaText(run));
         meta.setTextSize(11);
         meta.setTextColor(textSecondary());
         meta.setPadding(0, dp(3), 0, 0);
@@ -4556,6 +4612,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         String latest = latestOutputLine(run);
         boolean hasOutput = !latest.isEmpty();
         TextView output = new TextView(this);
+        output.setTag(TAG_RUN_OUTPUT);
         output.setText(hasOutput ? displayText(latest) : (isEnglish() ? "(no output)" : "（暂无输出）"));
         output.setTextSize(11);
         output.setTextColor(hasOutput ? textPrimary() : textSecondary());
@@ -4568,6 +4625,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         card.addView(output, outputParams);
 
         return swipeableRunCard(card, runId);
+    }
+
+    private String runMetaText(JSONObject run) {
+        String deviceName = run.optString("deviceName", "");
+        String projectName = run.optString("project", "").trim();
+        String shownDevice = deviceName.isEmpty() ? appDisplayName() + " CLI" : deviceName;
+        String projectPrefix = projectName.isEmpty() ? "" : projectName + " · ";
+        return durationText(run) + " · " + projectPrefix + shownDevice + statusExitSuffix(run);
     }
 
     private View runRenderErrorView(JSONObject run, Throwable throwable) {
@@ -4615,6 +4680,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         scroller.setOverScrollMode(View.OVER_SCROLL_NEVER);
         scroller.setFillViewport(false);
         scroller.setBackgroundColor(Color.TRANSPARENT);
+        scroller.setTag(runViewTag(runId));
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);

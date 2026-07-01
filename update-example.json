@@ -1,15 +1,15 @@
 {
   "android": {
-    "versionCode": 171,
-    "versionName": "0.9.36",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.36/Haoleme-0.9.36.apk",
+    "versionCode": 172,
+    "versionName": "0.9.37",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.37/Haoleme-0.9.37.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.36/Haoleme-0.9.36.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.37/Haoleme-0.9.37.apk"
     ],
-    "sha256": "527bb03afad283e2c758fb238946df87b2bb74ae9f98df55dcd55721f3ef46f3",
+    "sha256": "660293c747434f4b02c614e45360a663ce17cd5d25043c3b2a6265e892369322",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "置顶运行现在会立即稳定排到列表最前，并使用独立描边、浅色底和置顶标识突出显示；首页下拉刷新逻辑已移除，刷新改为按钮和后台自动刷新。"
+    "notes": "优化首页观感和刷新体验：顶部标题真正居中并去掉左上角猫猫图标，右上角更新提示移到设置页；运行列表刷新时原地更新卡片内容，减少运行中任务抖动，同时保持服务器压力可控。"
   },
   "python": {
     "version": "0.4.19",
