@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 162,
-    "versionName": "0.9.27",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.27/Haoleme-0.9.27.apk",
+    "versionCode": 163,
+    "versionName": "0.9.28",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.28/Haoleme-0.9.28.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.27/Haoleme-0.9.27.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.27.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.28/Haoleme-0.9.28.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.28.apk"
     ],
-    "sha256": "96a59c6310f50757259a34018b58e42aca0361939570400ef6123ae6fcf234b4",
+    "sha256": "b2ce2374fff7641f9a636b56b90f35367d5d6b00839750313f05809f01fa22f0",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "修复设备断联后重新配对失败、重连串到其他设备的问题。"
+    "notes": "主页刷新体验优化：移除顶部刷新按钮，支持下拉刷新，并继续自动刷新运行状态。"
   },
   "python": {
     "version": "0.4.14",

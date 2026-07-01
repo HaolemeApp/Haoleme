@@ -42,6 +42,7 @@ import android.util.Base64;
 import android.util.Log;
 import android.util.Size;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.widget.Button;
@@ -139,6 +140,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final int CAMERA_REQUEST = 4108;
     private static final long POLL_MS = 5000L;
     private static final long LIST_ACTIVE_POLL_MS = 2500L;
+    private static final long PULL_REFRESH_COOLDOWN_MS = 1200L;
     private static final long CONSOLE_RUNNING_POLL_MS = 1000L;
     private static final int HTTP_CONNECT_TIMEOUT_MS = 8000;
     private static final int HTTP_READ_TIMEOUT_MS = 12000;
@@ -206,6 +208,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private HorizontalScrollView devicesScrollView;
     private LinearLayout devicesContainer;
     private LinearLayout runsContainer;
+    private PullRefreshScrollView homeRunsScrollView;
     private Button renameDeviceButton;
     private Button revokeDeviceButton;
     private Button clearDeviceRunsButton;
@@ -253,14 +256,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private String lastRunsSig = "";
     private String lastDevicesSig = "";
     private boolean hasActiveRunVisible = false;
+    private boolean homePullRefreshCoolingDown = false;
 
     private final Runnable pollRunnable = new Runnable() {
         @Override
         public void run() {
             try {
                 if (selectedRunId == null) {
-                    refreshDevices();
-                    refreshRuns();
+                    refreshHome(false);
                 } else {
                     refreshRunDetail(selectedRunId, false);
                 }
@@ -298,8 +301,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             if (statusText != null) {
                 statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
             }
-            refreshDevices();
-            refreshRuns();
+            refreshHome(false);
             if (autoCheckUpdatesEnabled()) {
                 checkForUpdates(false);
             } else {
@@ -321,6 +323,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     protected void onResume() {
         super.onResume();
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME);
+        if (selectedRunId == null && "home".equals(currentTab) && hasPairedDevice()) {
+            refreshHome(false);
+        }
     }
 
     @Override
@@ -399,6 +404,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         renameDeviceButton = null;
         revokeDeviceButton = null;
         clearDeviceRunsButton = null;
+        homeRunsScrollView = null;
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -631,19 +637,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         });
         infoRow.addView(deviceSummaryText, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
-        TextView refreshDeviceButton = actionButton(actionLabel("↻", "", 1.34f));
-        refreshDeviceButton.setContentDescription(t("refresh"));
-        refreshDeviceButton.setOnClickListener(v -> {
-            refreshDevices(true);
-            refreshRuns(true);
-        });
-        infoRow.addView(refreshDeviceButton, new LinearLayout.LayoutParams(dp(42), dp(42)));
-
         TextView deviceMenuButton = actionButton("⋯");
         deviceMenuButton.setTextSize(22);
         deviceMenuButton.setOnClickListener(v -> showDeviceActionsDialog());
         LinearLayout.LayoutParams menuParams = new LinearLayout.LayoutParams(dp(42), dp(42));
-        menuParams.setMargins(dp(8), 0, 0, 0);
         infoRow.addView(deviceMenuButton, menuParams);
 
         deviceHeader.addView(infoRow, matchWrap());
@@ -679,7 +676,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         content.addView(controls, controlsParams);
 
         // The single run list (filtered by selected device + project + status).
-        ScrollView scrollView = new ScrollView(this);
+        PullRefreshScrollView scrollView = new PullRefreshScrollView(this, dp(74));
+        homeRunsScrollView = scrollView;
+        scrollView.setOnRefreshListener(() -> refreshHome(true));
         runsContainer = new LinearLayout(this);
         runsContainer.setOrientation(LinearLayout.VERTICAL);
         scrollView.addView(runsContainer);
@@ -1747,8 +1746,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     currentTab = "runs";
                     buildUi();
                     statusText.setText(isEnglish() ? "Joined shared space. Refreshing..." : "已加入共享空间，正在刷新...");
-                    refreshDevices();
-                    refreshRuns();
+                    refreshHome(false);
                 });
             } catch (Exception e) {
                 handler.post(() -> statusText.setText(syncSpaceFailureMessage(e)));
@@ -2784,8 +2782,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 settingsSection = null;
                 buildUi();
                 if ("home".equals(currentTab)) {
-                    refreshDevices();
-                    refreshRuns();
+                    refreshHome(false);
                 }
             }
         });
@@ -2794,6 +2791,29 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void refreshRuns() {
         refreshRuns(false);
+    }
+
+    private void refreshHome(boolean manual) {
+        if (manual) {
+            if (homePullRefreshCoolingDown) {
+                return;
+            }
+            homePullRefreshCoolingDown = true;
+            if (statusText != null) {
+                statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
+            }
+            if (homeRunsScrollView != null) {
+                homeRunsScrollView.setRefreshCoolingDown(true);
+            }
+            handler.postDelayed(() -> {
+                homePullRefreshCoolingDown = false;
+                if (homeRunsScrollView != null) {
+                    homeRunsScrollView.setRefreshCoolingDown(false);
+                }
+            }, PULL_REFRESH_COOLDOWN_MS);
+        }
+        refreshDevices(manual);
+        refreshRuns(manual);
     }
 
     private void refreshRuns(boolean manual) {
@@ -5739,8 +5759,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         buildUi();
                     }
                     statusText.setText(isEnglish() ? "Paired with " + finalDeviceName + ". Refreshing..." : "已配对 " + finalDeviceName + "，正在刷新...");
-                    refreshDevices();
-                    refreshRuns();
+                    refreshHome(false);
                     maybePromptRenameLongPairedDevice(finalDeviceId, finalDeviceName);
                 });
             } catch (Exception e) {
@@ -7738,6 +7757,57 @@ public class MainActivity extends Activity implements LifecycleOwner {
         PairInfoResult(String server, JSONObject info) {
             this.server = server;
             this.info = info;
+        }
+    }
+
+    private static class PullRefreshScrollView extends ScrollView {
+        private final float triggerDistancePx;
+        private Runnable refreshListener;
+        private float downY = 0f;
+        private boolean trackingPull = false;
+        private boolean refreshCoolingDown = false;
+
+        PullRefreshScrollView(Context context, int triggerDistancePx) {
+            super(context);
+            this.triggerDistancePx = Math.max(48, triggerDistancePx);
+            setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+            setVerticalScrollBarEnabled(false);
+        }
+
+        void setOnRefreshListener(Runnable listener) {
+            this.refreshListener = listener;
+        }
+
+        void setRefreshCoolingDown(boolean coolingDown) {
+            this.refreshCoolingDown = coolingDown;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downY = event.getY();
+                    trackingPull = getScrollY() <= 0;
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    if (getScrollY() <= 0 && event.getY() > downY) {
+                        trackingPull = true;
+                    }
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (trackingPull && !refreshCoolingDown && refreshListener != null) {
+                        float dy = event.getY() - downY;
+                        if (getScrollY() <= 0 && dy >= triggerDistancePx) {
+                            refreshListener.run();
+                        }
+                    }
+                    trackingPull = false;
+                    break;
+                default:
+                    break;
+            }
+            return super.onTouchEvent(event);
         }
     }
 }
