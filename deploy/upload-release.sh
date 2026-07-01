@@ -19,6 +19,7 @@
 #   HAOLEME_UPLOAD_HOST=api.haoleme.cloud
 #   HAOLEME_UPLOAD_USER=root
 #   HAOLEME_PUBLIC_URL=https://api.haoleme.cloud
+#   HAOLEME_UPLOAD_DIRS="/opt/haoleme-cloud-data/downloads /opt/reminder-cloud-data/downloads"
 #   HAOLEME_ANDROID_NOTES="Release notes for the app"
 #   HAOLEME_PYTHON_NOTES="Release notes for hao CLI"
 #   JAVA_HOME=/path/to/jdk
@@ -65,8 +66,8 @@ done
 
 SERVER="${HAOLEME_UPLOAD_HOST:-api.haoleme.cloud}"
 SERVER_USER="${HAOLEME_UPLOAD_USER:-root}"
-REMOTE_DIR="${HAOLEME_UPLOAD_DIR:-/opt/haoleme-cloud-data/downloads}"
-PUBLIC_BASE="${HAOLEME_PUBLIC_URL:-http://${SERVER}}"
+REMOTE_DIRS_RAW="${HAOLEME_UPLOAD_DIRS:-${HAOLEME_UPLOAD_DIR:-/opt/haoleme-cloud-data/downloads /opt/reminder-cloud-data/downloads}}"
+PUBLIC_BASE="${HAOLEME_PUBLIC_URL:-https://api.haoleme.cloud}"
 SSH_TARGET="${SERVER_USER}@${SERVER}"
 
 PYTHON_VERSION="$(
@@ -273,20 +274,30 @@ if [[ "$UPLOAD_ANDROID" -eq 1 && -f "$APK_PATH" ]]; then
   UPLOAD_PATHS+=("$APK_PATH")
 fi
 
-echo "Uploading to ${SSH_TARGET}:${REMOTE_DIR} ..."
+read -r -a REMOTE_DIRS <<< "$REMOTE_DIRS_RAW"
+echo "Uploading to ${SSH_TARGET}:${REMOTE_DIRS[*]} ..."
 set +e
-for path in "${UPLOAD_PATHS[@]}"; do
-  remote_copy "$path" "${REMOTE_DIR}/" || echo "  (server copy failed for $(basename "$path"), continuing...)"
+for dir in "${REMOTE_DIRS[@]}"; do
+  remote_cmd "mkdir -p '$dir'" || true
+  for path in "${UPLOAD_PATHS[@]}"; do
+    remote_copy "$path" "${dir}/" || echo "  (server copy failed for $(basename "$path") -> ${dir}, continuing...)"
+  done
 done
 
 remote_copy_cmds=()
+for dir in "${REMOTE_DIRS[@]}"; do
+  remote_copy_cmds+=("chown -R haoleme:haoleme ${dir} 2>/dev/null || true")
+  remote_copy_cmds+=("chmod 0644 ${dir}/update.json 2>/dev/null || true")
+  if [[ "$UPLOAD_PYTHON" -eq 1 ]]; then
+    remote_copy_cmds+=("chmod 0644 ${dir}/$(basename "$WHEEL_PATH") 2>/dev/null || true")
+  fi
+  if [[ "$UPLOAD_ANDROID" -eq 1 && -f "$APK_PATH" ]]; then
+    remote_copy_cmds+=("chmod 0644 ${dir}/$(basename "$APK_PATH") 2>/dev/null || true")
+  fi
+done
 if [[ "$UPLOAD_PYTHON" -eq 1 ]]; then
-  remote_copy_cmds+=("chown haoleme:haoleme ${REMOTE_DIR}/$(basename "$WHEEL_PATH") ${REMOTE_DIR}/update.json")
-  remote_copy_cmds+=("python3.11 -m pip install -U ${REMOTE_DIR}/$(basename "$WHEEL_PATH")")
+  remote_copy_cmds+=("python3.11 -m pip install -U ${REMOTE_DIRS[0]}/$(basename "$WHEEL_PATH")")
   remote_copy_cmds+=("systemctl restart haoleme-cloud")
-fi
-if [[ "$UPLOAD_ANDROID" -eq 1 && -f "$APK_PATH" ]]; then
-  remote_copy_cmds+=("chown haoleme:haoleme ${REMOTE_DIR}/$(basename "$APK_PATH")")
 fi
 
 if [[ "${#remote_copy_cmds[@]}" -gt 0 ]]; then
@@ -328,10 +339,47 @@ if [[ "$DO_GITHUB" -eq 1 ]] && command -v gh >/dev/null 2>&1; then
   TAG="v${ANDROID_VERSION}"
   if [[ "$UPLOAD_ANDROID" -eq 1 && -f "$APK_PATH" ]]; then
     NOTES="${HAOLEME_ANDROID_NOTES:-Haoleme ${ANDROID_VERSION} (CLI ${PYTHON_VERSION})}"
-    gh release view "$TAG" >/dev/null 2>&1 && gh release upload "$TAG" "$APK_PATH" --clobber || \
-      gh release create "$TAG" "$APK_PATH" --title "Haoleme ${ANDROID_VERSION}" --notes "$NOTES"
+    if gh release view "$TAG" >/dev/null 2>&1; then
+      gh release upload "$TAG" "$APK_PATH" "$ROOT/update.json" --clobber
+    else
+      gh release create "$TAG" "$APK_PATH" "$ROOT/update.json" --title "Haoleme ${ANDROID_VERSION}" --notes "$NOTES"
+    fi
+  elif [[ "$UPLOAD_PYTHON" -eq 1 ]]; then
+    TAG="v${ANDROID_VERSION}"
+    gh release view "$TAG" >/dev/null 2>&1 && gh release upload "$TAG" "$WHEEL_PATH" "$ROOT/update.json" --clobber || true
   fi
 fi
+
+echo "Verifying public release chain..."
+python3 - <<'PY' "$PUBLIC_BASE" "$ANDROID_VERSION" "$ANDROID_CODE" "$PYTHON_VERSION" "$APK_PATH"
+import hashlib
+import json
+import pathlib
+import sys
+import urllib.request
+
+public_base, android_version, android_code, python_version, apk_path = sys.argv[1:]
+manifest_url = public_base.rstrip("/") + "/downloads/update.json"
+with urllib.request.urlopen(manifest_url, timeout=12) as resp:
+    manifest = json.loads(resp.read().decode("utf-8"))
+android = manifest.get("android") or {}
+python = manifest.get("python") or {}
+if int(android.get("versionCode") or 0) != int(android_code):
+    raise SystemExit(f"cloud android versionCode mismatch: {android.get('versionCode')} != {android_code}")
+if str(android.get("versionName") or "") != android_version:
+    raise SystemExit(f"cloud android versionName mismatch: {android.get('versionName')} != {android_version}")
+if str(python.get("version") or "") != python_version:
+    raise SystemExit(f"cloud python version mismatch: {python.get('version')} != {python_version}")
+apk = pathlib.Path(apk_path)
+if apk.is_file():
+    expected = hashlib.sha256(apk.read_bytes()).hexdigest()
+    if str(android.get("sha256") or "").lower() != expected:
+        raise SystemExit("cloud APK sha256 mismatch")
+    with urllib.request.urlopen(public_base.rstrip("/") + f"/downloads/Haoleme-{android_version}.apk", timeout=12) as resp:
+        if resp.status != 200:
+            raise SystemExit(f"cloud APK unavailable: HTTP {resp.status}")
+print(f"OK: {manifest_url} -> Android {android_version}, Python {python_version}")
+PY
 
 echo "Done."
 if [[ "$UPLOAD_PYPI" -eq 1 ]]; then

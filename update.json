@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 159,
-    "versionName": "0.9.24",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.24/Haoleme-0.9.24.apk",
+    "versionCode": 160,
+    "versionName": "0.9.25",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.25/Haoleme-0.9.25.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.24/Haoleme-0.9.24.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.24.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.25/Haoleme-0.9.25.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.25.apk"
     ],
-    "sha256": "b7d9ca342fa3bd53c82655bbbf87a79cf840ff1bd63c799346212748355dfedb",
+    "sha256": "26ae77b59447c2f0ec8dd16e3feaa018aa6d31e5f72baeb413eb7f906dd06062",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "0.9.24：修复设备列表刷新偶尔把已知设备刷没的问题。App 会合并云端设备和本地缓存，只有主动断联时才移除设备。"
+    "notes": "0.9.25：更新检查优先读取 GitHub 最新清单，并完善发布链路校验，避免云端清单滞后导致 App 检查不到新版本。"
   },
   "python": {
     "version": "0.4.12",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.22/haoleme-0.4.12-py3-none-any.whl",
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.12-py3-none-any.whl",
     "notes": "0.4.12: keeps devices online more reliably and reuses the existing device when re-pairing from the app."
   }
 }

@@ -12,7 +12,7 @@ def releaseKeyPassword = System.getenv("HAOLEME_ANDROID_KEY_PASSWORD") ?: ""
 // reliable public fallback so the app can always discover new versions for self-update
 // even if the server manifest is temporarily stale or unreachable.
 def defaultServerUrl = (project.findProperty("HAOLEME_DEFAULT_SERVER_URL") ?: System.getenv("HAOLEME_DEFAULT_SERVER_URL") ?: "https://api.haoleme.cloud").toString()
-def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "https://api.haoleme.cloud/downloads/update.json https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json").toString()
+def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json https://api.haoleme.cloud/downloads/update.json").toString()
 
 // Robust paths for legacy fixed debug signing key (committed so all builds have identical cert).
 // This ensures consistent developer signature across machines/builds for seamless updates.
@@ -60,8 +60,8 @@ android {
         applicationId "com.haoleme.app"
         minSdk 23
         targetSdk 35
-        versionCode 159
-        versionName "0.9.24"
+        versionCode 160
+        versionName "0.9.25"
         buildConfigField "String", "HAOLEME_DEFAULT_SERVER_URL", "\"${defaultServerUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\""
         buildConfigField "String", "HAOLEME_UPDATE_URLS", "\"${defaultUpdateUrls.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")}\""
 
