@@ -1,16 +1,15 @@
 {
   "android": {
-    "versionCode": 164,
-    "versionName": "0.9.29",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.29/Haoleme-0.9.29.apk",
+    "versionCode": 165,
+    "versionName": "0.9.30",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.30/Haoleme-0.9.30.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.29/Haoleme-0.9.29.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.29.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.30/Haoleme-0.9.30.apk"
     ],
-    "sha256": "887e10cc270b1f3ac9083451dbb454b7da1dcea8acd35c59f1e32a422d617f27",
+    "sha256": "dc59f12f02326158de1733933fd4a350838bf52cd2f9aae13e540733d307503c",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "下拉刷新增加可见刷新小球：下拉时出现进度小球，触发后短暂旋转提示正在刷新。"
+    "notes": "删除任务改为离线优先：本地立即删除，联网后自动补删云端；云端尚未删除时 App 也不会再显示本地已删除任务。"
   },
   "python": {
     "version": "0.4.17",

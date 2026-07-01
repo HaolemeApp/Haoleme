@@ -165,6 +165,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String PREF_CONSOLE_HISTORY_CHARS = "console_history_chars";
     private static final String PREF_SHOW_OFFLINE_DEVICES = "show_offline_devices";
     private static final String PREF_REVOKED_DEVICE_IDS = "revoked_device_ids";
+    private static final String PREF_PENDING_RUN_DELETES = "pending_run_delete_ids";
     private static final String PREF_LANGUAGE_MODE = "language_mode";
     private static final String PREF_APP_CLIENT_ID = "app_client_id";
     private static final int CONSOLE_RENDER_INITIAL_CHARS = 60000;
@@ -257,6 +258,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private String lastDevicesSig = "";
     private boolean hasActiveRunVisible = false;
     private boolean homePullRefreshCoolingDown = false;
+    private volatile boolean pendingRunDeleteSyncing = false;
 
     private final Runnable pollRunnable = new Runnable() {
         @Override
@@ -301,6 +303,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             if (statusText != null) {
                 statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
             }
+            syncPendingRunDeletesAsync(false);
             refreshHome(false);
             if (autoCheckUpdatesEnabled()) {
                 checkForUpdates(false);
@@ -324,6 +327,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         super.onResume();
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME);
         if (selectedRunId == null && "home".equals(currentTab) && hasPairedDevice()) {
+            syncPendingRunDeletesAsync(false);
             refreshHome(false);
         }
     }
@@ -2381,6 +2385,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         for (String key : values.keySet()) {
             if (CACHE_RUNS.equals(key)
                     || CACHE_RUNS_AT.equals(key)
+                    || PREF_PENDING_RUN_DELETES.equals(key)
                     || key.startsWith(CACHE_RUNS_PREFIX)
                     || key.startsWith(CACHE_RUNS_AT_PREFIX)
                     || key.startsWith(CACHE_RUN_PREFIX)
@@ -2439,7 +2444,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     || "paired_server_url".equals(key)
                     || "space_id".equals(key)
                     || "space_joined_at".equals(key)
-                    || "selected_device_id".equals(key)) {
+                    || "selected_device_id".equals(key)
+                    || PREF_PENDING_RUN_DELETES.equals(key)) {
                 editor.remove(key);
             }
         }
@@ -2837,8 +2843,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         final String targetDevice = (selectedDeviceId == null || "all".equals(selectedDeviceId)) ? "all" : selectedDeviceId;
         executor.submit(() -> {
             try {
+                syncPendingRunDeletesBlocking();
                 String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
-                final JSONArray runs = decryptRuns(new JSONObject(body).getJSONArray("runs"));
+                final JSONArray runs = applyPendingRunDeletes(decryptRuns(new JSONObject(body).getJSONArray("runs")));
                 handler.post(() -> {
                     String current = (selectedDeviceId == null || "all".equals(selectedDeviceId)) ? "all" : selectedDeviceId;
                     if (!targetDevice.equals(current)) {
@@ -3955,6 +3962,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         boolean archivedView = "archived".equals(selectedStatusFilter);
         boolean allDevices = selectedDeviceId == null || "all".equals(selectedDeviceId);
         Set<String> archived = archivedRunIds();
+        Set<String> pendingDeletes = pendingRunDeleteIds();
         JSONArray filtered = new JSONArray();
         for (int i = 0; i < runs.length(); i++) {
             JSONObject run = runs.optJSONObject(i);
@@ -3965,6 +3973,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 continue;
             }
             String id = run.optString("id", "");
+            if (!id.isEmpty() && pendingDeletes.contains(id)) {
+                continue;
+            }
             boolean isArchived = !id.isEmpty() && archived.contains(id);
             if (archivedView) {
                 if (!isArchived) {
@@ -4050,6 +4061,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void saveRunsCache(JSONArray runs) {
+        runs = applyPendingRunDeletes(runs);
         mergeDevicesFromRuns(runs);
         long now = System.currentTimeMillis();
         SharedPreferences.Editor editor = prefs.edit()
@@ -5111,20 +5123,147 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (id == null || id.isEmpty()) {
             return;
         }
-        statusText.setText(isEnglish() ? "Deleting..." : "正在删除...");
+        rememberPendingRunDelete(id);
+        knownStatuses.remove(id);
+        removeRunFromCaches(id);
+        if (id.equals(selectedRunId)) {
+            selectedRunId = null;
+            selectedRunStatus = "";
+        }
+        lastRunsSig = "";
+        loadCachedRuns();
+        statusText.setText(isEnglish()
+                ? "Deleted locally. Cloud delete will sync when online."
+                : "已先从本机删除。联网后会继续删除云端。");
         executor.submit(() -> {
-            try {
-                httpRequest(normalizedServerUrl() + "/api/runs/" + id, "DELETE");
-                knownStatuses.remove(id);
-                removeRunFromCaches(id);
-                handler.post(() -> {
-                    loadCachedRuns();
-                    refreshRuns();
-                });
-            } catch (Exception e) {
-                handler.post(() -> statusText.setText((isEnglish() ? "Delete failed: " : "删除失败：") + e.getMessage()));
+            boolean deleted = deleteRunFromCloud(id);
+            if (deleted) {
+                forgetPendingRunDelete(id);
+                handler.post(() -> statusText.setText(isEnglish() ? "Deleted from cloud." : "云端已删除。"));
+            } else {
+                handler.post(() -> statusText.setText(isEnglish()
+                        ? "Deleted locally. Cloud delete is pending."
+                        : "已从本机删除，云端删除待同步。"));
             }
         });
+    }
+
+    private Set<String> pendingRunDeleteIds() {
+        Set<String> ids = new HashSet<>();
+        if (prefs == null) {
+            return ids;
+        }
+        String raw = prefs.getString(PREF_PENDING_RUN_DELETES, "[]");
+        try {
+            JSONArray array = new JSONArray(raw == null || raw.trim().isEmpty() ? "[]" : raw);
+            for (int i = 0; i < array.length(); i++) {
+                String id = array.optString(i, "").trim();
+                if (!id.isEmpty()) {
+                    ids.add(id);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return ids;
+    }
+
+    private void savePendingRunDeleteIds(Set<String> ids) {
+        if (prefs == null) {
+            return;
+        }
+        JSONArray array = new JSONArray();
+        List<String> sorted = new ArrayList<>(ids);
+        Collections.sort(sorted);
+        for (String id : sorted) {
+            if (id != null && !id.trim().isEmpty()) {
+                array.put(id.trim());
+            }
+        }
+        prefs.edit().putString(PREF_PENDING_RUN_DELETES, array.toString()).apply();
+    }
+
+    private void rememberPendingRunDelete(String id) {
+        if (id == null || id.trim().isEmpty()) {
+            return;
+        }
+        Set<String> ids = pendingRunDeleteIds();
+        ids.add(id.trim());
+        savePendingRunDeleteIds(ids);
+    }
+
+    private void forgetPendingRunDelete(String id) {
+        if (id == null || id.trim().isEmpty()) {
+            return;
+        }
+        Set<String> ids = pendingRunDeleteIds();
+        if (ids.remove(id.trim())) {
+            savePendingRunDeleteIds(ids);
+        }
+    }
+
+    private JSONArray applyPendingRunDeletes(JSONArray runs) {
+        Set<String> ids = pendingRunDeleteIds();
+        if (ids.isEmpty() || runs == null) {
+            return runs == null ? new JSONArray() : runs;
+        }
+        JSONArray kept = new JSONArray();
+        for (int i = 0; i < runs.length(); i++) {
+            JSONObject run = runs.optJSONObject(i);
+            String id = run == null ? "" : run.optString("id", "");
+            if (!id.isEmpty() && ids.contains(id)) {
+                continue;
+            }
+            kept.put(runs.opt(i));
+        }
+        return kept;
+    }
+
+    private void syncPendingRunDeletesAsync(boolean showResult) {
+        if (pendingRunDeleteIds().isEmpty()) {
+            return;
+        }
+        executor.submit(() -> {
+            int synced = syncPendingRunDeletesBlocking();
+            if (showResult && synced > 0) {
+                handler.post(() -> statusText.setText(isEnglish()
+                        ? "Synced " + synced + " pending cloud delete(s)."
+                        : "已同步 " + synced + " 条待删除云端记录。"));
+            }
+        });
+    }
+
+    private int syncPendingRunDeletesBlocking() {
+        if (pendingRunDeleteSyncing || prefs == null || pendingRunDeleteIds().isEmpty()) {
+            return 0;
+        }
+        pendingRunDeleteSyncing = true;
+        int synced = 0;
+        try {
+            List<String> ids = new ArrayList<>(pendingRunDeleteIds());
+            for (String id : ids) {
+                if (deleteRunFromCloud(id)) {
+                    forgetPendingRunDelete(id);
+                    synced++;
+                }
+            }
+        } finally {
+            pendingRunDeleteSyncing = false;
+        }
+        return synced;
+    }
+
+    private boolean deleteRunFromCloud(String id) {
+        if (id == null || id.trim().isEmpty()) {
+            return true;
+        }
+        try {
+            httpRequest(normalizedServerUrl() + "/api/runs/" + Uri.encode(id.trim()), "DELETE");
+            return true;
+        } catch (HaolemeHttpException e) {
+            return e.statusCode == 404;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private void removeRunFromCaches(String id) {
