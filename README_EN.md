@@ -32,10 +32,12 @@ Start a command with `hao`, then watch its status, console output, device online
 
 The home screen shows active and completed runs in one place. Settings covers pairing, shared spaces, appearance, and security options.
 
-<p align="center">
-  <img src="docs/assets/screenshots/home-runs.jpg" width="320" alt="Home run list">
-  <img src="docs/assets/screenshots/settings-pairing.jpg" width="320" alt="Settings and pairing">
-</p>
+<table>
+  <tr>
+    <td align="center" valign="top"><img src="docs/assets/screenshots/home-runs.jpg" width="320" height="711" alt="Home run list"></td>
+    <td align="center" valign="top"><img src="docs/assets/screenshots/settings-pairing.jpg" width="320" height="711" alt="Settings and pairing"></td>
+  </tr>
+</table>
 
 ## Download
 
