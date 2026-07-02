@@ -28,6 +28,15 @@
 
 在电脑或服务器上用 `hao` 启动命令，手机 App 就能看到运行状态、终端输出、设备在线状态和运行结束通知。它适合训练任务、远程脚本、批处理、爬虫、长时间 SSH 任务，以及任何“不想一直盯着终端”的场景。
 
+## 界面预览
+
+首页集中展示正在运行和已经结束的命令；设置页提供配对、共享空间、外观和安全选项。
+
+<p align="center">
+  <img src="docs/assets/screenshots/home-runs.jpg" width="320" alt="首页运行记录">
+  <img src="docs/assets/screenshots/settings-pairing.jpg" width="320" alt="设置和配对">
+</p>
+
 ## 下载
 
 - Android App：[GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)

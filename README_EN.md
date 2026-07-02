@@ -28,6 +28,15 @@ Haoleme is a command monitoring tool.
 
 Start a command with `hao`, then watch its status, console output, device online state, and finish notification in the mobile app. It is useful for training jobs, remote scripts, batch tasks, crawlers, long SSH sessions, and anything you do not want to babysit in a terminal.
 
+## Preview
+
+The home screen shows active and completed runs in one place. Settings covers pairing, shared spaces, appearance, and security options.
+
+<p align="center">
+  <img src="docs/assets/screenshots/home-runs.jpg" width="320" alt="Home run list">
+  <img src="docs/assets/screenshots/settings-pairing.jpg" width="320" alt="Settings and pairing">
+</p>
+
 ## Download
 
 - Android app: [GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)
