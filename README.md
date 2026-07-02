@@ -81,6 +81,11 @@ hao echo hello
 - 二维码和 6 位配对码
 - 端到端加密传输敏感运行内容
 
+## 源码
+
+- CLI 和云端协议：`src/haoleme`
+- Android App：`android-core`
+
 ## 安全
 
 公开源码不包含官方签名密钥、生产服务器私密配置、个人收款码或访问令牌。

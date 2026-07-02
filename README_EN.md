@@ -82,6 +82,11 @@ The app will show status and console output automatically.
 - QR code and 6-digit pairing
 - end-to-end encryption for sensitive run content
 
+## Source
+
+- CLI and cloud protocol: `src/haoleme`
+- Android app: `android-core`
+
 ## Security
 
 The public source tree does not include official signing keys, private production deployment config, personal donation QR codes, or access tokens.
