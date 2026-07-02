@@ -213,9 +213,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView statusText;
     private TextView deviceSummaryText;
     private TextView deviceHeartbeatText;
-    private LinearLayout deviceGpuContainer;
+    private FrameLayout monitorDeck;
+    private int monitorPageIndex = 0;
     private int gpuMetricIndex = 0;
-    private boolean gpuExpanded = false;
     private static final int GPU_METRIC_COUNT = 3;
     private android.view.GestureDetector gpuGestureDetector;
     private android.view.GestureDetector monitorGestureDetector;
@@ -674,72 +674,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private View homeOverviewCard() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(16), dp(14), dp(14), dp(12));
-        card.setBackground(roundedBg(homeHeroBg(), 22, homeHeroStroke()));
-        attachMonitorVerticalSwipe(card);
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-
-        LinearLayout left = new LinearLayout(this);
-        left.setOrientation(LinearLayout.VERTICAL);
-        left.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView eyebrow = new TextView(this);
-        eyebrow.setText(isEnglish() ? "COMMAND MONITOR" : "命令运行监控");
-        eyebrow.setTextSize(10);
-        eyebrow.setLetterSpacing(0.06f);
-        eyebrow.setTypeface(null, Typeface.BOLD);
-        eyebrow.setTextColor(textSecondary());
-        left.addView(eyebrow, matchWrap());
-
-        deviceSummaryText = new TextView(this);
-        deviceSummaryText.setText("");
-        deviceSummaryText.setTextSize(18);
-        deviceSummaryText.setTypeface(null, Typeface.BOLD);
-        deviceSummaryText.setTextColor(textPrimary());
-        deviceSummaryText.setSingleLine(true);
-        deviceSummaryText.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        deviceSummaryText.setPadding(0, dp(4), 0, 0);
-        deviceSummaryText.setOnClickListener(v -> {
-            gpuExpanded = !gpuExpanded;
-            updateDeviceSummary();
-        });
-        left.addView(deviceSummaryText, matchWrap());
-
-        deviceHeartbeatText = new TextView(this);
-        deviceHeartbeatText.setText("");
-        deviceHeartbeatText.setTextSize(11);
-        deviceHeartbeatText.setTextColor(textSecondary());
-        deviceHeartbeatText.setSingleLine(true);
-        deviceHeartbeatText.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        deviceHeartbeatText.setPadding(0, dp(4), 0, 0);
-        left.addView(deviceHeartbeatText, matchWrap());
-
-        row.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
-        TextView refresh = refreshIconButton();
-        refresh.setOnClickListener(v -> refreshHome(true));
-        LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(dp(46), dp(46));
-        refreshParams.setMargins(dp(12), 0, 0, 0);
-        row.addView(refresh, refreshParams);
-        card.addView(row, matchWrap());
-
-        deviceGpuContainer = new LinearLayout(this);
-        deviceGpuContainer.setOrientation(LinearLayout.VERTICAL);
-        deviceGpuContainer.setVisibility(View.GONE);
-        attachGpuSwipe(deviceGpuContainer);
-        LinearLayout.LayoutParams gpuParams = matchWrap();
-        gpuParams.setMargins(0, dp(10), 0, 0);
-        card.addView(deviceGpuContainer, gpuParams);
-
+        monitorDeck = new FrameLayout(this);
+        monitorDeck.setClipChildren(false);
+        monitorDeck.setClipToPadding(false);
+        attachMonitorVerticalSwipe(monitorDeck);
         LinearLayout.LayoutParams params = matchWrap();
         params.setMargins(0, dp(4), 0, 0);
-        card.setLayoutParams(params);
-        return card;
+        params.height = dp(132);
+        monitorDeck.setLayoutParams(params);
+        updateMonitorDeck(false);
+        return monitorDeck;
     }
 
     @ExperimentalGetImage
@@ -3633,11 +3577,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void updateDeviceSummary() {
-        if (deviceSummaryText == null) {
-            return;
-        }
+        updateMonitorDeck(false);
         if (selectedDeviceId == null || "all".equals(selectedDeviceId)) {
-            deviceSummaryText.setText(isEnglish() ? "All active devices" : "全部活跃设备");
+            if (deviceSummaryText != null) {
+                deviceSummaryText.setText(isEnglish() ? "All active devices" : "全部活跃设备");
+            }
             if (deviceHeartbeatText != null) {
                 int online = onlineDeviceCount();
                 int total = deviceNames.isEmpty() ? cachedDevicesArray().length() : deviceNames.size();
@@ -3645,14 +3589,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         ? online + " online · " + total + " devices"
                         : online + " 在线 · 共 " + total + " 台设备");
             }
-            if (deviceGpuContainer != null) {
-                deviceGpuContainer.setVisibility(View.GONE);
-            }
             return;
         }
         String lastSeen = formatDeviceTimestamp(deviceLastSeen.get(selectedDeviceId));
         boolean online = Boolean.TRUE.equals(deviceOnline.get(selectedDeviceId));
-        deviceSummaryText.setText(selectedDeviceName() + " · " + (online ? (isEnglish() ? "Online" : "在线") : (isEnglish() ? "Offline" : "离线")));
+        if (deviceSummaryText != null) {
+            deviceSummaryText.setText(selectedDeviceName() + " · " + (online ? (isEnglish() ? "Online" : "在线") : (isEnglish() ? "Offline" : "离线")));
+        }
         StringBuilder text = new StringBuilder();
         if (!lastSeen.isEmpty()) {
             text.append(isEnglish() ? "Heartbeat " : "心跳 ").append(lastSeen);
@@ -3660,12 +3603,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
             text.append(isEnglish() ? "Waiting for heartbeat" : "等待心跳");
         }
         if (selectedDeviceMetricAvailable()) {
-            text.append(gpuExpanded ? (isEnglish() ? " · Metrics ▴" : " · 指标 ▴") : (isEnglish() ? " · Metrics ▾" : " · 指标 ▾"));
+            text.append(isEnglish() ? " · swipe for metrics" : " · 下滑看指标");
         }
         if (deviceHeartbeatText != null) {
             deviceHeartbeatText.setText(text.toString());
         }
-        updateDeviceGpu();
     }
 
     private boolean selectedDeviceMetricAvailable() {
@@ -3687,141 +3629,328 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return false;
     }
 
-    private void updateDeviceGpu() {
-        if (deviceGpuContainer == null) {
+    private void updateMonitorDeck(boolean animate) {
+        updateMonitorDeck(animate, 0);
+    }
+
+    private void updateMonitorDeck(boolean animate, int direction) {
+        if (monitorDeck == null) {
             return;
         }
-        deviceGpuContainer.removeAllViews();
-        boolean all = selectedDeviceId == null || "all".equals(selectedDeviceId);
-        if (all) {
-            deviceGpuContainer.setVisibility(View.GONE);
+        List<String> pages = monitorPages();
+        if (pages.isEmpty()) {
+            pages.add("device");
+        }
+        if (monitorPageIndex < 0) {
+            monitorPageIndex = 0;
+        }
+        if (monitorPageIndex >= pages.size()) {
+            monitorPageIndex = pages.size() - 1;
+        }
+        View page = buildMonitorPage(pages.get(monitorPageIndex), pages);
+        if (!animate || monitorDeck.getChildCount() == 0) {
+            monitorDeck.removeAllViews();
+            monitorDeck.addView(page, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+            ));
             return;
         }
-        JSONArray devices = cachedDevicesArray();
-        JSONObject selectedDevice = null;
-        List<JSONObject> deviceGpus = new ArrayList<>();
-        for (int i = 0; i < devices.length(); i++) {
-            JSONObject device = devices.optJSONObject(i);
-            if (device == null) continue;
-            String id = device.optString("id", "");
-            if (id.equals(selectedDeviceId)) {
-                selectedDevice = device;
-                JSONArray gpus = device.optJSONArray("gpus");
-                if (gpus != null) {
-                    for (int g = 0; g < gpus.length(); g++) {
-                        JSONObject gpu = gpus.optJSONObject(g);
-                        if (gpu != null) deviceGpus.add(gpu);
-                    }
-                }
-                break;
-            }
+        View old = monitorDeck.getChildAt(0);
+        int offset = direction >= 0 ? dp(34) : -dp(34);
+        page.setAlpha(0f);
+        page.setTranslationY(offset);
+        monitorDeck.addView(page, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+        page.animate().alpha(1f).translationY(0f).setDuration(180).start();
+        old.animate()
+                .alpha(0f)
+                .translationY(-offset)
+                .setDuration(160)
+                .withEndAction(() -> monitorDeck.removeView(old))
+                .start();
+    }
+
+    private List<String> monitorPages() {
+        List<String> pages = new ArrayList<>();
+        pages.add("device");
+        if (selectedDeviceId == null || "all".equals(selectedDeviceId)) {
+            return pages;
+        }
+        JSONObject selectedDevice = selectedDeviceSnapshot();
+        if (!selectedDeviceGpus(selectedDevice).isEmpty()) {
+            pages.add("gpu");
         }
         JSONObject cpu = selectedDevice == null ? null : selectedDevice.optJSONObject("cpu");
-        boolean hasCpu = cpu != null && cpu.has("utilization");
-        if (deviceGpus.isEmpty() && !hasCpu) {
-            deviceGpuContainer.setVisibility(View.GONE);
-            return;
+        if (cpu != null && cpu.has("utilization")) {
+            pages.add("cpu");
         }
-        if (!gpuExpanded) {
-            // Folded by default to keep the home page tidy; tap the device
-            // status line or swipe up on the card to expand the metrics panel.
-            deviceGpuContainer.setVisibility(View.GONE);
-            return;
+        return pages;
+    }
+
+    private JSONObject selectedDeviceSnapshot() {
+        if (selectedDeviceId == null || "all".equals(selectedDeviceId)) {
+            return null;
         }
+        JSONArray devices = cachedDevicesArray();
+        for (int i = 0; i < devices.length(); i++) {
+            JSONObject device = devices.optJSONObject(i);
+            if (device != null && selectedDeviceId.equals(device.optString("id", ""))) {
+                return device;
+            }
+        }
+        return null;
+    }
+
+    private List<JSONObject> selectedDeviceGpus(JSONObject selectedDevice) {
+        List<JSONObject> deviceGpus = new ArrayList<>();
+        JSONArray gpus = selectedDevice == null ? null : selectedDevice.optJSONArray("gpus");
+        if (gpus != null) {
+            for (int g = 0; g < gpus.length(); g++) {
+                JSONObject gpu = gpus.optJSONObject(g);
+                if (gpu != null) {
+                    deviceGpus.add(gpu);
+                }
+            }
+        }
+        return deviceGpus;
+    }
+
+    private View buildMonitorPage(String page, List<String> pages) {
+        if ("gpu".equals(page)) {
+            return buildGpuMonitorPage(pages);
+        }
+        if ("cpu".equals(page)) {
+            return buildCpuMonitorPage(pages);
+        }
+        return buildDeviceMonitorPage(pages);
+    }
+
+    private LinearLayout monitorCardBase(String eyebrowText, String titleText, String subtitleText, List<String> pages) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(14), dp(14), dp(12));
+        card.setBackground(roundedBg(homeHeroBg(), 22, homeHeroStroke()));
+        attachMonitorVerticalSwipe(card);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        left.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView eyebrow = new TextView(this);
+        eyebrow.setText(eyebrowText);
+        eyebrow.setTextSize(10);
+        eyebrow.setLetterSpacing(0.06f);
+        eyebrow.setTypeface(null, Typeface.BOLD);
+        eyebrow.setTextColor(textSecondary());
+        left.addView(eyebrow, matchWrap());
+
+        TextView title = new TextView(this);
+        title.setText(titleText);
+        title.setTextSize(18);
+        title.setTypeface(null, Typeface.BOLD);
+        title.setTextColor(textPrimary());
+        title.setSingleLine(true);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        title.setPadding(0, dp(4), 0, 0);
+        left.addView(title, matchWrap());
+
+        TextView subtitle = new TextView(this);
+        subtitle.setText(subtitleText);
+        subtitle.setTextSize(11);
+        subtitle.setTextColor(textSecondary());
+        subtitle.setSingleLine(true);
+        subtitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        subtitle.setPadding(0, dp(4), 0, 0);
+        left.addView(subtitle, matchWrap());
+
+        head.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        LinearLayout right = new LinearLayout(this);
+        right.setOrientation(LinearLayout.VERTICAL);
+        right.setGravity(Gravity.CENTER);
+        TextView refresh = refreshIconButton();
+        refresh.setOnClickListener(v -> refreshHome(true));
+        right.addView(refresh, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        TextView dots = new TextView(this);
+        dots.setText(monitorPageDots(pages));
+        dots.setTextSize(9f);
+        dots.setGravity(Gravity.CENTER);
+        dots.setTextColor(textSecondary());
+        LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        dotParams.setMargins(0, dp(2), 0, 0);
+        right.addView(dots, dotParams);
+        LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(dp(50), LinearLayout.LayoutParams.WRAP_CONTENT);
+        rightParams.setMargins(dp(10), 0, 0, 0);
+        head.addView(right, rightParams);
+        card.addView(head, matchWrap());
+        return card;
+    }
+
+    private String monitorPageDots(List<String> pages) {
+        StringBuilder out = new StringBuilder();
+        int count = pages == null ? 1 : Math.max(1, pages.size());
+        for (int i = 0; i < count; i++) {
+            out.append(i == monitorPageIndex ? "●" : "○");
+            if (i < count - 1) {
+                out.append(' ');
+            }
+        }
+        return out.toString();
+    }
+
+    private View buildDeviceMonitorPage(List<String> pages) {
+        String title;
+        String subtitle;
+        if (selectedDeviceId == null || "all".equals(selectedDeviceId)) {
+            int online = onlineDeviceCount();
+            int total = deviceNames.isEmpty() ? cachedDevicesArray().length() : deviceNames.size();
+            title = isEnglish() ? "All active devices" : "全部活跃设备";
+            subtitle = isEnglish()
+                    ? online + " online · " + total + " devices"
+                    : online + " 在线 · 共 " + total + " 台设备";
+        } else {
+            String lastSeen = formatDeviceTimestamp(deviceLastSeen.get(selectedDeviceId));
+            boolean online = Boolean.TRUE.equals(deviceOnline.get(selectedDeviceId));
+            title = selectedDeviceName() + " · " + (online ? (isEnglish() ? "Online" : "在线") : (isEnglish() ? "Offline" : "离线"));
+            if (!lastSeen.isEmpty()) {
+                subtitle = (isEnglish() ? "Heartbeat " : "心跳 ") + lastSeen;
+            } else {
+                subtitle = isEnglish() ? "Waiting for heartbeat" : "等待心跳";
+            }
+            if (pages.size() > 1) {
+                subtitle += isEnglish() ? " · swipe down" : " · 下滑看指标";
+            }
+        }
+        LinearLayout card = monitorCardBase(isEnglish() ? "COMMAND MONITOR" : "命令运行监控", title, subtitle, pages);
+        deviceSummaryText = (TextView) ((ViewGroup) ((ViewGroup) card.getChildAt(0)).getChildAt(0)).getChildAt(1);
+        deviceHeartbeatText = (TextView) ((ViewGroup) ((ViewGroup) card.getChildAt(0)).getChildAt(0)).getChildAt(2);
+        return card;
+    }
+
+    private View buildGpuMonitorPage(List<String> pages) {
+        JSONObject selectedDevice = selectedDeviceSnapshot();
+        List<JSONObject> deviceGpus = selectedDeviceGpus(selectedDevice);
+        LinearLayout card = monitorCardBase(
+                isEnglish() ? "GPU STATUS" : "GPU 状态",
+                gpuMetricName(),
+                selectedDeviceName() + (isEnglish() ? " · swipe sideways for metric" : " · 左右滑切换指标"),
+                pages
+        );
+        attachGpuSwipe(card);
         if (gpuMetricIndex < 0 || gpuMetricIndex >= GPU_METRIC_COUNT) {
             gpuMetricIndex = 0;
         }
-
         if (!deviceGpus.isEmpty()) {
-            deviceGpuContainer.addView(buildGpuMetricHeader());
-
+            LinearLayout body = new LinearLayout(this);
+            body.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams bodyParams = matchWrap();
+            bodyParams.setMargins(0, dp(7), 0, 0);
             int gpusPerRow = 4;
             int total = deviceGpus.size();
             int rows = (total + gpusPerRow - 1) / gpusPerRow;
 
             for (int r = 0; r < rows; r++) {
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(0, dp(1), 0, dp(1));
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(0, dp(1), 0, dp(1));
 
-            for (int c = 0; c < gpusPerRow; c++) {
-                int gidx = r * gpusPerRow + c;
-                if (gidx >= total) {
-                    // filler
-                    View filler = new View(this);
-                    filler.setLayoutParams(new LinearLayout.LayoutParams(0, dp(20), 1));
-                    row.addView(filler);
-                    continue;
+                for (int c = 0; c < gpusPerRow; c++) {
+                    int gidx = r * gpusPerRow + c;
+                    if (gidx >= total) {
+                        View filler = new View(this);
+                        filler.setLayoutParams(new LinearLayout.LayoutParams(0, dp(20), 1));
+                        row.addView(filler);
+                        continue;
+                    }
+                    row.addView(gpuMetricItem(deviceGpus.get(gidx), gidx));
                 }
-
-                JSONObject gpu = deviceGpus.get(gidx);
-                int idx = gpu.optInt("index", gidx);
-                int util = Math.max(0, Math.min(100, gpu.optInt("utilization", 0)));
-                int memUsed = Math.max(0, gpu.optInt("memoryUsed", 0));
-                int memTotal = Math.max(0, gpu.optInt("memoryTotal", 0));
-                int temp = Math.max(0, gpu.optInt("temperature", 0));
-                int memPct = memTotal > 0 ? Math.max(0, Math.min(100, Math.round(memUsed * 100f / memTotal))) : 0;
-
-                int progress;
-                String valueText;
-                int barColor;
-                if (gpuMetricIndex == 1) {            // VRAM usage rate
-                    progress = memPct;
-                    valueText = memPct + "%";
-                    barColor = gpuBarColor(memPct, false);
-                } else if (gpuMetricIndex == 2) {     // temperature
-                    progress = Math.min(100, temp);
-                    valueText = temp + "°";
-                    barColor = gpuBarColor(temp, true);
-                } else {                               // utilization
-                    progress = util;
-                    valueText = util + "%";
-                    barColor = gpuBarColor(util, false);
-                }
-
-                LinearLayout item = new LinearLayout(this);
-                item.setOrientation(LinearLayout.VERTICAL);
-                item.setGravity(Gravity.CENTER_HORIZONTAL);
-                item.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
-                TextView label = new TextView(this);
-                label.setText("G" + idx);
-                label.setTextSize(8f);
-                label.setTextColor(textSecondary());
-                label.setGravity(Gravity.CENTER);
-                label.setPadding(0, 0, 0, 0);
-                item.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-
-                ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-                bar.setMax(100);
-                bar.setProgress(progress);
-                LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(dp(38), dp(6));
-                barLp.setMargins(dp(1), dp(1), dp(1), dp(1));
-                bar.setLayoutParams(barLp);
-                bar.setProgressTintList(ColorStateList.valueOf(barColor));
-                bar.setProgressBackgroundTintList(ColorStateList.valueOf(gpuTrackColor()));
-
-                item.addView(bar);
-
-                TextView pct = new TextView(this);
-                pct.setText(valueText);
-                pct.setTextSize(7f);
-                pct.setTextColor(textSecondary());
-                pct.setGravity(Gravity.CENTER);
-                item.addView(pct, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-
-                row.addView(item);
+                body.addView(row, matchWrap());
             }
-            deviceGpuContainer.addView(row, matchWrap());
-            }
+            card.addView(body, bodyParams);
         }
-        if (hasCpu) {
+        return card;
+    }
+
+    private View gpuMetricItem(JSONObject gpu, int fallbackIndex) {
+        int idx = gpu.optInt("index", fallbackIndex);
+        int util = Math.max(0, Math.min(100, gpu.optInt("utilization", 0)));
+        int memUsed = Math.max(0, gpu.optInt("memoryUsed", 0));
+        int memTotal = Math.max(0, gpu.optInt("memoryTotal", 0));
+        int temp = Math.max(0, gpu.optInt("temperature", 0));
+        int memPct = memTotal > 0 ? Math.max(0, Math.min(100, Math.round(memUsed * 100f / memTotal))) : 0;
+
+        int progress;
+        String valueText;
+        int barColor;
+        if (gpuMetricIndex == 1) {
+            progress = memPct;
+            valueText = memPct + "%";
+            barColor = gpuBarColor(memPct, false);
+        } else if (gpuMetricIndex == 2) {
+            progress = Math.min(100, temp);
+            valueText = temp + "°";
+            barColor = gpuBarColor(temp, true);
+        } else {
+            progress = util;
+            valueText = util + "%";
+            barColor = gpuBarColor(util, false);
+        }
+
+        LinearLayout item = new LinearLayout(this);
+        item.setOrientation(LinearLayout.VERTICAL);
+        item.setGravity(Gravity.CENTER_HORIZONTAL);
+        item.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        TextView label = new TextView(this);
+        label.setText("G" + idx);
+        label.setTextSize(8f);
+        label.setTextColor(textSecondary());
+        label.setGravity(Gravity.CENTER);
+        item.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        bar.setMax(100);
+        bar.setProgress(progress);
+        LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(dp(40), dp(6));
+        barLp.setMargins(dp(1), dp(1), dp(1), dp(1));
+        bar.setLayoutParams(barLp);
+        bar.setProgressTintList(ColorStateList.valueOf(barColor));
+        bar.setProgressBackgroundTintList(ColorStateList.valueOf(gpuTrackColor()));
+        item.addView(bar);
+
+        TextView pct = new TextView(this);
+        pct.setText(valueText);
+        pct.setTextSize(7f);
+        pct.setTextColor(textSecondary());
+        pct.setGravity(Gravity.CENTER);
+        item.addView(pct, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        return item;
+    }
+
+    private View buildCpuMonitorPage(List<String> pages) {
+        JSONObject selectedDevice = selectedDeviceSnapshot();
+        JSONObject cpu = selectedDevice == null ? null : selectedDevice.optJSONObject("cpu");
+        int util = cpu == null ? 0 : Math.max(0, Math.min(100, cpu.optInt("utilization", 0)));
+        LinearLayout card = monitorCardBase(
+                isEnglish() ? "CPU HISTORY" : "CPU 利用率",
+                util + "%",
+                selectedDeviceName() + (isEnglish() ? " · recent samples" : " · 最近采样"),
+                pages
+        );
+        if (cpu != null) {
             LinearLayout.LayoutParams cpuParams = matchWrap();
-            cpuParams.setMargins(0, deviceGpus.isEmpty() ? 0 : dp(8), 0, 0);
-            deviceGpuContainer.addView(buildCpuMetricPanel(cpu), cpuParams);
+            cpuParams.setMargins(0, dp(8), 0, 0);
+            card.addView(buildCpuMetricPanel(cpu), cpuParams);
         }
-        deviceGpuContainer.setVisibility(View.VISIBLE);
+        return card;
     }
 
     private int gpuBarColor(int value, boolean isTemp) {
@@ -3887,51 +4016,22 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return isEnglish() ? "GPU usage" : "GPU 利用率";
     }
 
-    private View buildGpuMetricHeader() {
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        head.setPadding(0, 0, 0, dp(2));
-
-        TextView title = new TextView(this);
-        title.setText(gpuMetricName());
-        title.setTextSize(10f);
-        title.setTextColor(textPrimary());
-        title.setTypeface(null, Typeface.BOLD);
-        head.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
-        StringBuilder dots = new StringBuilder();
-        for (int i = 0; i < GPU_METRIC_COUNT; i++) {
-            dots.append(i == gpuMetricIndex ? "●" : "○");
-            if (i < GPU_METRIC_COUNT - 1) {
-                dots.append(' ');
-            }
-        }
-        TextView dotView = new TextView(this);
-        dotView.setText(dots + (isEnglish() ? "  swipe ›" : "  右滑切换 ›"));
-        dotView.setTextSize(9f);
-        dotView.setTextColor(textSecondary());
-        head.addView(dotView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        return head;
-    }
-
     private void attachMonitorVerticalSwipe(View target) {
         monitorGestureDetector = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onFling(android.view.MotionEvent e1, android.view.MotionEvent e2, float velocityX, float velocityY) {
-                if (e1 == null || e2 == null || !selectedDeviceMetricAvailable()) {
+                if (e1 == null || e2 == null) {
                     return false;
                 }
                 float dx = e2.getX() - e1.getX();
                 float dy = e2.getY() - e1.getY();
                 if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > dp(36)) {
-                    gpuExpanded = dy < 0;
-                    updateDeviceSummary();
-                    return true;
+                    return switchMonitorPage(dy > 0 ? 1 : -1);
                 }
                 return false;
             }
         });
+        target.setClickable(true);
         target.setOnTouchListener((v, ev) -> {
             boolean handled = monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(ev);
             if (handled && ev.getAction() == android.view.MotionEvent.ACTION_UP) {
@@ -3939,6 +4039,21 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
             return handled;
         });
+    }
+
+    private boolean switchMonitorPage(int delta) {
+        List<String> pages = monitorPages();
+        if (pages.size() <= 1) {
+            return false;
+        }
+        int old = monitorPageIndex;
+        int next = Math.max(0, Math.min(pages.size() - 1, old + delta));
+        if (next == old) {
+            return false;
+        }
+        monitorPageIndex = next;
+        updateMonitorDeck(true, delta);
+        return true;
     }
 
     private void attachGpuSwipe(View target) {
@@ -3950,13 +4065,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 }
                 float dx = e2.getX() - e1.getX();
                 float dy = e2.getY() - e1.getY();
+                if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > dp(36)) {
+                    return switchMonitorPage(dy > 0 ? 1 : -1);
+                }
                 if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > dp(36)) {
                     if (dx < 0) {
                         gpuMetricIndex = (gpuMetricIndex + 1) % GPU_METRIC_COUNT;
                     } else {
                         gpuMetricIndex = (gpuMetricIndex - 1 + GPU_METRIC_COUNT) % GPU_METRIC_COUNT;
                     }
-                    updateDeviceGpu();
+                    updateMonitorDeck(false);
                     return true;
                 }
                 return false;
@@ -3965,7 +4083,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             @Override
             public boolean onSingleTapUp(android.view.MotionEvent e) {
                 gpuMetricIndex = (gpuMetricIndex + 1) % GPU_METRIC_COUNT;
-                updateDeviceGpu();
+                updateMonitorDeck(false);
                 return true;
             }
         });
