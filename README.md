@@ -32,10 +32,12 @@
 
 首页集中展示正在运行和已经结束的命令；设置页提供配对、共享空间、外观和安全选项。
 
-<p align="center">
-  <img src="docs/assets/screenshots/home-runs.jpg" width="320" alt="首页运行记录">
-  <img src="docs/assets/screenshots/settings-pairing.jpg" width="320" alt="设置和配对">
-</p>
+<table>
+  <tr>
+    <td align="center" valign="top"><img src="docs/assets/screenshots/home-runs.jpg" width="320" height="711" alt="首页运行记录"></td>
+    <td align="center" valign="top"><img src="docs/assets/screenshots/settings-pairing.jpg" width="320" height="711" alt="设置和配对"></td>
+  </tr>
+</table>
 
 ## 下载
 
