@@ -4019,6 +4019,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private void attachMonitorVerticalSwipe(View target) {
         monitorGestureDetector = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
             @Override
+            public boolean onDown(android.view.MotionEvent e) {
+                return true;
+            }
+
+            @Override
             public boolean onFling(android.view.MotionEvent e1, android.view.MotionEvent e2, float velocityX, float velocityY) {
                 if (e1 == null || e2 == null) {
                     return false;
@@ -4033,11 +4038,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
         });
         target.setClickable(true);
         target.setOnTouchListener((v, ev) -> {
+            if (ev.getAction() == android.view.MotionEvent.ACTION_DOWN) {
+                v.getParent().requestDisallowInterceptTouchEvent(true);
+            } else if (ev.getAction() == android.view.MotionEvent.ACTION_UP
+                    || ev.getAction() == android.view.MotionEvent.ACTION_CANCEL) {
+                v.getParent().requestDisallowInterceptTouchEvent(false);
+            }
             boolean handled = monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(ev);
             if (handled && ev.getAction() == android.view.MotionEvent.ACTION_UP) {
                 v.performClick();
             }
-            return handled;
+            return handled || ev.getAction() == android.view.MotionEvent.ACTION_DOWN;
         });
     }
 
@@ -4058,6 +4069,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void attachGpuSwipe(View target) {
         gpuGestureDetector = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onDown(android.view.MotionEvent e) {
+                return true;
+            }
+
             @Override
             public boolean onFling(android.view.MotionEvent e1, android.view.MotionEvent e2, float velocityX, float velocityY) {
                 if (e1 == null || e2 == null) {
@@ -4089,11 +4105,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
         });
         target.setClickable(true);
         target.setOnTouchListener((v, ev) -> {
+            if (ev.getAction() == android.view.MotionEvent.ACTION_DOWN) {
+                v.getParent().requestDisallowInterceptTouchEvent(true);
+            } else if (ev.getAction() == android.view.MotionEvent.ACTION_UP
+                    || ev.getAction() == android.view.MotionEvent.ACTION_CANCEL) {
+                v.getParent().requestDisallowInterceptTouchEvent(false);
+            }
             boolean handled = gpuGestureDetector.onTouchEvent(ev);
             if (ev.getAction() == android.view.MotionEvent.ACTION_UP) {
                 v.performClick();
             }
-            return handled;
+            return handled || ev.getAction() == android.view.MotionEvent.ACTION_DOWN;
         });
     }
 

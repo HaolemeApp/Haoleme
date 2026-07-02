@@ -1,15 +1,15 @@
 {
   "android": {
-    "versionCode": 174,
-    "versionName": "0.9.39",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.39/Haoleme-0.9.39.apk",
+    "versionCode": 175,
+    "versionName": "0.9.40",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.40/Haoleme-0.9.40.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.39/Haoleme-0.9.39.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.40/Haoleme-0.9.40.apk"
     ],
-    "sha256": "287619622cbfaf8599c615c6e94492d8b24336b0898664a0d338782dc7ba3f99",
+    "sha256": "4e8be8adde7ad0f4f4dc937072d4cef66a4469e65d7884151e0270523540150f",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "修正首页监控交互：顶部监控区改为可上下滑动的活动卡片，第一页显示设备在线状态，继续下滑切到 GPU 状态，再下滑切到 CPU 利用率曲线。"
+    "notes": "修复首页监控卡滑不动的问题：监控区按下后会接管本次手势，向下滑切到 GPU/CPU 卡片，GPU 页左右滑切换指标。"
   },
   "python": {
     "version": "0.4.20",
