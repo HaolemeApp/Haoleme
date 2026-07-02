@@ -52,8 +52,6 @@ SYNC_COALESCE_SECONDS = 0.35
 SYNC_RETRY_MAX_SECONDS = 30.0
 INTERRUPT_POLL_SECONDS = 1.0
 LEGACY_CLOUD_URLS = {
-    "http://106.14.246.204",
-    "https://106.14.246.204",
     "http://api.haoleme.cloud",
 }
 

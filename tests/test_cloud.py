@@ -123,8 +123,6 @@ class CloudConfigTest(unittest.TestCase):
 
     def test_legacy_cloud_urls_migrate_to_https_domain(self):
         legacy_urls = [
-            "http://106.14.246.204",
-            "https://106.14.246.204/",
             "http://api.haoleme.cloud",
         ]
         for legacy in legacy_urls:
@@ -138,7 +136,7 @@ class CloudConfigTest(unittest.TestCase):
                 json.dumps({
                     "cloud": {
                         "enabled": True,
-                        "api_url": "http://106.14.246.204",
+                        "api_url": "http://api.haoleme.cloud",
                         "account": "default",
                         "token": "x" * 32,
                     }

@@ -55,8 +55,6 @@ hao bash run.sh
 
 运行状态、退出码、终端输出都会同步到手机 App。
 
-旧的 `hao run ...` 写法已移除，请直接使用 `hao <command>`。
-
 ## 适合谁
 
 - 经常 SSH 到服务器跑任务的人

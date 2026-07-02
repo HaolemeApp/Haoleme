@@ -253,7 +253,6 @@ Shared Space 允许**多个 App 实例共享同一个逻辑空间**的所有命�
 
 ```bash
 hao <command> [args...]
-# hao run ... 已移除，请直接使用 hao <command> ...
 hao login
 hao logout
 hao status

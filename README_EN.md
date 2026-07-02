@@ -1,17 +1,17 @@
 <p align="center">
-  <img src="android/app/src/main/res/drawable-nodpi/haoleme_icon_light.png" width="96" alt="Haoleme icon">
+  <img src="android/app/src/main/res/drawable-nodpi/haoleme_icon_light.png" width="96" alt="Haoleme">
 </p>
 
 <h1 align="center">Haoleme</h1>
 
 <p align="center">
-  Monitor command runs on your phone.
+  Monitor commands on your computer or server from your phone.
 </p>
 
 <p align="center">
   <a href="README.md">中文</a>
   ·
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/latest">GitHub</a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/latest">Download App</a>
   ·
   <a href="https://pypi.org/project/haoleme/">PyPI</a>
 </p>
@@ -22,65 +22,60 @@
   </a>
 </p>
 
-## What It Does
+## What Is It
 
-Haoleme lets you monitor Linux/macOS commands from your phone.
+Haoleme is a command monitoring tool.
 
-Run a command with `hao`, then check its status, exit code, and console output in the mobile app. You also get a notification when the command finishes.
+Start a command with `hao`, then watch its status, console output, device online state, and finish notification in the mobile app. It is useful for training jobs, remote scripts, batch tasks, crawlers, long SSH sessions, and anything you do not want to babysit in a terminal.
 
 ## Download
 
-Android:
-
-- [Latest APK on GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)
+- Android app: [GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)
+- CLI: [PyPI](https://pypi.org/project/haoleme/)
 
 ## Quick Start
 
-Install the command line tool:
+Install the CLI:
 
 ```bash
 pip install -U haoleme
 ```
 
-Open the mobile app, then pair your machine:
+Pair your computer or server:
 
 ```bash
 hao login
 ```
 
-Scan the QR code, or enter the 6-digit pairing code.
+Open the app, then scan the QR code or enter the 6-digit pairing code.
 
-Run commands:
+Run commands by prefixing them with `hao`:
 
 ```bash
 hao python train.py
+hao bash script.sh
+hao echo hello
 ```
 
-or:
-
-```bash
-hao bash run.sh
-```
-
-(The old explicit `hao run ...` form has been removed; use `hao <command>` directly.)
-
-The app will show live status and console output automatically.
+The app will show status and console output automatically.
 
 ## Features
 
 - running / succeeded / failed status
-- console output
+- console output and search
 - finish notifications
-- multiple devices
+- multiple devices and online status
 - device rename
 - project grouping
-- run search and deletion
-- QR code / 6-digit pairing
+- GPU / CPU monitoring
+- QR code and 6-digit pairing
 - end-to-end encryption for sensitive run content
 
-## Updates
+## Security
 
-The app checks for updates in the background. When a new version is available, tap the version label in the top-right corner to download and install it.
+The public source tree does not include official signing keys, private production deployment config, personal donation QR codes, or access tokens.
+
+The app and CLI connect to the official service by default. You can also self-host from source. Do not commit your own keys, tokens, databases, signing files, or server passwords to a public repository.
 
 ## License
 

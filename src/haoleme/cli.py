@@ -2253,7 +2253,6 @@ Run commands (primary usage):
 After login or cloud-login, normal hao commands sync status to cloud automatically.
 Set a default project once with `hao project use NAME`; otherwise git repo names are used automatically.
 Override one run with --project or --no-project.
-(Explicit `hao run ...` is no longer supported; use `hao <command>` directly.)
 
 Notes:
 - Subcommand names take precedence over running commands with the same name.

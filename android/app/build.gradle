@@ -14,16 +14,13 @@ def releaseKeyPassword = System.getenv("HAOLEME_ANDROID_KEY_PASSWORD") ?: ""
 def defaultServerUrl = (project.findProperty("HAOLEME_DEFAULT_SERVER_URL") ?: System.getenv("HAOLEME_DEFAULT_SERVER_URL") ?: "https://api.haoleme.cloud").toString()
 def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json https://api.haoleme.cloud/downloads/update.json").toString()
 
-// Robust paths for legacy fixed debug signing key (committed so all builds have identical cert).
-// This ensures consistent developer signature across machines/builds for seamless updates.
-def legacyKeystore = rootProject.file("legacy/debug.keystore")
-def manualKeystore = rootProject.file("build/manual/debug.keystore")
+// Official releases should set HAOLEME_ANDROID_KEYSTORE* environment variables.
+// Do not commit signing material to this repository.
 def hasReleaseSigning = releaseStorePath
         && releaseStorePassword
         && releaseKeyAlias
         && releaseKeyPassword
         && file(releaseStorePath).isFile()
-def hasLegacyCompatSigning = legacyKeystore.isFile() || manualKeystore.isFile()
 
 android {
     namespace "com.haoleme.app"
@@ -42,15 +39,8 @@ android {
                 keyAlias releaseKeyAlias
                 keyPassword releaseKeyPassword
                 println "Haoleme signing: using RELEASE keystore from env"
-            } else if (hasLegacyCompatSigning) {
-                def ksFile = legacyKeystore.isFile() ? legacyKeystore : manualKeystore
-                storeFile ksFile
-                storePassword "android"
-                keyAlias "androiddebugkey"
-                keyPassword "android"
-                println "Haoleme signing: using LEGACY compat keystore for consistent signature: ${ksFile}"
             } else {
-                println "Haoleme signing: FALLBACK to debug (no legacy/release available) -- signature will be inconsistent!"
+                println "Haoleme signing: FALLBACK to local debug signing. Do not use this APK for official releases."
                 initWith signingConfigs.debug
             }
         }

@@ -46,8 +46,6 @@ public class HaolemeForegroundService extends Service {
     private static final String MONITOR_CHANNEL_ID = "monitor";
     private static final String DEFAULT_SERVER_URL = BuildConfig.HAOLEME_DEFAULT_SERVER_URL;
     private static final String[] LEGACY_SERVER_URLS = new String[]{
-            "http://106.14.246.204",
-            "https://106.14.246.204",
             "http://api.haoleme.cloud"
     };
     private static final long POLL_MS = 7000L;

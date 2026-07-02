@@ -1,17 +1,17 @@
 <p align="center">
-  <img src="android/app/src/main/res/drawable-nodpi/haoleme_icon_light.png" width="96" alt="好了么 icon">
+  <img src="android/app/src/main/res/drawable-nodpi/haoleme_icon_light.png" width="96" alt="好了么">
 </p>
 
 <h1 align="center">好了么</h1>
 
 <p align="center">
-  让手机看见电脑和服务器里的命令运行状态。
+  在手机上查看电脑和服务器里的命令运行状态。
 </p>
 
 <p align="center">
   <a href="README_EN.md">English</a>
   ·
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/latest">GitHub</a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/latest">下载 App</a>
   ·
   <a href="https://pypi.org/project/haoleme/">PyPI</a>
 </p>
@@ -22,72 +22,63 @@
   </a>
 </p>
 
-## 介绍
+## 这是什么
 
 好了么是一个命令运行监控工具。
 
-在电脑或服务器上用 `hao` 启动命令，手机 App 就能看到它的状态、退出码和终端输出。命令结束后，手机会收到通知。
-
-适合跑训练、脚本、爬虫、批处理、远程 SSH 任务的人。
+在电脑或服务器上用 `hao` 启动命令，手机 App 就能看到运行状态、终端输出、设备在线状态和运行结束通知。它适合训练任务、远程脚本、批处理、爬虫、长时间 SSH 任务，以及任何“不想一直盯着终端”的场景。
 
 ## 下载
 
-Android：
+- Android App：[GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)
+- 命令行工具：[PyPI](https://pypi.org/project/haoleme/)
 
-- [GitHub Releases 最新版 APK](https://github.com/HaolemeApp/Haoleme/releases/latest)
+## 快速开始
 
-## 使用
-
-在电脑或服务器上安装：
+安装命令行工具：
 
 ```bash
 pip install -U haoleme
 ```
 
-打开手机 App，然后在电脑上登录：
+在电脑或服务器上配对：
 
 ```bash
 hao login
 ```
 
-用 App 扫二维码，或输入终端里的 6 位配对码。
+打开 App，扫码或输入 6 位配对码。
 
-之后这样运行命令：
+以后直接在命令前加 `hao`：
 
 ```bash
 hao python train.py
+hao bash script.sh
+hao echo hello
 ```
 
-或者：
-
-```bash
-hao bash run.sh
-```
-
-（旧的 `hao run ...` 写法已移除，请直接使用 `hao <command>`。）
-
-手机上会自动显示运行状态和控制台输出。
+命令运行后，App 会自动显示状态和控制台输出。
 
 ## 功能
 
-- 查看 running / succeeded / failed
-- 查看终端输出
-- 命令结束通知
-- 多设备切换
+- 运行状态：running / succeeded / failed
+- 控制台输出和搜索
+- 运行结束通知
+- 多设备切换和在线状态
 - 设备重命名
 - 项目分组
-- 运行记录搜索和删除
-- 二维码 / 6 位配对码
+- GPU / CPU 监控
+- 二维码和 6 位配对码
 - 端到端加密传输敏感运行内容
 
-## 更新
+## 安全
 
-App 会在后台检查更新。发现新版本时，右上角会显示版本号，点击后可以下载并安装。
+公开源码不包含官方签名密钥、生产服务器私密配置、个人收款码或访问令牌。
 
-## 开源
+App 和 CLI 默认连接官方服务；你也可以基于源码自行部署。请不要把自己的密钥、token、数据库、签名文件或服务器密码提交到公开仓库。
+
+## 开源协议
 
 本项目使用 [AGPL-3.0-or-later](LICENSE) 许可证。
 
-欢迎提 Issue 和建议。
-
-项目还在快速迭代，公测阶段请优先使用最新版。
+欢迎提交 Issue 和建议。项目仍在快速迭代，公测阶段建议保持 App 和 CLI 为最新版。

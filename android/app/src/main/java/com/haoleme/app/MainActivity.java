@@ -189,10 +189,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String CANONICAL_SERVER_URL = "https://api.haoleme.cloud";
     private static final String DEFAULT_UPDATE_URLS = BuildConfig.HAOLEME_UPDATE_URLS;
     private static final String[] LEGACY_SERVER_URLS = new String[]{
-            "http://106.14.246.204",
-            "https://106.14.246.204",
-            "http://39.96.50.42",
-            "https://39.96.50.42",
             "http://api.haoleme.cloud"
     };
 

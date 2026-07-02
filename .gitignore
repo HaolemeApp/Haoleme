@@ -11,5 +11,9 @@ android/**/build/
 local.properties
 xcuserdata/
 *.xcuserstate
+*.keystore
+*.jks
+android/legacy/
+android/build/manual/
 
 .DS_Store
