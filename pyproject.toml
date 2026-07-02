@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "haoleme"
+version = "0.4.20"
+description = "Run commands with Haoleme monitoring and expose their status to the mobile app."
+readme = "README.md"
+requires-python = ">=3.7"
+authors = [{ name = "Haoleme" }]
+license = "AGPL-3.0-or-later"
+dependencies = ["cryptography>=42", "qrcode>=7.4"]
+license-files = ["LICENSE"]
+
+[project.scripts]
+hao = "haoleme.cli:main"
+haoleme-cloud = "haoleme.cloud_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
