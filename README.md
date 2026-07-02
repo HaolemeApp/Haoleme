@@ -40,7 +40,6 @@
 ## 下载
 
 - Android App：[GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)
-- 命令行工具：[PyPI](https://pypi.org/project/haoleme/)
 
 ## 快速开始
 
