@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -994,13 +995,50 @@ def read_heartbeat_pid() -> int | None:
 def is_process_running(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        return is_windows_process_running(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    except OSError:
+        return False
     return True
+
+
+def is_windows_process_running(pid: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+    for row in csv.reader(result.stdout.splitlines()):
+        if len(row) >= 2 and row[1].strip() == str(pid):
+            return True
+    return False
+
+
+def terminate_windows_process(pid: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 or not is_windows_process_running(pid)
 
 
 def read_heartbeat_state() -> dict[str, object]:
@@ -1062,6 +1100,11 @@ def stop_heartbeat_daemon() -> tuple[bool, str]:
     if not pid or not is_process_running(pid):
         unlink_missing(pid_path)
         return False, "not running"
+    if os.name == "nt":
+        if not terminate_windows_process(pid):
+            return False, f"could not stop pid {pid}"
+        unlink_missing(pid_path)
+        return True, f"stopped (pid {pid})"
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError as exc:
@@ -1741,6 +1784,15 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
         print("hao: missing command to run", file=sys.stderr)
         return 2
 
+    shell_command = len(command) == 1 and command_needs_shell(command[0])
+    env_overrides: dict[str, str] = {}
+    runnable_command = list(command)
+    if not shell_command:
+        env_overrides, runnable_command = split_leading_env_assignments(command)
+        if env_overrides and not runnable_command:
+            print("hao: missing command after environment assignment", file=sys.stderr)
+            return 2
+
     start_heartbeat_daemon()
     run_id = str(uuid.uuid4())
     store = RunStore()
@@ -1757,12 +1809,14 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
     if project:
         print(f"Project: {project}", flush=True)
 
-    if len(command) == 1 and command_needs_shell(command[0]):
+    if shell_command:
         executable_command = ["/bin/sh", "-c", command[0]]
     else:
-        executable_command = resolve_local_executable(command)
-    if executable_command != list(command):
-        print(f"Resolved: {shlex_join(executable_command)}", flush=True)
+        executable_command = resolve_local_executable(runnable_command)
+    if executable_command != list(runnable_command):
+        print(f"Resolved: {shlex_join(display_command_with_env(executable_command, env_overrides))}", flush=True)
+
+    env = child_environment(env_overrides)
 
     interrupt_event = threading.Event()
     watcher = InterruptWatcher(syncer.client, run_id, interrupt_event.set)
@@ -1770,20 +1824,21 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
     try:
         try:
             if should_use_pty():
-                exit_code, interrupted = run_command_with_pty(executable_command, store, run_id, syncer, interrupt_event)
+                exit_code, interrupted = run_command_with_pty(executable_command, store, run_id, syncer, interrupt_event, env)
             else:
-                exit_code, interrupted = run_command_with_pipes(executable_command, store, run_id, syncer, interrupt_event)
+                exit_code, interrupted = run_command_with_pipes(executable_command, store, run_id, syncer, interrupt_event, env)
         except FileNotFoundError:
-            store.append_output(run_id, "stderr_tail", f"command not found: {command[0]}\n")
+            missing_command = runnable_command[0] if runnable_command else command[0]
+            store.append_output(run_id, "stderr_tail", f"command not found: {missing_command}\n")
             store.finish_run(run_id, 127)
             syncer.close()
-            print(f"hao: command not found: {command[0]}", file=sys.stderr)
+            print(f"hao: command not found: {missing_command}", file=sys.stderr)
             return 127
     finally:
         watcher.stop()
 
     if interrupted or watcher.triggered():
-        store.cancel_run(run_id, INTERRUPT_NOTE)
+        store.interrupt_run(run_id, INTERRUPT_NOTE)
         syncer.request_sync()
         syncer.close()
         print(f"好了么 interrupted: {run_id}")
@@ -1806,10 +1861,41 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
 # words). A bare program path never contains these, so a single command token
 # that does is treated as a shell command line and run via the shell.
 _SHELL_METACHARACTERS = frozenset("|&;<>()$`\\\"'*?[]{}~# \t\n")
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 
 
 def command_needs_shell(token: str) -> bool:
     return any(ch in _SHELL_METACHARACTERS for ch in token)
+
+
+def is_env_assignment(token: str) -> bool:
+    return bool(_ENV_ASSIGNMENT_RE.match(token))
+
+
+def split_leading_env_assignments(command: Sequence[str]) -> tuple[dict[str, str], list[str]]:
+    env: dict[str, str] = {}
+    index = 0
+    for token in command:
+        if not is_env_assignment(token):
+            break
+        key, value = token.split("=", 1)
+        env[key] = value
+        index += 1
+    return env, list(command[index:])
+
+
+def child_environment(overrides: dict[str, str]) -> dict[str, str] | None:
+    if not overrides:
+        return None
+    env = os.environ.copy()
+    env.update(overrides)
+    return env
+
+
+def display_command_with_env(command: Sequence[str], env: dict[str, str]) -> list[str]:
+    if not env:
+        return list(command)
+    return [f"{key}={value}" for key, value in env.items()] + list(command)
 
 
 def resolve_local_executable(command: Sequence[str]) -> list[str]:
@@ -1839,6 +1925,9 @@ def subprocess_session_kwargs() -> dict[str, object]:
 
 def send_signal_to_pid(pid: int, signum: int) -> None:
     if pid <= 0:
+        return
+    if os.name == "nt":
+        terminate_windows_process(pid)
         return
     if os.name == "posix":
         try:
@@ -1895,7 +1984,7 @@ def apply_cloud_interrupts(store: RunStore, client: CloudClient) -> int:
             continue
         if run.pid is not None:
             kill_process_tree(run.pid)
-        store.cancel_run(run.id, INTERRUPT_NOTE)
+        store.interrupt_run(run.id, INTERRUPT_NOTE)
         updated = store.get_run(run.id)
         if updated is not None:
             client.upsert_run(updated)
@@ -1929,6 +2018,7 @@ def run_command_with_pty(
     run_id: str,
     syncer: CloudSyncer,
     interrupt_event: threading.Event | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, bool]:
     previous_sighup = ignore_sighup()
     master_fd, slave_fd = os.openpty()
@@ -1942,6 +2032,7 @@ def run_command_with_pty(
                 stdout=slave_fd,
                 stderr=slave_fd,
                 close_fds=True,
+                env=env,
                 **subprocess_session_kwargs(),
             )
         except Exception:
@@ -2103,6 +2194,7 @@ def run_command_with_pipes(
     run_id: str,
     syncer: CloudSyncer,
     interrupt_event: threading.Event | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, bool]:
     previous_sighup = ignore_sighup()
     try:
@@ -2112,6 +2204,7 @@ def run_command_with_pipes(
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=env,
             **subprocess_session_kwargs(),
         )
     except Exception:

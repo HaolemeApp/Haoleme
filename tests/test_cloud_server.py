@@ -412,9 +412,10 @@ class CloudServerDeviceTest(unittest.TestCase):
             upsert_run(db_path, account_key, self.sample_run("run-1", device_id, "Server A", "running"))
             upsert_run(db_path, account_key, self.sample_run("run-2", device_id, "Server A", "failed"))
             upsert_run(db_path, account_key, self.sample_run("run-3", device_id, "Server A", "succeeded"))
+            upsert_run(db_path, account_key, self.sample_run("run-4", device_id, "Server A", "cancelled"))
 
             self.assertEqual([run["id"] for run in list_runs(db_path, account_key, 10, "", "running")], ["run-1"])
-            self.assertEqual([run["id"] for run in list_runs(db_path, account_key, 10, "", "failed")], ["run-2"])
+            self.assertEqual([run["id"] for run in list_runs(db_path, account_key, 10, "", "failed")], ["run-2", "run-4"])
             self.assertEqual([run["id"] for run in list_runs(db_path, account_key, 10, "", "succeeded")], ["run-3"])
 
     def test_runs_can_be_deleted_for_one_device(self):

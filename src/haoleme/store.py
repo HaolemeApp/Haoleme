@@ -241,6 +241,35 @@ class RunStore:
                     (now, now, run_id),
                 )
 
+    def interrupt_run(self, run_id: str, note: str = "") -> None:
+        now = utc_now()
+        limit = self.output_tail_chars
+        with self.connect() as conn:
+            if note:
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET status = 'failed',
+                        exit_code = 130,
+                        ended_at = ?,
+                        updated_at = ?,
+                        stderr_tail = substr(stderr_tail || ?, -?),
+                        output_tail = substr(output_tail || ?, -?),
+                        cloud_synced_at = ''
+                    WHERE id = ?
+                    """,
+                    (now, now, note, limit, note, limit, run_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET status = 'failed', exit_code = 130, ended_at = ?, updated_at = ?, cloud_synced_at = ''
+                    WHERE id = ?
+                    """,
+                    (now, now, run_id),
+                )
+
     def get_run(self, run_id: str) -> RunRecord | None:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()

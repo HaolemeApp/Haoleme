@@ -1,0 +1,20 @@
+{
+  "android": {
+    "versionCode": 175,
+    "versionName": "0.9.40",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.40/Haoleme-0.9.40.apk",
+    "apkUrls": [
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.40/Haoleme-0.9.40.apk"
+    ],
+    "sha256": "4e8be8adde7ad0f4f4dc937072d4cef66a4469e65d7884151e0270523540150f",
+    "minSupportedVersionCode": 66,
+    "forceUpdate": false,
+    "notes": "修复首页监控卡滑不动的问题：监控区按下后会接管本次手势，向下滑切到 GPU/CPU 卡片，GPU 页左右滑切换指标。"
+  },
+  "python": {
+    "version": "0.4.21",
+    "packageUrl": "https://pypi.org/project/haoleme/",
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.21-py3-none-any.whl",
+    "notes": "修复 Windows 心跳 PID 检测、移动端终止后状态显示，以及 hao CUDA_VISIBLE_DEVICES=0 python train.py 这类环境变量前缀命令。"
+  }
+}
