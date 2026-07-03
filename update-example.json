@@ -1,15 +1,16 @@
 {
   "android": {
-    "versionCode": 175,
-    "versionName": "0.9.40",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.40/Haoleme-0.9.40.apk",
+    "versionCode": 176,
+    "versionName": "0.9.41",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.41/Haoleme-0.9.41.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.40/Haoleme-0.9.40.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.41/Haoleme-0.9.41.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.41.apk"
     ],
-    "sha256": "4e8be8adde7ad0f4f4dc937072d4cef66a4469e65d7884151e0270523540150f",
+    "sha256": "5dd3bd75a9618cc97f29514834243d6bad5a0864edc159c017556c35f285bae9",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "修复首页监控卡滑不动的问题：监控区按下后会接管本次手势，向下滑切到 GPU/CPU 卡片，GPU 页左右滑切换指标。"
+    "notes": "修复失败筛选兼容已终止记录，App 终止命令后会更稳定地显示为失败状态。"
   },
   "python": {
     "version": "0.4.21",
