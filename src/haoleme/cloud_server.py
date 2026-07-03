@@ -1888,6 +1888,8 @@ def list_runs(
         if status_filter:
             if status_filter == "running":
                 where.append("status IN ('created', 'running')")
+            elif status_filter == "failed":
+                where.append("status IN ('failed', 'cancelled')")
             else:
                 where.append("status = ?")
                 values.append(status_filter)

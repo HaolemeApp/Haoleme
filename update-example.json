@@ -12,9 +12,9 @@
     "notes": "修复首页监控卡滑不动的问题：监控区按下后会接管本次手势，向下滑切到 GPU/CPU 卡片，GPU 页左右滑切换指标。"
   },
   "python": {
-    "version": "0.4.20",
+    "version": "0.4.21",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.20-py3-none-any.whl",
-    "notes": "heartbeat 现在会上报 CPU 利用率快照，云端保存当前 CPU 指标供 App 绘制本地折线。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.21-py3-none-any.whl",
+    "notes": "修复 Windows 心跳 PID 检测、移动端终止后状态显示，以及 hao CUDA_VISIBLE_DEVICES=0 python train.py 这类环境变量前缀命令。"
   }
 }
