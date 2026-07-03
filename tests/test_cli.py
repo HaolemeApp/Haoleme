@@ -19,6 +19,7 @@ from haoleme.cli import (
     collect_cpu_stats,
     heartbeat_initial_delay,
     heartbeat_state_path,
+    is_process_running,
     main,
     mark_stale_active_runs_pending,
     pairing_login_command,
@@ -28,11 +29,14 @@ from haoleme.cli import (
     read_heartbeat_state,
     reconcile_orphaned_running_runs,
     reusable_login_device_id,
+    run_command,
     run_command_with_pipes,
     subprocess_session_kwargs,
     terminate_process_on_interrupt,
     should_continue_relogin,
+    split_leading_env_assignments,
     stream_output,
+    terminate_windows_process,
     write_heartbeat_state,
 )
 from haoleme.cloud import CloudConfig, DEFAULT_CLOUD_URL, InterruptWatcher
@@ -133,6 +137,30 @@ class CliPairingTest(unittest.TestCase):
         for token in ["ls", "npm", "./build.sh", "/usr/bin/python3", "my-tool"]:
             self.assertFalse(command_needs_shell(token), token)
 
+    def test_leading_env_assignments_are_split_from_command(self):
+        env, command = split_leading_env_assignments(["MODE=1", "EMPTY=", "bash", "run.sh"])
+
+        self.assertEqual(env, {"MODE": "1", "EMPTY": ""})
+        self.assertEqual(command, ["bash", "run.sh"])
+
+    def test_leading_env_assignment_reaches_child_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-env", ["MODE=1", sys.executable, "-c", "import os; print(os.getenv('MODE'))"], "/tmp")
+
+            exit_code, interrupted = run_command_with_pipes(
+                [sys.executable, "-c", "import os; print(os.getenv('MODE'))"],
+                store,
+                "run-env",
+                DummySyncer(),
+                env={"MODE": "1"},
+            )
+
+            run = store.get_run("run-env")
+            self.assertFalse(interrupted)
+            self.assertEqual(exit_code, 0)
+            self.assertIn("1\n", run.output_tail)
+
     def test_qr_terminal_rendering_uses_gap_free_blocks(self):
         lines = qr_matrix_to_terminal_lines([
             [True, False],
@@ -214,6 +242,30 @@ class CliPairingTest(unittest.TestCase):
         self.assertGreaterEqual(second_delay, 0)
         self.assertLess(second_delay, HEARTBEAT_INTERVAL_SECONDS)
         self.assertNotEqual(first_delay, second_delay)
+
+    def test_process_running_handles_unexpected_oserror(self):
+        with patch("haoleme.cli.os.name", "posix"), patch("haoleme.cli.os.kill", side_effect=OSError(11, "bad executable")):
+            self.assertFalse(is_process_running(12345))
+
+    def test_windows_process_running_parses_tasklist_csv(self):
+        result = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='"python.exe","4321","Console","1","10,000 K"\n',
+        )
+        with patch("haoleme.cli.os.name", "nt"), patch("haoleme.cli.subprocess.run", return_value=result):
+            self.assertTrue(is_process_running(4321))
+
+    def test_windows_process_running_returns_false_when_missing(self):
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout="INFO: No tasks are running which match the specified criteria.\n")
+        with patch("haoleme.cli.os.name", "nt"), patch("haoleme.cli.subprocess.run", return_value=result):
+            self.assertFalse(is_process_running(4321))
+
+    def test_windows_terminate_process_uses_taskkill(self):
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
+        with patch("haoleme.cli.subprocess.run", return_value=result) as run:
+            self.assertTrue(terminate_windows_process(4321))
+        run.assert_called_once()
 
     def test_collect_cpu_stats_returns_bounded_snapshot(self):
         stats = collect_cpu_stats()
@@ -358,6 +410,45 @@ class CliPairingTest(unittest.TestCase):
 
             self.assertTrue(interrupted)
             self.assertNotEqual(exit_code, 0)
+
+    def test_run_command_marks_mobile_interrupt_as_failed(self):
+        class FakeWatcher:
+            last_error = ""
+
+            def __init__(self, _client, _run_id, on_interrupt):
+                self.on_interrupt = on_interrupt
+                self._triggered = threading.Event()
+
+            def start(self):
+                def trigger():
+                    time.sleep(0.3)
+                    self._triggered.set()
+                    self.on_interrupt()
+
+                threading.Thread(target=trigger, daemon=True).start()
+
+            def stop(self):
+                pass
+
+            def triggered(self):
+                return self._triggered.is_set()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            with patch("haoleme.cli.start_heartbeat_daemon", return_value=(False, "disabled")), \
+                    patch("haoleme.cli.configured_cloud_client", return_value=None), \
+                    patch("haoleme.cli.default_project", return_value=""), \
+                    patch("haoleme.cli.should_use_pty", return_value=False), \
+                    patch("haoleme.cli.InterruptWatcher", FakeWatcher), \
+                    patch("haoleme.cli.RunStore", return_value=store), \
+                    patch("haoleme.cli.uuid.uuid4", return_value="run-interrupt"):
+                exit_code = run_command([sys.executable, "-c", "import time; time.sleep(30)"])
+
+            run = store.get_run("run-interrupt")
+            self.assertEqual(exit_code, 130)
+            self.assertEqual(run.status, "failed")
+            self.assertEqual(run.exit_code, 130)
+            self.assertIn("Interrupted from mobile app", run.output_tail)
 
     @unittest.skipUnless(os.name == "posix" and hasattr(signal, "SIGHUP"), "SIGHUP is POSIX-only")
     def test_child_command_ignores_sighup(self):

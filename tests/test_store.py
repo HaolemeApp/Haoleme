@@ -52,6 +52,21 @@ class RunStoreTest(unittest.TestCase):
             self.assertEqual(run.exit_code, -1)
             self.assertIn("interrupted", run.output_tail)
 
+    def test_interrupt_run_marks_failed_and_keeps_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+
+            store.create_run("run-interrupt", ["sleep", "10"], "/tmp")
+            store.mark_running("run-interrupt", 123)
+            store.interrupt_run("run-interrupt", "\ninterrupted\n")
+
+            run = store.get_run("run-interrupt")
+
+            self.assertIsNotNone(run)
+            self.assertEqual(run.status, "failed")
+            self.assertEqual(run.exit_code, 130)
+            self.assertIn("interrupted", run.output_tail)
+
     def test_delete_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(Path(tmp) / "runs.db")

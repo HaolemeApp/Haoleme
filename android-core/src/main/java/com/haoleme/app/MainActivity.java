@@ -4393,7 +4393,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         int failedCount = 0;
         for (int i = 0; i < visibleRuns.length(); i++) {
             JSONObject run = visibleRuns.optJSONObject(i);
-            if (run != null && "failed".equals(run.optString("status", ""))) {
+            if (run != null && isFailedLikeStatus(run.optString("status", ""))) {
                 failedCount++;
             }
         }
@@ -4641,7 +4641,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if ("running".equals(filter)) {
             return "running".equals(status) || "created".equals(status);
         }
+        if ("failed".equals(filter)) {
+            return isFailedLikeStatus(status);
+        }
         return filter != null && filter.equals(status);
+    }
+
+    private boolean isFailedLikeStatus(String status) {
+        return "failed".equals(status) || "cancelled".equals(status);
     }
 
     private void loadCachedRuns() {
