@@ -796,6 +796,61 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertEqual(payload["outputChunks"][0]["ciphertext"], "abc")
             self.assertEqual(payload.get("outputLength"), 10)
 
+    def test_append_run_update_ignores_duplicate_plaintext_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_1"
+            init_db(db_path)
+            upsert_run(db_path, account_key, self.sample_run("run-1", device_id, "Server A", "running"))
+            auth = AuthContext(account_key=account_key, token_hash="h", scope="write",
+                               device_id=device_id, device_name="Server A")
+            patch = {
+                "id": "run-1",
+                "status": "running",
+                "outputDelta": "more\n",
+                "outputLength": len("hello\nmore\n"),
+            }
+
+            first = append_run_update(db_path, account_key, patch, auth)
+            second = append_run_update(db_path, account_key, patch, auth)
+
+            self.assertEqual(first["outputTail"], "hello\nmore\n")
+            self.assertEqual(second["outputTail"], "hello\nmore\n")
+            self.assertEqual(second["outputLength"], len("hello\nmore\n"))
+
+    def test_append_run_update_ignores_duplicate_e2ee_chunk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_1"
+            init_db(db_path)
+            upsert_run(db_path, account_key, self.sample_run("run-1", device_id, "Server A", "running"))
+            auth = AuthContext(account_key=account_key, token_hash="h", scope="write",
+                               device_id=device_id, device_name="Server A")
+
+            append_run_update(db_path, account_key, {
+                "id": "run-1",
+                "status": "running",
+                "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n1", "ciphertext": "abc"},
+                "outputLength": 10,
+            }, auth)
+            stored = append_run_update(db_path, account_key, {
+                "id": "run-1",
+                "status": "running",
+                "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n2", "ciphertext": "abc-retry"},
+                "outputLength": 10,
+            }, auth)
+            stored = append_run_update(db_path, account_key, {
+                "id": "run-1",
+                "status": "succeeded",
+                "outputLength": 10,
+            }, auth)
+
+            self.assertEqual(len(stored.get("outputChunks") or []), 1)
+            self.assertEqual(stored["outputChunks"][0]["ciphertext"], "abc")
+            self.assertEqual(stored["outputLength"], 10)
+
     def test_list_runs_omits_console_chunks_but_keeps_counts(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"

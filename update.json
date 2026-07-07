@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 176,
-    "versionName": "0.9.41",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.41/Haoleme-0.9.41.apk",
+    "versionCode": 177,
+    "versionName": "0.9.42",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.42/Haoleme-0.9.42.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.41/Haoleme-0.9.41.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.41.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.42/Haoleme-0.9.42.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.42.apk"
     ],
-    "sha256": "5dd3bd75a9618cc97f29514834243d6bad5a0864edc159c017556c35f285bae9",
+    "sha256": "3c3e980566954f9d2177e486bc3b2ec0242edca949ee44203bc2cfdd44031475",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "修复失败筛选兼容已终止记录，App 终止命令后会更稳定地显示为失败状态。"
+    "notes": "修复控制台重复输出和最后一条运行记录删除后不立即清空的问题。"
   },
   "python": {
-    "version": "0.4.21",
+    "version": "0.4.22",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.21-py3-none-any.whl",
-    "notes": "修复 Windows 心跳 PID 检测、移动端终止后状态显示，以及 hao CUDA_VISIBLE_DEVICES=0 python train.py 这类环境变量前缀命令。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.22-py3-none-any.whl",
+    "notes": "修复云端输出追加幂等，避免网络重试导致控制台重复显示。"
   }
 }

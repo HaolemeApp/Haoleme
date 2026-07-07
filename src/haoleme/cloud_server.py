@@ -2005,33 +2005,61 @@ def append_run_update(
             existing["interruptRequestedAt"] = patch["interruptRequestedAt"]
 
         chunk = patch.get("e2eeOutputChunk")
-        if isinstance(chunk, dict) and chunk.get("ciphertext"):
+        has_e2ee_chunk = isinstance(chunk, dict) and bool(chunk.get("ciphertext"))
+        has_plain_delta = any(
+            str(patch.get(delta_key) or "")
+            for delta_key in ("outputDelta", "stdoutDelta", "stderrDelta")
+        )
+        patch_output_length = int_or_none(patch.get("outputLength"))
+        stored_output_length = int_or_none(existing.get("outputLength"))
+        existing_output_length = stored_output_length if stored_output_length is not None else (
+            len(str(existing.get("outputTail") or "")) if has_plain_delta else 0
+        )
+        already_applied_output = (
+            (has_e2ee_chunk or has_plain_delta)
+            and patch_output_length is not None
+            and existing_output_length > 0
+            and patch_output_length <= existing_output_length
+        )
+
+        if has_e2ee_chunk:
             chunks = existing.get("outputChunks")
             if not isinstance(chunks, list):
                 chunks = []
-            chunk_copy = {
-                "v": int_or_none(chunk.get("v")) or 1,
-                "alg": str(chunk.get("alg") or "AES-256-GCM")[:40],
-                "nonce": str(chunk.get("nonce") or "")[:128],
-                "ciphertext": str(chunk.get("ciphertext") or ""),
-                "seq": len(chunks),
-            }
-            chunks.append(chunk_copy)
-            existing["outputChunks"] = chunks[-MAX_OUTPUT_CHUNKS:]
-            if patch.get("outputLength") is not None:
-                existing["outputLength"] = max(0, int_or_none(patch.get("outputLength")) or 0)
+            if not already_applied_output:
+                chunk_copy = {
+                    "v": int_or_none(chunk.get("v")) or 1,
+                    "alg": str(chunk.get("alg") or "AES-256-GCM")[:40],
+                    "nonce": str(chunk.get("nonce") or "")[:128],
+                    "ciphertext": str(chunk.get("ciphertext") or ""),
+                    "seq": len(chunks),
+                }
+                chunks.append(chunk_copy)
+                existing["outputChunks"] = chunks[-MAX_OUTPUT_CHUNKS:]
+            if patch_output_length is not None:
+                existing["outputLength"] = max(0, existing_output_length, patch_output_length)
         else:
+            appended_plain_output = False
             for target, delta_key in (
                 ("outputTail", "outputDelta"),
                 ("stdoutTail", "stdoutDelta"),
                 ("stderrTail", "stderrDelta"),
             ):
                 delta = str(patch.get(delta_key) or "")
-                if not delta:
+                if not delta or already_applied_output:
                     continue
                 merged = str(existing.get(target) or "") + delta
                 existing[target] = merged[-MAX_OUTPUT_TAIL:]
-            existing["outputLength"] = len(str(existing.get("outputTail") or ""))
+                appended_plain_output = True
+            if patch_output_length is not None:
+                existing["outputLength"] = max(
+                    0,
+                    existing_output_length,
+                    patch_output_length,
+                    len(str(existing.get("outputTail") or "")),
+                )
+            elif appended_plain_output:
+                existing["outputLength"] = max(0, len(str(existing.get("outputTail") or "")))
 
         stored = normalize_run(existing)
         db.execute(

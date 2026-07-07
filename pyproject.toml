@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "haoleme"
-version = "0.4.21"
+version = "0.4.22"
 description = "Run commands with Haoleme monitoring and expose their status to the mobile app."
 readme = "README.md"
 requires-python = ">=3.7"
