@@ -4422,11 +4422,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
         // (avoids re-inflating every run card on each poll).
         String runsSig = runsLayoutSignature(visibleRuns);
         if (runsContainer != null && runsContainer.getChildCount() > 0 && runsSig.equals(lastRunsSig)) {
-            updateRunCardsInPlace(visibleRuns);
-            if (!fromCache) {
-                firstLoad = false;
+            if (updateRunCardsInPlace(visibleRuns)) {
+                if (!fromCache) {
+                    firstLoad = false;
+                }
+                return;
             }
-            return;
         }
         if (runsContainer == null) {
             return;
@@ -4669,7 +4670,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 // cacheAtKey would be approximate
             }
         }
-        if (cached == null || cached.isEmpty() || runsContainer == null) {
+        if (cached == null || cached.isEmpty()) {
+            if (runsContainer != null) {
+                renderRuns(new JSONArray(), true);
+            }
+            return;
+        }
+        if (runsContainer == null) {
             return;
         }
         try {
@@ -5912,19 +5919,26 @@ public class MainActivity extends Activity implements LifecycleOwner {
             JSONObject run = decryptRun(payload.getJSONObject("run"), incremental ? null : payload.optJSONArray("outputChunks"));
             if (incremental) {
                 String output = cachedConsoleOutput(cached);
+                int remoteLength = payload.optInt("outputLength", run.optInt("outputLength", output.length()));
+                boolean hasLocalOutput = !isNoOutputPlaceholder(output);
+                boolean alreadyApplied = hasLocalOutput && localLength > 0 && remoteLength > 0 && remoteLength <= localLength;
                 String append = payload.optString("outputAppend", "");
-                if (!append.isEmpty()) {
+                if (!alreadyApplied && !append.isEmpty()) {
                     output += append;
                 }
                 JSONArray chunks = payload.optJSONArray("outputChunks");
                 if (chunks != null && chunks.length() > 0) {
-                    output += decryptOutputChunks(id, chunks);
-                    localChunks += chunks.length();
+                    if (alreadyApplied) {
+                        localChunks = Math.max(localChunks, run.optInt("outputChunkCount", localChunks));
+                    } else {
+                        output += decryptOutputChunks(id, chunks);
+                        localChunks += chunks.length();
+                    }
                 }
                 if (localChunks <= 0) {
                     localChunks = run.optInt("outputChunkCount", 0);
                 }
-                int length = Math.max(output.length(), payload.optInt("outputLength", run.optInt("outputLength", output.length())));
+                int length = Math.max(Math.max(output.length(), localLength), remoteLength);
                 prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, output, localChunks, length).toString()).apply();
             } else {
                 prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, consoleOutput(run)).toString()).apply();
@@ -5947,20 +5961,31 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
 
+        int remoteLength = payload.optInt("outputLength", run.optInt("outputLength", consoleOutputSyncedLength));
+        boolean hasCurrentOutput = !isNoOutputPlaceholder(currentConsoleOutput);
+        boolean alreadyApplied = hasCurrentOutput
+                && consoleOutputSyncedLength > 0
+                && remoteLength > 0
+                && remoteLength <= consoleOutputSyncedLength;
+
         String appendText = payload.optString("outputAppend", "");
-        if (!appendText.isEmpty()) {
+        if (!alreadyApplied && !appendText.isEmpty()) {
             currentConsoleOutput = (currentConsoleOutput == null ? "" : currentConsoleOutput) + appendText;
             consoleOutputSyncedLength = currentConsoleOutput.length();
         }
         JSONArray chunks = payload.optJSONArray("outputChunks");
         if (chunks != null && chunks.length() > 0) {
             consoleIncrementalUsesChunks = true;
-            currentConsoleOutput = (currentConsoleOutput == null ? "" : currentConsoleOutput) + decryptOutputChunks(run.optString("id", ""), chunks);
-            outputChunkSyncedCount += chunks.length();
-            consoleOutputSyncedLength = currentConsoleOutput.length();
+            if (alreadyApplied) {
+                outputChunkSyncedCount = Math.max(outputChunkSyncedCount, run.optInt("outputChunkCount", outputChunkSyncedCount));
+            } else {
+                currentConsoleOutput = (currentConsoleOutput == null ? "" : currentConsoleOutput) + decryptOutputChunks(run.optString("id", ""), chunks);
+                outputChunkSyncedCount += chunks.length();
+                consoleOutputSyncedLength = currentConsoleOutput.length();
+            }
         }
         if (payload.has("outputLength")) {
-            consoleOutputSyncedLength = Math.max(consoleOutputSyncedLength, payload.optInt("outputLength", consoleOutputSyncedLength));
+            consoleOutputSyncedLength = Math.max(consoleOutputSyncedLength, remoteLength);
         }
         persistCurrentRunDetail(run);
 
