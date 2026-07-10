@@ -1474,8 +1474,8 @@ def latest_python_release(manifest: dict[str, object]) -> dict[str, str]:
     pypi_version = _fetch_pypi_latest_version()
     if pypi_version and (not version or compare_versions(pypi_version, version) > 0):
         version = pypi_version
-        if not package_url:
-            package_url = "https://pypi.org/project/haoleme/"
+        wheel_url = ""
+        package_url = "haoleme"
 
     return {
         "version": version,
@@ -1511,6 +1511,8 @@ def python_wheel_candidates(release: dict[str, str], manifest_source: str) -> li
         candidates.append(candidate)
 
     version = release.get("version", "")
+    if release.get("packageUrl", "") == "haoleme":
+        add("haoleme")
     add(release.get("wheelUrl", ""))
     if version:
         wheel_name = f"haoleme-{version}-py3-none-any.whl"

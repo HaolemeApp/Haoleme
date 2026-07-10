@@ -13,9 +13,9 @@
     "notes": "修复长时间训练日志停止更新的问题，控制台历史默认提升至 100MB，并改为手机本地按需加载。"
   },
   "python": {
-    "version": "0.4.23",
+    "version": "0.4.24",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.23-py3-none-any.whl",
+    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/haoleme-0.4.24-py3-none-any.whl",
     "notes": "修复日志达到缓存上限后停止同步的问题，默认控制台上下文提升至 100MB。"
   }
 }

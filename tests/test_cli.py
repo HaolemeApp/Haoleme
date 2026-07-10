@@ -22,7 +22,9 @@ from haoleme.cli import (
     is_process_running,
     main,
     mark_stale_active_runs_pending,
+    latest_python_release,
     pairing_login_command,
+    python_wheel_candidates,
     update_command,
     version_command,
     qr_matrix_to_terminal_lines,
@@ -96,6 +98,24 @@ class CliPairingTest(unittest.TestCase):
             exit_code = update_command(["--check"])
         self.assertEqual(exit_code, 0)
         self.assertIn("Update available", buffer.getvalue())
+
+    def test_newer_pypi_release_drops_stale_manifest_wheel(self):
+        manifest = {
+            "python": {
+                "version": "0.4.22",
+                "wheelUrl": "https://api.example/downloads/haoleme-0.4.22-py3-none-any.whl",
+            }
+        }
+        with patch("haoleme.cli._fetch_pypi_latest_version", return_value="0.4.24"):
+            release = latest_python_release(manifest)
+
+        self.assertEqual(release["version"], "0.4.24")
+        self.assertEqual(release["wheelUrl"], "")
+        self.assertEqual(release["packageUrl"], "haoleme")
+        self.assertEqual(
+            python_wheel_candidates(release, "https://api.example/downloads/update.json")[0],
+            "haoleme",
+        )
 
     def test_main_routes_version_flag(self):
         with patch("haoleme.cli.version_command", return_value=0) as mocked:
