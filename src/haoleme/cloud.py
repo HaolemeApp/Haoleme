@@ -276,7 +276,7 @@ class CloudClient:
             "endedAt": run.ended_at,
             "updatedAt": run.updated_at,
             "project": run.project,
-            "outputLength": len(run.output_tail),
+            "outputLength": run.output_length,
         }
         if self.config.device_id:
             patch["deviceId"] = self.config.device_id
@@ -544,14 +544,16 @@ class CloudSyncer:
         return 5.0 + (idle - 600) / (1800 - 600) * (RUNNING_SYNC_MAX_INTERVAL_SECONDS - 5.0)
 
     def _output_deltas(self, run: RunRecord) -> dict[str, str]:
+        new_output_chars = max(0, run.output_length - self._synced_output_len)
+        output_delta = run.output_tail[-min(new_output_chars, len(run.output_tail)) :] if new_output_chars else ""
         return {
-            "output_tail": run.output_tail[self._synced_output_len :],
-            "stdout_tail": run.stdout_tail[self._synced_stdout_len :],
-            "stderr_tail": run.stderr_tail[self._synced_stderr_len :],
+            "output_tail": output_delta,
+            "stdout_tail": "",
+            "stderr_tail": "",
         }
 
     def _mark_output_synced(self, run: RunRecord) -> None:
-        self._synced_output_len = len(run.output_tail)
+        self._synced_output_len = run.output_length
         self._synced_stdout_len = len(run.stdout_tail)
         self._synced_stderr_len = len(run.stderr_tail)
 

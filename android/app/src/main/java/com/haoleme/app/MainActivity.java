@@ -98,6 +98,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.PrintWriter;
+import java.io.RandomAccessFile;
 import java.io.StringWriter;
 import java.net.ConnectException;
 import java.net.HttpURLConnection;
@@ -180,6 +181,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String TAG_RUN_OUTPUT = "run_output";
     private static final int CONSOLE_RENDER_INITIAL_CHARS = 60000;
     private static final int CONSOLE_RENDER_STEP_CHARS = 60000;
+    private static final int CONSOLE_HISTORY_DEFAULT_CHARS = 100_000_000;
     private static final int CPU_HISTORY_MAX_POINTS = 36;
     private static final String THEME_LIGHT = "light";
     private static final String THEME_DARK = "dark";
@@ -258,6 +260,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean pairingInProgress = false;
     private String selectedStatusFilter = "all";
     private String currentConsoleOutput = "";
+    private long currentConsoleStoredBytes = 0L;
     private int consoleOutputSyncedLength = 0;
     private int outputChunkSyncedCount = 0;
     private boolean consoleIncrementalUsesChunks = false;
@@ -564,6 +567,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 }
             }
             editor.apply();
+            clearConsoleCacheFiles();
             buildUi();
             refreshDevices();
             refreshRuns();
@@ -1492,10 +1496,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void showConsoleHistoryDialog(View row) {
-        int[] values = new int[]{30000, 100000, 300000, 1000000};
-        String[] labels = new String[]{"30k chars", "100k chars", "300k chars", "1M chars"};
+        int[] values = new int[]{10_000_000, 50_000_000, 100_000_000};
+        String[] labels = new String[]{"10M chars", "50M chars", "100M chars"};
         int current = consoleHistoryLimit();
-        int selected = 2;
+        int selected = values.length - 1;
         for (int i = 0; i < values.length; i++) {
             if (values[i] == current) {
                 selected = i;
@@ -1852,25 +1856,24 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private int consoleHistoryLimit() {
-        int saved = prefs == null ? 300000 : prefs.getInt(PREF_CONSOLE_HISTORY_CHARS, 300000);
-        if (saved <= 30000) {
-            return 30000;
+        int saved = prefs == null
+                ? CONSOLE_HISTORY_DEFAULT_CHARS
+                : prefs.getInt(PREF_CONSOLE_HISTORY_CHARS, CONSOLE_HISTORY_DEFAULT_CHARS);
+        if (saved <= 1_000_000) {
+            return CONSOLE_HISTORY_DEFAULT_CHARS;
         }
-        if (saved <= 100000) {
-            return 100000;
+        if (saved <= 10_000_000) {
+            return 10_000_000;
         }
-        if (saved <= 300000) {
-            return 300000;
+        if (saved <= 50_000_000) {
+            return 50_000_000;
         }
-        return 1000000;
+        return 100_000_000;
     }
 
     private String consoleHistoryLabel() {
         int limit = consoleHistoryLimit();
-        if (limit >= 1000000) {
-            return "1M chars";
-        }
-        return (limit / 1000) + "k chars";
+        return (limit / 1_000_000) + "M chars";
     }
 
     private String syncSpaceLabel() {
@@ -2157,7 +2160,146 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 total += 8;
             }
         }
+        return total + directoryBytes(consoleCacheDirectory());
+    }
+
+    private File consoleCacheDirectory() {
+        return new File(getCacheDir(), "console-history");
+    }
+
+    private File consoleCacheFile(String runId) {
+        String value = runId == null ? "" : runId;
+        StringBuilder name = new StringBuilder();
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+            for (byte item : digest) {
+                name.append(String.format(Locale.US, "%02x", item & 0xff));
+            }
+        } catch (Exception ignored) {
+            name.append(Integer.toHexString(value.hashCode()));
+        }
+        return new File(consoleCacheDirectory(), name + ".log");
+    }
+
+    private long directoryBytes(File directory) {
+        if (directory == null || !directory.exists()) {
+            return 0L;
+        }
+        File[] files = directory.listFiles();
+        if (files == null) {
+            return 0L;
+        }
+        long total = 0L;
+        for (File file : files) {
+            total += file.isDirectory() ? directoryBytes(file) : file.length();
+        }
         return total;
+    }
+
+    private void writeConsoleCache(String runId, String output) {
+        if (runId == null || runId.trim().isEmpty() || output == null || isNoOutputPlaceholder(output)) {
+            return;
+        }
+        File directory = consoleCacheDirectory();
+        if (!directory.exists() && !directory.mkdirs()) {
+            return;
+        }
+        File file = consoleCacheFile(runId);
+        try (FileOutputStream stream = new FileOutputStream(file, false)) {
+            stream.write(output.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            Log.w(TAG, "cannot write console cache", e);
+            return;
+        }
+        trimConsoleCache(file);
+    }
+
+    private void appendConsoleCache(String runId, String output) {
+        if (runId == null || runId.trim().isEmpty() || output == null || output.isEmpty()) {
+            return;
+        }
+        File directory = consoleCacheDirectory();
+        if (!directory.exists() && !directory.mkdirs()) {
+            return;
+        }
+        File file = consoleCacheFile(runId);
+        try (FileOutputStream stream = new FileOutputStream(file, true)) {
+            stream.write(output.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            Log.w(TAG, "cannot append console cache", e);
+            return;
+        }
+        trimConsoleCache(file);
+    }
+
+    private void trimConsoleCache(File file) {
+        long limit = consoleHistoryLimit();
+        if (file == null || !file.exists() || file.length() <= limit) {
+            return;
+        }
+        File temporary = new File(file.getParentFile(), file.getName() + ".tmp");
+        byte[] buffer = new byte[64 * 1024];
+        try (RandomAccessFile source = new RandomAccessFile(file, "r");
+             FileOutputStream target = new FileOutputStream(temporary, false)) {
+            source.seek(Math.max(0L, source.length() - limit));
+            int count;
+            while ((count = source.read(buffer)) > 0) {
+                target.write(buffer, 0, count);
+            }
+        } catch (IOException e) {
+            Log.w(TAG, "cannot trim console cache", e);
+            temporary.delete();
+            return;
+        }
+        if (!file.delete() || !temporary.renameTo(file)) {
+            Log.w(TAG, "cannot replace trimmed console cache");
+        }
+    }
+
+    private String readConsoleCacheTail(String runId, int maxChars) {
+        File file = consoleCacheFile(runId);
+        if (!file.exists() || maxChars <= 0) {
+            return "";
+        }
+        long bytesToRead = Math.min(file.length(), Math.min((long) consoleHistoryLimit(), Math.max(4096L, (long) maxChars * 4L)));
+        if (bytesToRead > Integer.MAX_VALUE) {
+            bytesToRead = Integer.MAX_VALUE;
+        }
+        byte[] data = new byte[(int) bytesToRead];
+        try (RandomAccessFile source = new RandomAccessFile(file, "r")) {
+            source.seek(Math.max(0L, source.length() - bytesToRead));
+            source.readFully(data);
+        } catch (IOException e) {
+            Log.w(TAG, "cannot read console cache", e);
+            return "";
+        }
+        String output = new String(data, StandardCharsets.UTF_8);
+        if (!output.isEmpty() && output.charAt(0) == '\ufffd') {
+            output = output.substring(1);
+        }
+        return output.length() > maxChars ? output.substring(output.length() - maxChars) : output;
+    }
+
+    private void deleteConsoleCache(String runId) {
+        File file = consoleCacheFile(runId);
+        if (file.exists() && !file.delete()) {
+            Log.w(TAG, "cannot delete console cache for " + runId);
+        }
+    }
+
+    private int clearConsoleCacheFiles() {
+        File directory = consoleCacheDirectory();
+        File[] files = directory.listFiles();
+        if (files == null) {
+            return 0;
+        }
+        int removed = 0;
+        for (File file : files) {
+            if (file.isFile() && file.delete()) {
+                removed++;
+            }
+        }
+        return removed;
     }
 
     private boolean isLocalCacheKey(String key) {
@@ -2200,6 +2342,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         }
         editor.apply();
+        removed += clearConsoleCacheFiles();
         knownStatuses.clear();
         return removed;
     }
@@ -2245,6 +2388,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         for (String id : removedIds) {
             editor.remove(CACHE_RUN_PREFIX + id).remove("notified_terminal_" + id);
+            deleteConsoleCache(id);
             knownStatuses.remove(id);
         }
         editor.apply();
@@ -2379,6 +2523,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         }
         editor.apply();
+        clearConsoleCacheFiles();
         knownStatuses.clear();
     }
 
@@ -2435,6 +2580,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         }
         editor.apply();
+        clearConsoleCacheFiles();
         knownStatuses.clear();
         selectedDeviceId = "all";
         selectedRunId = null;
@@ -5129,6 +5275,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         outputChunkSyncedCount = 0;
         consoleIncrementalUsesChunks = false;
         currentConsoleOutput = "";
+        currentConsoleStoredBytes = 0L;
         buildConsoleUi();
         loadCachedRunDetail(id);
         refreshRunDetail(id, true);
@@ -5593,6 +5740,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         consoleTopMoreButton.setOnClickListener(v -> {
             consoleRenderLimit = Math.min(consoleHistoryLimit(), consoleRenderLimit + CONSOLE_RENDER_STEP_CHARS);
             consoleAutoScroll = false;
+            reloadCurrentConsoleWindow();
             renderConsoleText();
             if (consoleVerticalScroll != null) {
                 consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_UP));
@@ -5751,7 +5899,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         executor.submit(() -> {
             try {
                 StringBuilder url = new StringBuilder(normalizedServerUrl()).append("/api/runs/").append(id);
-                if (!showLoading && id.equals(selectedRunId)) {
+                if (id.equals(selectedRunId)) {
                     if (consoleIncrementalUsesChunks && outputChunkSyncedCount > 0) {
                         url.append("?outputSince=").append(outputChunkSyncedCount);
                     } else if (consoleOutputSyncedLength > 0) {
@@ -5836,7 +5984,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return null;
         }
         try {
-            return new JSONObject(cached);
+            JSONObject detail = new JSONObject(cached);
+            String legacyOutput = detail.optString("outputTail", "");
+            File cacheFile = consoleCacheFile(id);
+            if (!cacheFile.exists() && !legacyOutput.isEmpty() && !isNoOutputPlaceholder(legacyOutput)) {
+                writeConsoleCache(id, legacyOutput);
+            }
+            String diskOutput = readConsoleCacheTail(id, Math.max(CONSOLE_RENDER_INITIAL_CHARS, consoleRenderLimit));
+            if (!diskOutput.isEmpty()) {
+                detail.put("outputTail", diskOutput);
+            }
+            return detail;
         } catch (Exception ignored) {
             return null;
         }
@@ -5918,28 +6076,25 @@ public class MainActivity extends Activity implements LifecycleOwner {
             boolean incremental = payload.optBoolean("incremental", false);
             JSONObject run = decryptRun(payload.getJSONObject("run"), incremental ? null : payload.optJSONArray("outputChunks"));
             if (incremental) {
-                String output = cachedConsoleOutput(cached);
-                int remoteLength = payload.optInt("outputLength", run.optInt("outputLength", output.length()));
-                boolean hasLocalOutput = !isNoOutputPlaceholder(output);
-                boolean alreadyApplied = hasLocalOutput && localLength > 0 && remoteLength > 0 && remoteLength <= localLength;
-                String append = payload.optString("outputAppend", "");
-                if (!alreadyApplied && !append.isEmpty()) {
-                    output += append;
-                }
+                int remoteLength = payload.optInt("outputLength", run.optInt("outputLength", localLength));
                 JSONArray chunks = payload.optJSONArray("outputChunks");
-                if (chunks != null && chunks.length() > 0) {
-                    if (alreadyApplied) {
-                        localChunks = Math.max(localChunks, run.optInt("outputChunkCount", localChunks));
-                    } else {
-                        output += decryptOutputChunks(id, chunks);
-                        localChunks += chunks.length();
+                int remoteChunks = run.optInt("outputChunkCount", -1);
+                boolean chunkMode = chunks != null || remoteChunks >= 0 || localChunks > 0;
+                if (chunkMode) {
+                    if (chunks != null && chunks.length() > 0 && (remoteChunks < 0 || remoteChunks > localChunks)) {
+                        appendConsoleCache(id, decryptOutputChunks(id, chunks));
+                        localChunks = remoteChunks >= 0 ? Math.max(localChunks, remoteChunks) : localChunks + chunks.length();
+                    } else if (remoteChunks >= 0) {
+                        localChunks = Math.max(localChunks, remoteChunks);
+                    }
+                } else {
+                    String append = payload.optString("outputAppend", "");
+                    if (!append.isEmpty() && (remoteLength <= 0 || remoteLength > localLength)) {
+                        appendConsoleCache(id, append);
                     }
                 }
-                if (localChunks <= 0) {
-                    localChunks = run.optInt("outputChunkCount", 0);
-                }
-                int length = Math.max(Math.max(output.length(), localLength), remoteLength);
-                prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, output, localChunks, length).toString()).apply();
+                int length = Math.max(localLength, remoteLength);
+                prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunMetadataSnapshot(run, localChunks, length).toString()).apply();
             } else {
                 prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, consoleOutput(run)).toString()).apply();
             }
@@ -5961,32 +6116,29 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
 
+        String runId = run.optString("id", "");
         int remoteLength = payload.optInt("outputLength", run.optInt("outputLength", consoleOutputSyncedLength));
-        boolean hasCurrentOutput = !isNoOutputPlaceholder(currentConsoleOutput);
-        boolean alreadyApplied = hasCurrentOutput
-                && consoleOutputSyncedLength > 0
-                && remoteLength > 0
-                && remoteLength <= consoleOutputSyncedLength;
-
-        String appendText = payload.optString("outputAppend", "");
-        if (!alreadyApplied && !appendText.isEmpty()) {
-            currentConsoleOutput = (currentConsoleOutput == null ? "" : currentConsoleOutput) + appendText;
-            consoleOutputSyncedLength = currentConsoleOutput.length();
-        }
         JSONArray chunks = payload.optJSONArray("outputChunks");
-        if (chunks != null && chunks.length() > 0) {
+        int remoteChunkCount = run.optInt("outputChunkCount", -1);
+        boolean chunkMode = chunks != null || consoleIncrementalUsesChunks || remoteChunkCount >= 0;
+        if (chunkMode) {
             consoleIncrementalUsesChunks = true;
-            if (alreadyApplied) {
-                outputChunkSyncedCount = Math.max(outputChunkSyncedCount, run.optInt("outputChunkCount", outputChunkSyncedCount));
-            } else {
-                currentConsoleOutput = (currentConsoleOutput == null ? "" : currentConsoleOutput) + decryptOutputChunks(run.optString("id", ""), chunks);
-                outputChunkSyncedCount += chunks.length();
-                consoleOutputSyncedLength = currentConsoleOutput.length();
+            if (chunks != null && chunks.length() > 0 && (remoteChunkCount < 0 || remoteChunkCount > outputChunkSyncedCount)) {
+                appendConsoleCache(runId, decryptOutputChunks(runId, chunks));
+                outputChunkSyncedCount = remoteChunkCount >= 0
+                        ? Math.max(outputChunkSyncedCount, remoteChunkCount)
+                        : outputChunkSyncedCount + chunks.length();
+            } else if (remoteChunkCount >= 0) {
+                outputChunkSyncedCount = Math.max(outputChunkSyncedCount, remoteChunkCount);
+            }
+        } else {
+            String appendText = payload.optString("outputAppend", "");
+            if (!appendText.isEmpty() && (remoteLength <= 0 || remoteLength > consoleOutputSyncedLength)) {
+                appendConsoleCache(runId, appendText);
             }
         }
-        if (payload.has("outputLength")) {
-            consoleOutputSyncedLength = Math.max(consoleOutputSyncedLength, remoteLength);
-        }
+        consoleOutputSyncedLength = Math.max(consoleOutputSyncedLength, remoteLength);
+        reloadCurrentConsoleWindow();
         persistCurrentRunDetail(run);
 
         renderConsoleText();
@@ -6007,7 +6159,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         try {
             JSONObject base = currentRunDetail == null ? new JSONObject(run.toString()) : new JSONObject(currentRunDetail.toString());
             prefs.edit()
-                    .putString(CACHE_RUN_PREFIX + id, localRunSnapshot(base, currentConsoleOutput, outputChunkSyncedCount, consoleOutputSyncedLength).toString())
+                    .putString(CACHE_RUN_PREFIX + id, localRunMetadataSnapshot(base, outputChunkSyncedCount, consoleOutputSyncedLength).toString())
                     .apply();
         } catch (Exception ignored) {
         }
@@ -6015,23 +6167,38 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private JSONObject localRunSnapshot(JSONObject run, String output) {
         JSONArray chunks = run == null ? null : run.optJSONArray("outputChunks");
-        int chunkCount = chunks == null ? cachedLocalOutputChunkCount(run) : chunks.length();
+        int remoteChunkCount = run == null ? -1 : run.optInt("outputChunkCount", -1);
+        int chunkCount = remoteChunkCount >= 0
+                ? remoteChunkCount
+                : (chunks == null ? cachedLocalOutputChunkCount(run) : chunks.length());
         int outputLength = Math.max(run == null ? 0 : run.optInt("outputLength", 0), output == null ? 0 : output.length());
         return localRunSnapshot(run, output, chunkCount, outputLength);
     }
 
     private JSONObject localRunSnapshot(JSONObject run, String output, int chunkCount, int outputLength) {
+        String id = run == null ? "" : run.optString("id", "");
+        if (!id.isEmpty() && output != null && !isNoOutputPlaceholder(output)) {
+            writeConsoleCache(id, output);
+        }
+        return localRunMetadataSnapshot(run, chunkCount, outputLength);
+    }
+
+    private JSONObject localRunMetadataSnapshot(JSONObject run, int chunkCount, int outputLength) {
         JSONObject snapshot;
         try {
             snapshot = run == null ? new JSONObject() : new JSONObject(run.toString());
-            String safeOutput = output == null || isNoOutputPlaceholder(output) ? "" : limitConsoleOutput(output);
             snapshot.remove("outputChunks");
             snapshot.remove("e2ee");
-            snapshot.put("outputTail", safeOutput);
+            snapshot.put("outputTail", "");
             snapshot.put("stdoutTail", "");
             snapshot.put("stderrTail", "");
-            snapshot.put("localOutputChunkCount", Math.max(0, chunkCount));
-            snapshot.put("outputChunkCount", Math.max(snapshot.optInt("outputChunkCount", 0), Math.max(0, chunkCount)));
+            if (chunkCount > 0 || snapshot.optInt("outputChunkCount", 0) > 0) {
+                snapshot.put("localOutputChunkCount", Math.max(0, chunkCount));
+                snapshot.put("outputChunkCount", Math.max(snapshot.optInt("outputChunkCount", 0), Math.max(0, chunkCount)));
+            } else {
+                snapshot.remove("localOutputChunkCount");
+                snapshot.remove("outputChunkCount");
+            }
             snapshot.put("outputLength", Math.max(0, outputLength));
         } catch (Exception ignored) {
             snapshot = new JSONObject();
@@ -6047,7 +6214,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (!fromCache) {
             maybeNotify(run);
         }
-        currentRunDetail = run;
         String status = run.optString("status", "unknown");
         if (selectedRunId != null && selectedRunId.equals(run.optString("id", ""))) {
             selectedRunStatus = status;
@@ -6059,17 +6225,47 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setTextColor(statusColor(status));
         detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
-        currentConsoleOutput = consoleOutput(run);
+        String runId = run.optString("id", "");
+        String diskOutput = readConsoleCacheTail(runId, consoleRenderLimit);
+        currentConsoleOutput = diskOutput.isEmpty() ? consoleOutput(run) : diskOutput;
+        File cacheFile = consoleCacheFile(runId);
+        currentConsoleStoredBytes = cacheFile.exists()
+                ? cacheFile.length()
+                : currentConsoleOutput.getBytes(StandardCharsets.UTF_8).length;
         JSONArray chunks = run.optJSONArray("outputChunks");
-        outputChunkSyncedCount = chunks == null ? cachedLocalOutputChunkCount(run) : chunks.length();
-        consoleIncrementalUsesChunks = outputChunkSyncedCount > 0 || run.optInt("outputChunkCount", -1) >= 0;
+        int remoteChunkCount = run.optInt("outputChunkCount", -1);
+        outputChunkSyncedCount = remoteChunkCount >= 0
+                ? Math.max(cachedLocalOutputChunkCount(run), remoteChunkCount)
+                : (chunks == null ? cachedLocalOutputChunkCount(run) : chunks.length());
+        consoleIncrementalUsesChunks = outputChunkSyncedCount > 0 || run.optInt("outputChunkCount", 0) > 0;
         consoleOutputSyncedLength = Math.max(currentConsoleOutput == null ? 0 : currentConsoleOutput.length(), run.optInt("outputLength", 0));
+        run.remove("outputChunks");
+        run.remove("e2ee");
+        try {
+            run.put("outputTail", "");
+            run.put("stdoutTail", "");
+            run.put("stderrTail", "");
+        } catch (Exception ignored) {
+        }
+        currentRunDetail = run;
         renderConsoleText();
         if (("running".equals(status) || "created".equals(status)) && consoleAutoScroll && consoleVerticalScroll != null) {
             consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_DOWN));
         }
         if (statusText != null && !isConsoleRenderClipped() && (consoleSearchInput == null || consoleSearchInput.getText().toString().trim().isEmpty())) {
             statusText.setText(fromCache ? (isEnglish() ? "Saved console." : "已保存控制台。") : (isEnglish() ? "Console updated." : "控制台已更新。"));
+        }
+    }
+
+    private void reloadCurrentConsoleWindow() {
+        if (selectedRunId == null || selectedRunId.isEmpty()) {
+            return;
+        }
+        File cacheFile = consoleCacheFile(selectedRunId);
+        currentConsoleStoredBytes = cacheFile.exists() ? cacheFile.length() : 0L;
+        String diskOutput = readConsoleCacheTail(selectedRunId, consoleRenderLimit);
+        if (!diskOutput.isEmpty()) {
+            currentConsoleOutput = diskOutput;
         }
     }
 
@@ -6171,7 +6367,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private boolean isConsoleRenderClipped() {
-        return currentConsoleOutput != null && currentConsoleOutput.length() > consoleRenderLimit;
+        if (currentConsoleOutput == null) {
+            return false;
+        }
+        long loadedBytes = currentConsoleOutput.getBytes(StandardCharsets.UTF_8).length;
+        return currentConsoleOutput.length() > consoleRenderLimit || currentConsoleStoredBytes > loadedBytes;
     }
 
     private String consoleRenderStatusText() {
@@ -6179,11 +6379,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return isEnglish() ? "Console ready." : "控制台就绪。";
         }
         return isEnglish()
-                ? "Showing last " + consoleRenderLabel(consoleRenderLimit) + " of " + consoleRenderLabel(currentConsoleOutput.length()) + "."
-                : "正在显示最后 " + consoleRenderLabel(consoleRenderLimit) + " / 共 " + consoleRenderLabel(currentConsoleOutput.length()) + "。";
+                ? "Showing last " + consoleRenderLabel(consoleRenderLimit) + " of " + consoleRenderLabel(Math.max(currentConsoleOutput.length(), currentConsoleStoredBytes)) + "."
+                : "正在显示最后 " + consoleRenderLabel(consoleRenderLimit) + " / 共 " + consoleRenderLabel(Math.max(currentConsoleOutput.length(), currentConsoleStoredBytes)) + "。";
     }
 
-    private String consoleRenderLabel(int chars) {
+    private String consoleRenderLabel(long chars) {
         if (chars >= 1000000) {
             return (chars / 1000000) + "M chars";
         }
@@ -6444,6 +6644,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void removeRunFromCaches(String id) {
+        deleteConsoleCache(id);
         SharedPreferences.Editor editor = prefs.edit()
                 .remove(CACHE_RUN_PREFIX + id)
                 .remove("notified_terminal_" + id);
@@ -6507,6 +6708,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     String id = run.optString("id", "");
                     if (!id.isEmpty()) {
                         prefs.edit().remove(CACHE_RUN_PREFIX + id).remove("notified_terminal_" + id).apply();
+                        deleteConsoleCache(id);
                     }
                     continue;
                 }
