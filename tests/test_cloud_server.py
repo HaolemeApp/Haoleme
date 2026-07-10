@@ -885,6 +885,41 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertEqual(incremental["run"]["outputChunkCount"], 5)
             self.assertEqual([item["ciphertext"] for item in incremental["outputChunks"]], ["chunk-3", "chunk-4"])
 
+    def test_chunk_cursor_stays_absolute_after_old_chunks_are_trimmed(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("haoleme.cloud_server.MAX_OUTPUT_CHUNKS", 3):
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_1"
+            init_db(db_path)
+            upsert_run(db_path, account_key, self.sample_run("run-trim", device_id, "Server A", "running"))
+            auth = AuthContext(account_key=account_key, token_hash="h", scope="write",
+                               device_id=device_id, device_name="Server A")
+            for index in range(5):
+                append_run_update(db_path, account_key, {
+                    "id": "run-trim",
+                    "status": "running",
+                    "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n", "ciphertext": "chunk-" + str(index)},
+                    "outputLength": index + 1,
+                }, auth)
+
+            detail = get_run(db_path, account_key, "run-trim")
+            incremental = build_run_fetch_payload(detail, output_since=3)
+
+            self.assertEqual(detail["outputChunkCount"], 5)
+            self.assertEqual(detail["outputChunkOffset"], 2)
+            self.assertEqual([item["seq"] for item in detail["outputChunks"]], [2, 3, 4])
+            self.assertEqual([item["ciphertext"] for item in incremental["outputChunks"]], ["chunk-3", "chunk-4"])
+
+    def test_plaintext_incremental_cursor_uses_absolute_output_length(self):
+        run = self.sample_run("run-plain", "dev_1", "Server A", "running")
+        run["outputTail"] = "abcdefghij"
+        run["outputLength"] = 100
+
+        incremental = build_run_fetch_payload(run, output_length=96)
+
+        self.assertEqual(incremental["outputAppend"], "ghij")
+        self.assertEqual(incremental["outputLength"], 100)
+
     def test_list_runs_omits_oversized_legacy_e2ee_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
