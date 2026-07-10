@@ -12,8 +12,8 @@ from ._compat import shlex_join
 
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
-DEFAULT_OUTPUT_TAIL_CHARS = 300_000
-MAX_OUTPUT_TAIL_CHARS = 1_000_000
+DEFAULT_OUTPUT_TAIL_CHARS = 100_000_000
+MAX_OUTPUT_TAIL_CHARS = 100_000_000
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -63,6 +63,7 @@ class RunRecord:
     stdout_tail: str
     stderr_tail: str
     output_tail: str
+    output_length: int
     cloud_synced_at: str
 
     @property
@@ -85,6 +86,7 @@ class RunRecord:
             stdout_tail=row["stdout_tail"] or "",
             stderr_tail=row["stderr_tail"] or "",
             output_tail=row["output_tail"] or "",
+            output_length=max(0, int(row["output_length"] or 0)),
             cloud_synced_at=row["cloud_synced_at"] or "",
         )
 
@@ -104,6 +106,7 @@ class RunRecord:
             "stdoutTail": self.stdout_tail,
             "stderrTail": self.stderr_tail,
             "outputTail": self.output_tail,
+            "outputLength": self.output_length,
         }
 
 
@@ -136,6 +139,7 @@ class RunStore:
                     stdout_tail TEXT NOT NULL DEFAULT '',
                     stderr_tail TEXT NOT NULL DEFAULT '',
                     output_tail TEXT NOT NULL DEFAULT '',
+                    output_length INTEGER NOT NULL DEFAULT 0,
                     project TEXT NOT NULL DEFAULT '',
                     cloud_synced_at TEXT NOT NULL DEFAULT ''
                 )
@@ -147,6 +151,9 @@ class RunStore:
             }
             if "output_tail" not in columns:
                 conn.execute("ALTER TABLE runs ADD COLUMN output_tail TEXT NOT NULL DEFAULT ''")
+            if "output_length" not in columns:
+                conn.execute("ALTER TABLE runs ADD COLUMN output_length INTEGER NOT NULL DEFAULT 0")
+                conn.execute("UPDATE runs SET output_length = length(output_tail)")
             if "project" not in columns:
                 conn.execute("ALTER TABLE runs ADD COLUMN project TEXT NOT NULL DEFAULT ''")
             if "cloud_synced_at" not in columns:
@@ -173,8 +180,8 @@ class RunStore:
                 """
                 INSERT INTO runs (
                     id, command, cwd, project, status, pid, exit_code, started_at,
-                    ended_at, updated_at, stdout_tail, stderr_tail, output_tail, cloud_synced_at
-                ) VALUES (?, ?, ?, ?, 'created', NULL, NULL, ?, NULL, ?, '', '', '', '')
+                    ended_at, updated_at, stdout_tail, stderr_tail, output_tail, output_length, cloud_synced_at
+                ) VALUES (?, ?, ?, ?, 'created', NULL, NULL, ?, NULL, ?, '', '', '', 0, '')
                 """,
                 (run_id, json.dumps(command), cwd, project_name, now, now),
             )
@@ -192,11 +199,12 @@ class RunStore:
                 UPDATE runs
                 SET {stream} = substr({stream} || ?, -?),
                     output_tail = substr(output_tail || ?, -?),
+                    output_length = output_length + length(?),
                     cloud_synced_at = '',
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (text, limit, text, limit, utc_now(), run_id),
+                (text, limit, text, limit, text, utc_now(), run_id),
             )
 
     def finish_run(self, run_id: str, exit_code: int) -> None:
@@ -226,10 +234,11 @@ class RunStore:
                         updated_at = ?,
                         stderr_tail = substr(stderr_tail || ?, -?),
                         output_tail = substr(output_tail || ?, -?),
+                        output_length = output_length + length(?),
                         cloud_synced_at = ''
                     WHERE id = ?
                     """,
-                    (now, now, note, limit, note, limit, run_id),
+                    (now, now, note, limit, note, limit, note, run_id),
                 )
             else:
                 conn.execute(
@@ -255,10 +264,11 @@ class RunStore:
                         updated_at = ?,
                         stderr_tail = substr(stderr_tail || ?, -?),
                         output_tail = substr(output_tail || ?, -?),
+                        output_length = output_length + length(?),
                         cloud_synced_at = ''
                     WHERE id = ?
                     """,
-                    (now, now, note, limit, note, limit, run_id),
+                    (now, now, note, limit, note, limit, note, run_id),
                 )
             else:
                 conn.execute(
@@ -367,7 +377,7 @@ def normalize_project_name(value: str | None) -> str:
 def normalize_output_tail_chars(value: int | str | None = None) -> int:
     raw = value
     if raw is None:
-        raw = os.environ.get("HAOLEME_CONSOLE_CHARS") or os.environ.get("HAOLEME_CONSOLE_CHARS") or DEFAULT_OUTPUT_TAIL_CHARS
+        raw = os.environ.get("HAOLEME_CONSOLE_CHARS") or os.environ.get("REMINDER_CONSOLE_CHARS") or DEFAULT_OUTPUT_TAIL_CHARS
     try:
         parsed = int(raw)
     except (TypeError, ValueError):

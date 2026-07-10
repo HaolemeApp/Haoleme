@@ -22,6 +22,7 @@ class RunStoreTest(unittest.TestCase):
             self.assertEqual(run.exit_code, 0)
             self.assertEqual(run.stdout_tail, "hello\n")
             self.assertEqual(run.output_tail, "hello\n")
+            self.assertEqual(run.output_length, len("hello\n"))
             self.assertEqual(run.commandText, "echo hello")
 
     def test_failed_run(self):
@@ -87,6 +88,19 @@ class RunStoreTest(unittest.TestCase):
             run = store.get_run("run-tail")
             self.assertEqual(len(run.output_tail), 30000)
             self.assertEqual(run.output_tail, "a" * 30000)
+            self.assertEqual(run.output_length, 40000)
+
+    def test_output_length_keeps_growing_after_tail_is_trimmed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db", output_tail_chars=30000)
+            store.create_run("run-total", ["python", "train.py"], "/tmp")
+
+            store.append_output("run-total", "stdout_tail", "a" * 25000)
+            store.append_output("run-total", "stdout_tail", "b" * 25000)
+
+            run = store.get_run("run-total")
+            self.assertEqual(len(run.output_tail), 30000)
+            self.assertEqual(run.output_length, 50000)
 
 
 if __name__ == "__main__":

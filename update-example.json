@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 177,
-    "versionName": "0.9.42",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.42/Haoleme-0.9.42.apk",
+    "versionCode": 178,
+    "versionName": "0.9.43",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/Haoleme-0.9.43.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.42/Haoleme-0.9.42.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.42.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/Haoleme-0.9.43.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.43.apk"
     ],
-    "sha256": "3c3e980566954f9d2177e486bc3b2ec0242edca949ee44203bc2cfdd44031475",
+    "sha256": "9e65512f535d36c9a7f26f9c27105053ff174f73d78c18a792f428a75a605c44",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "修复控制台重复输出和最后一条运行记录删除后不立即清空的问题。"
+    "notes": "修复长时间训练日志停止更新的问题，控制台历史默认提升至 100MB，并改为手机本地按需加载。"
   },
   "python": {
-    "version": "0.4.22",
+    "version": "0.4.23",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.22-py3-none-any.whl",
-    "notes": "修复云端输出追加幂等，避免网络重试导致控制台重复显示。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.23-py3-none-any.whl",
+    "notes": "修复日志达到缓存上限后停止同步的问题，默认控制台上下文提升至 100MB。"
   }
 }

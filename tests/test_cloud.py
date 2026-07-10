@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,6 +34,21 @@ class TieredSyncIntervalTest(unittest.TestCase):
 
 
 class CloudSyncerReliabilityTest(unittest.TestCase):
+    def test_output_delta_uses_total_length_after_tail_trimming(self):
+        run = replace(
+            sample_run_record(),
+            output_tail="a" * 20 + "NEW!!",
+            output_length=105,
+        )
+        syncer = CloudSyncer.__new__(CloudSyncer)
+        syncer._synced_output_len = 100
+        syncer._synced_stdout_len = 0
+        syncer._synced_stderr_len = 0
+
+        deltas = syncer._output_deltas(run)
+
+        self.assertEqual(deltas["output_tail"], "NEW!!")
+
     def test_failed_sync_marks_run_pending_for_later_replay(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(Path(tmp) / "runs.db")
@@ -220,6 +236,7 @@ def sample_run_record():
         stdout_tail="secret\n",
         stderr_tail="",
         output_tail="secret\n",
+        output_length=len("secret\n"),
         cloud_synced_at="",
     )
 

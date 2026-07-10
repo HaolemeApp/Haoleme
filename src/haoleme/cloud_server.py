@@ -35,8 +35,8 @@ WRITE_RATE_LIMIT = 180
 READ_RATE_WINDOW_SECONDS = 60
 AUTH_FAILURE_RATE_LIMIT = 120
 MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
-MAX_OUTPUT_TAIL = 1_000_000
-MAX_OUTPUT_CHUNKS = 20_000
+MAX_OUTPUT_TAIL = 100_000_000
+MAX_OUTPUT_CHUNKS = 100_000
 MAX_LIST_OUTPUT_PREVIEW = 2000
 MAX_LIST_E2EE_CIPHERTEXT = 64 * 1024
 DEFAULT_LOG_MAX_BYTES = 50 * 1024 * 1024
@@ -1840,6 +1840,10 @@ def upsert_run(db_path: Path, account_key: str, run: dict[str, Any]) -> None:
                 run["outputChunks"] = existing["outputChunks"]
                 if not run.get("outputLength") and existing.get("outputLength"):
                     run["outputLength"] = existing["outputLength"]
+                if existing.get("outputChunkCount") is not None:
+                    run["outputChunkCount"] = existing["outputChunkCount"]
+                if existing.get("outputChunkOffset") is not None:
+                    run["outputChunkOffset"] = existing["outputChunkOffset"]
             for tail in ("outputTail", "stdoutTail", "stderrTail"):
                 if not run.get(tail) and existing.get(tail):
                     run[tail] = existing[tail]
@@ -2026,16 +2030,28 @@ def append_run_update(
             chunks = existing.get("outputChunks")
             if not isinstance(chunks, list):
                 chunks = []
+            chunk_offset = max(0, int_or_none(existing.get("outputChunkOffset")) or 0)
+            chunk_count = max(
+                chunk_offset + len(chunks),
+                int_or_none(existing.get("outputChunkCount")) or 0,
+            )
             if not already_applied_output:
                 chunk_copy = {
                     "v": int_or_none(chunk.get("v")) or 1,
                     "alg": str(chunk.get("alg") or "AES-256-GCM")[:40],
                     "nonce": str(chunk.get("nonce") or "")[:128],
                     "ciphertext": str(chunk.get("ciphertext") or ""),
-                    "seq": len(chunks),
+                    "seq": chunk_count,
                 }
                 chunks.append(chunk_copy)
-                existing["outputChunks"] = chunks[-MAX_OUTPUT_CHUNKS:]
+                chunk_count += 1
+                retained_chunks = chunks[-MAX_OUTPUT_CHUNKS:]
+                existing["outputChunks"] = retained_chunks
+                existing["outputChunkCount"] = chunk_count
+                existing["outputChunkOffset"] = max(0, chunk_count - len(retained_chunks))
+            else:
+                existing["outputChunkCount"] = chunk_count
+                existing["outputChunkOffset"] = chunk_offset
             if patch_output_length is not None:
                 existing["outputLength"] = max(0, existing_output_length, patch_output_length)
         else:
@@ -2131,8 +2147,15 @@ def build_run_fetch_payload(
         slim["stdoutTail"] = ""
         slim["stderrTail"] = ""
         slim["outputTail"] = ""
-        new_chunks = chunks[output_since:] if output_since > 0 else chunks
-        slim["outputChunkCount"] = len(chunks)
+        chunk_count = max(
+            len(chunks),
+            int_or_none(slim.get("outputChunkCount")) or 0,
+        )
+        chunk_offset = max(0, int_or_none(slim.get("outputChunkOffset")) or (chunk_count - len(chunks)))
+        relative_start = max(0, output_since - chunk_offset)
+        new_chunks = chunks[relative_start:] if output_since > 0 else chunks
+        slim["outputChunkCount"] = chunk_count
+        slim["outputChunkOffset"] = chunk_offset
         slim.pop("outputChunks", None)
         return {
             "run": slim,
@@ -2142,8 +2165,12 @@ def build_run_fetch_payload(
         }
 
     output_tail = str(slim.get("outputTail") or "")
-    if output_length > 0 and output_length < len(output_tail):
-        append_text = output_tail[output_length:]
+    total_output_length = max(len(output_tail), int_or_none(slim.get("outputLength")) or 0)
+    tail_offset = max(0, total_output_length - len(output_tail))
+    if output_length > 0 and output_length < total_output_length:
+        append_text = output_tail[max(0, output_length - tail_offset):]
+    elif output_length >= total_output_length:
+        append_text = ""
     else:
         append_text = output_tail
     slim["stdoutTail"] = ""
@@ -2151,7 +2178,7 @@ def build_run_fetch_payload(
     slim["outputTail"] = ""
     payload: dict[str, Any] = {
         "run": slim,
-        "outputLength": len(output_tail),
+        "outputLength": total_output_length,
         "incremental": True,
     }
     if append_text:
@@ -2577,11 +2604,12 @@ def decode_run(
     if not include_output_chunks:
         chunks = run.pop("outputChunks", None)
         if isinstance(chunks, list):
-            run["outputChunkCount"] = len(chunks)
+            run["outputChunkCount"] = max(len(chunks), int_or_none(run.get("outputChunkCount")) or 0)
+        run.pop("outputChunkOffset", None)
     elif output_chunk_limit is not None:
         chunks = run.get("outputChunks")
         if isinstance(chunks, list):
-            run["outputChunkCount"] = len(chunks)
+            run["outputChunkCount"] = max(len(chunks), int_or_none(run.get("outputChunkCount")) or 0)
             if output_chunk_limit <= 0:
                 run.pop("outputChunks", None)
             elif len(chunks) > output_chunk_limit:
@@ -2650,6 +2678,12 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
             for index, item in enumerate(output_chunks)
             if isinstance(item, dict) and str(item.get("ciphertext") or "")
         ]
+        chunk_count = max(len(normalized["outputChunks"]), int_or_none(run.get("outputChunkCount")) or 0)
+        normalized["outputChunkCount"] = chunk_count
+        normalized["outputChunkOffset"] = max(
+            0,
+            int_or_none(run.get("outputChunkOffset")) or (chunk_count - len(normalized["outputChunks"])),
+        )
     output_length = int_or_none(run.get("outputLength"))
     if output_length is not None:
         normalized["outputLength"] = max(0, output_length)
