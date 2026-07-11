@@ -1,6 +1,7 @@
 import unittest
 import tempfile
 import io
+import json
 import os
 import signal
 import subprocess
@@ -17,6 +18,8 @@ from haoleme.cli import (
     command_needs_shell,
     compare_versions,
     collect_cpu_stats,
+    check_cli_update,
+    doctor_command,
     heartbeat_initial_delay,
     heartbeat_state_path,
     is_process_running,
@@ -24,6 +27,7 @@ from haoleme.cli import (
     mark_stale_active_runs_pending,
     latest_python_release,
     pairing_login_command,
+    print_update_notice_after_command,
     python_wheel_candidates,
     update_command,
     version_command,
@@ -39,6 +43,7 @@ from haoleme.cli import (
     split_leading_env_assignments,
     stream_output,
     terminate_windows_process,
+    write_update_check_cache,
     write_heartbeat_state,
 )
 from haoleme.cloud import CloudConfig, DEFAULT_CLOUD_URL, InterruptWatcher
@@ -76,17 +81,58 @@ class CliPairingTest(unittest.TestCase):
 
     def test_version_command_prints_current_version(self):
         buffer = io.StringIO()
-        with patch("sys.stdout", buffer), patch("haoleme.cli.fetch_update_manifest") as fetch:
-            fetch.return_value = ({"python": {"version": "9.9.9"}}, "http://example.test/downloads/update.json")
+        with patch("sys.stdout", buffer), patch(
+            "haoleme.cli.check_cli_update",
+            return_value={"latestVersion": "9.9.9", "source": "http://example.test/downloads/update.json"},
+        ):
             exit_code = version_command([])
         output = buffer.getvalue()
         self.assertIn("haoleme", output)
         self.assertEqual(exit_code, 0)
 
     def test_version_check_exits_when_update_available(self):
-        with patch("haoleme.cli.fetch_update_manifest") as fetch, patch("haoleme.cli.__version__", "0.0.1"):
-            fetch.return_value = ({"python": {"version": "9.9.9"}}, "http://example.test/downloads/update.json")
+        with patch(
+            "haoleme.cli.check_cli_update",
+            return_value={"latestVersion": "9.9.9", "source": "test"},
+        ), patch("haoleme.cli.__version__", "0.0.1"):
             self.assertEqual(version_command(["--check"]), 1)
+
+    def test_cached_update_check_does_not_use_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "update-check.json"
+            with patch("haoleme.cli.update_check_cache_path", return_value=cache_path):
+                write_update_check_cache({"checkedAt": 1000.0, "latestVersion": "9.9.9"})
+                with patch("haoleme.cli.fetch_update_manifest") as fetch:
+                    status = check_cli_update(now=1001.0)
+
+            self.assertEqual(status["latestVersion"], "9.9.9")
+            fetch.assert_not_called()
+
+    def test_command_update_notice_is_rate_limited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "update-check.json"
+            status = {"checkedAt": time.time(), "latestVersion": "9.9.9"}
+            output = io.StringIO()
+            with patch("haoleme.cli.update_check_cache_path", return_value=cache_path), \
+                    patch("haoleme.cli.__version__", "0.0.1"), \
+                    patch("sys.stdout", output):
+                self.assertTrue(print_update_notice_after_command({"status": status}))
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                self.assertFalse(print_update_notice_after_command({"status": cached}))
+
+            self.assertEqual(output.getvalue().count("Run: hao update"), 1)
+
+    def test_doctor_reports_available_cli_update(self):
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"HAOLEME_HOME": tmp}), \
+                patch("haoleme.cli.check_cli_update", return_value={"latestVersion": "9.9.9"}), \
+                patch("haoleme.cli.CloudConfig.load", return_value=None), \
+                patch("sys.stdout", output):
+            doctor_command(["--no-network"])
+
+        self.assertIn("cli update", output.getvalue())
+        self.assertIn("run: hao update", output.getvalue())
 
     def test_update_check_reports_available_release(self):
         buffer = io.StringIO()
@@ -456,6 +502,8 @@ class CliPairingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(Path(tmp) / "runs.db")
             with patch("haoleme.cli.start_heartbeat_daemon", return_value=(False, "disabled")), \
+                    patch("haoleme.cli.start_background_update_check", return_value={}) as update_start, \
+                    patch("haoleme.cli.print_update_notice_after_command") as update_notice, \
                     patch("haoleme.cli.configured_cloud_client", return_value=None), \
                     patch("haoleme.cli.default_project", return_value=""), \
                     patch("haoleme.cli.should_use_pty", return_value=False), \
@@ -463,6 +511,9 @@ class CliPairingTest(unittest.TestCase):
                     patch("haoleme.cli.RunStore", return_value=store), \
                     patch("haoleme.cli.uuid.uuid4", return_value="run-interrupt"):
                 exit_code = run_command([sys.executable, "-c", "import time; time.sleep(30)"])
+
+            update_start.assert_called_once_with()
+            update_notice.assert_called_once_with({})
 
             run = store.get_run("run-interrupt")
             self.assertEqual(exit_code, 130)
