@@ -30,6 +30,7 @@ import android.os.Environment;
 import android.provider.Settings;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
@@ -325,6 +326,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             requestNotificationPermission();
             buildUi();
             handlePairIntent(getIntent());
+            handleNotificationIntent(getIntent());
             loadCachedRuns();
             if (statusText != null) {
                 statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
@@ -335,6 +337,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 checkForUpdates(false);
             } else {
                 restoreUpdateBadgeFromPrefs();
+            }
+            if (hasPairedDevice() || !normalizedToken().isEmpty()) {
+                startHaolemeForegroundService();
             }
             handler.postDelayed(pollRunnable, pollDelayMs());
         } catch (Throwable throwable) {
@@ -413,6 +418,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         super.onNewIntent(intent);
         setIntent(intent);
         handlePairIntent(intent);
+        handleNotificationIntent(intent);
     }
 
     @Override
@@ -1043,6 +1049,42 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         onOff(quietHoursEnabled()),
                         false,
                         v -> togglePreference(PREF_NOTIFY_QUIET_HOURS, false, v)
+                ),
+                settingsRow(
+                        "✓",
+                        color("#0EA5E9"),
+                        t("notification_health"),
+                        t("notification_health_subtitle"),
+                        notificationHealthLabel(),
+                        true,
+                        v -> showNotificationHealthDialog()
+                ),
+                settingsRow(
+                        "≡",
+                        color("#7C3AED"),
+                        t("notification_channels"),
+                        t("notification_channels_subtitle"),
+                        "",
+                        true,
+                        v -> openSystemNotificationSettings()
+                ),
+                settingsRow(
+                        "⊘",
+                        color("#F59E0B"),
+                        t("muted_projects"),
+                        t("muted_projects_subtitle"),
+                        mutedProjectsLabel(),
+                        true,
+                        v -> showMutedProjectsDialog()
+                ),
+                settingsRow(
+                        "mask_icon",
+                        color("#16A34A"),
+                        t("lock_screen_privacy"),
+                        t("lock_screen_privacy_subtitle"),
+                        t("protected"),
+                        false,
+                        null
                 )
         ));
     }
@@ -1996,6 +2038,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
             case "minimum_run_time_subtitle": return en ? "Skip notifications for short commands" : "短命令不发送通知";
             case "quiet_hours": return en ? "Quiet Hours" : "勿扰时段";
             case "quiet_hours_subtitle": return en ? "Silence notifications from 22:00 to 08:00" : "22:00 到 08:00 静默通知";
+            case "notification_health": return en ? "Notification Health" : "通知健康";
+            case "notification_health_subtitle": return en ? "Permission, delivery and background status" : "检查权限、送达和后台状态";
+            case "notification_channels": return en ? "Notification Channels" : "通知渠道";
+            case "notification_channels_subtitle": return en ? "Set sound and vibration for each alert type" : "分别设置成功、失败、设备和安全提醒";
+            case "muted_projects": return en ? "Muted Projects" : "已静音项目";
+            case "muted_projects_subtitle": return en ? "Review projects muted from notification actions" : "管理从通知中静音的项目";
+            case "lock_screen_privacy": return en ? "Lock Screen Privacy" : "锁屏隐私";
+            case "lock_screen_privacy_subtitle": return en ? "Hide commands and console text until unlocked" : "解锁前隐藏命令和控制台内容";
+            case "protected": return en ? "Protected" : "已保护";
             case "security": return en ? "Security" : "安全";
             case "mask_sensitive": return en ? "Mask Sensitive Text" : "隐藏敏感文本";
             case "mask_sensitive_subtitle": return en ? "Hide tokens, passwords and API keys in UI" : "在界面中隐藏 token、密码和 API key";
@@ -2147,6 +2198,88 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     dialog.dismiss();
                     updateSettingsRowValue(row, labels[which]);
                     statusText.setText(isEnglish() ? "Notification filter updated." : "通知过滤已更新。");
+                })
+                .setNegativeButton(t("cancel"), null)
+                .create();
+        applyDialogStyle(d);
+        d.show();
+    }
+
+    private String notificationHealthLabel() {
+        return HaolemeNotificationCenter.deliveryHealth(this, isEnglish());
+    }
+
+    private String mutedProjectsLabel() {
+        int count = HaolemeNotificationCenter.mutedProjects(this).size();
+        if (count == 0) {
+            return isEnglish() ? "None" : "无";
+        }
+        return isEnglish() ? count + " muted" : count + " 个";
+    }
+
+    private void showNotificationHealthDialog() {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        boolean permission = Build.VERSION.SDK_INT < 33
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        boolean enabled = manager == null || Build.VERSION.SDK_INT < 24 || manager.areNotificationsEnabled();
+        PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        boolean batteryAllowed = power == null || Build.VERSION.SDK_INT < 23 || power.isIgnoringBatteryOptimizations(getPackageName());
+        String yes = isEnglish() ? "OK" : "正常";
+        String no = isEnglish() ? "Needs attention" : "需要处理";
+        String message = (isEnglish() ? "Permission: " : "通知权限：") + (permission ? yes : no)
+                + "\n" + (isEnglish() ? "System notifications: " : "系统通知：") + (enabled ? yes : no)
+                + "\n" + (isEnglish() ? "Background battery access: " : "后台电池权限：") + (batteryAllowed ? yes : no)
+                + "\n" + (isEnglish() ? "Delivery history: " : "送达记录：") + notificationHealthLabel();
+        AlertDialog d = dialogBuilder()
+                .setTitle(t("notification_health"))
+                .setMessage(message)
+                .setNegativeButton(t("close"), null)
+                .setNeutralButton(isEnglish() ? "Battery settings" : "电池设置", (dialog, which) -> openBatteryOptimizationSettings())
+                .setPositiveButton(isEnglish() ? "System settings" : "系统设置", (dialog, which) -> openSystemNotificationSettings())
+                .create();
+        applyDialogStyle(d);
+        d.show();
+    }
+
+    private void openSystemNotificationSettings() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+            intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+            startActivity(intent);
+        } catch (Exception e) {
+            statusText.setText(isEnglish() ? "Cannot open notification settings." : "无法打开通知设置。");
+        }
+    }
+
+    private void openBatteryOptimizationSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+        } catch (Exception e) {
+            statusText.setText(isEnglish() ? "Cannot open battery settings." : "无法打开电池设置。");
+        }
+    }
+
+    private void showMutedProjectsDialog() {
+        List<String> projects = new ArrayList<>(HaolemeNotificationCenter.mutedProjects(this));
+        Collections.sort(projects, String.CASE_INSENSITIVE_ORDER);
+        if (projects.isEmpty()) {
+            AlertDialog d = dialogBuilder()
+                    .setTitle(t("muted_projects"))
+                    .setMessage(isEnglish() ? "No projects are muted." : "当前没有被静音的项目。")
+                    .setPositiveButton(t("ok"), null)
+                    .create();
+            applyDialogStyle(d);
+            d.show();
+            return;
+        }
+        String[] labels = projects.toArray(new String[0]);
+        AlertDialog d = dialogBuilder()
+                .setTitle(isEnglish() ? "Tap a project to unmute" : "点击项目即可恢复通知")
+                .setItems(labels, (dialog, which) -> {
+                    HaolemeNotificationCenter.unmuteProject(this, projects.get(which));
+                    dialog.dismiss();
+                    buildUi();
+                    statusText.setText(isEnglish() ? "Project notifications restored." : "已恢复该项目的通知。");
                 })
                 .setNegativeButton(t("cancel"), null)
                 .create();
@@ -4591,8 +4724,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         // Notifications must fire regardless of which tab is showing (the run list
         // only exists on the Runs tab now), so notify before the container guard.
         if (!fromCache) {
-            for (int i = 0; i < visibleRuns.length(); i++) {
-                JSONObject run = visibleRuns.optJSONObject(i);
+            for (int i = 0; i < runs.length(); i++) {
+                JSONObject run = runs.optJSONObject(i);
                 if (run != null) {
                     maybeNotify(run);
                 }
@@ -6753,6 +6886,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
 
+        if ("created".equals(status) || "running".equals(status)) {
+            boolean startedDuringSession = parseTimestamp(run.optString("startedAt", "")) >= notificationSessionStartedAt;
+            if (!firstLoad || startedDuringSession) {
+                HaolemeNotificationCenter.notifyRunning(this, run, isEnglish());
+            }
+            return;
+        }
+
         boolean isTerminal = "succeeded".equals(status) || "failed".equals(status) || "cancelled".equals(status);
         if (!isTerminal) {
             return;
@@ -6763,29 +6904,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if ((!wasRunning && !completedDuringSession) || (firstLoad && !completedDuringSession)) {
             return;
         }
-        if (!shouldNotifyTerminalRun(run, status)) {
-            return;
-        }
-        String notifyKey = "notified_terminal_" + id;
-        if (status.equals(prefs.getString(notifyKey, ""))) {
-            return;
-        }
-        sendNotification(run);
-        prefs.edit().putString(notifyKey, status).apply();
-    }
-
-    private boolean shouldNotifyTerminalRun(JSONObject run, String status) {
-        if ("succeeded".equals(status) && !notifySuccessEnabled()) {
-            return false;
-        }
-        if (("failed".equals(status) || "cancelled".equals(status)) && !notifyFailureEnabled()) {
-            return false;
-        }
-        int minSeconds = notifyMinSeconds();
-        if (minSeconds > 0 && runDurationSeconds(run) < minSeconds) {
-            return false;
-        }
-        return !quietHoursEnabled() || !isQuietHourNow();
+        HaolemeNotificationCenter.notifyTerminal(this, run, isEnglish());
     }
 
     private long runDurationSeconds(JSONObject run) {
@@ -6807,26 +6926,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean isQuietHourNow() {
         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
         return hour >= 22 || hour < 8;
-    }
-
-    private void sendNotification(JSONObject run) {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            return;
-        }
-
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        android.app.Notification.Builder builder = Build.VERSION.SDK_INT >= 26
-                ? new android.app.Notification.Builder(this, CHANNEL_ID)
-                : new android.app.Notification.Builder(this);
-
-        String command = displayText(commandTextForDisplay(run, "Command"));
-        String status = run.optString("status", "finished");
-        String summary = notificationSummary(run, command, status);
-        builder.setContentTitle(appDisplayName() + ": " + status)
-                .setContentText(summary)
-                .setSmallIcon(android.R.drawable.stat_notify_more)
-                .setAutoCancel(true);
-        manager.notify(run.optString("id", command).hashCode(), builder.build());
     }
 
     private void startHaolemeForegroundService() {
@@ -7279,6 +7378,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         buildUi();
                     }
                     statusText.setText(isEnglish() ? "Paired with " + finalDeviceName + ". Refreshing..." : "已配对 " + finalDeviceName + "，正在刷新...");
+                    startHaolemeForegroundService();
+                    HaolemeNotificationCenter.notifySecurity(
+                            this,
+                            isEnglish() ? "Device paired" : "设备配对成功",
+                            isEnglish() ? finalDeviceName + " can now sync command status." : finalDeviceName + " 已可以同步命令状态。",
+                            isEnglish());
                     refreshHome(false);
                     maybePromptRenameLongPairedDevice(finalDeviceId, finalDeviceName);
                 });
@@ -7581,6 +7686,29 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         handlePairUri(intent.getData());
+    }
+
+    private void handleNotificationIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        String runId = intent.getStringExtra(HaolemeNotificationCenter.EXTRA_RUN_ID);
+        if (runId == null || runId.trim().isEmpty()) {
+            return;
+        }
+        String action = intent.getStringExtra("notification_action");
+        String finalRunId = runId.trim();
+        intent.removeExtra(HaolemeNotificationCenter.EXTRA_RUN_ID);
+        intent.removeExtra("notification_action");
+        HaolemeNotificationCenter.markViewed(this, finalRunId);
+        openRunDetail(finalRunId);
+        if (HaolemeNotificationCenter.ACTION_CONFIRM_INTERRUPT.equals(action)) {
+            handler.postDelayed(() -> {
+                if (finalRunId.equals(selectedRunId)) {
+                    confirmInterruptRun();
+                }
+            }, 250L);
+        }
     }
 
     private void handlePairText(String raw) {
@@ -8542,19 +8670,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT < 26) {
-            return;
-        }
-        NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "Command runs",
-                NotificationManager.IMPORTANCE_DEFAULT
-        );
-        channel.setDescription(isEnglish()
-                ? "Notifications when Haoleme commands finish."
-                : "好了么命令结束时发送通知。");
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        manager.createNotificationChannel(channel);
+        HaolemeNotificationCenter.ensureChannels(this, isEnglish());
     }
 
     private void requestNotificationPermission() {
