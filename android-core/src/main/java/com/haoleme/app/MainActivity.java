@@ -126,6 +126,7 @@ import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
@@ -195,6 +196,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newFixedThreadPool(5);
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
+    private volatile boolean destroyed;
     private final Map<String, String> knownStatuses = new HashMap<>();
     private final Map<String, String> deviceNames = new HashMap<>();
     private final Map<String, String> deviceLastSeen = new HashMap<>();
@@ -367,12 +369,35 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     @Override
     protected void onDestroy() {
-        super.onDestroy();
+        destroyed = true;
         stopScannerCamera();
         handler.removeCallbacksAndMessages(null);
         executor.shutdownNow();
         updateExecutor.shutdownNow();
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY);
+        super.onDestroy();
+    }
+
+    private void submitBackground(Runnable task) {
+        if (destroyed || executor.isShutdown()) {
+            return;
+        }
+        try {
+            executor.submit(task);
+        } catch (RejectedExecutionException ignored) {
+            // A lifecycle callback can race with onDestroy while the pool shuts down.
+        }
+    }
+
+    private void submitUpdateBackground(Runnable task) {
+        if (destroyed || updateExecutor.isShutdown()) {
+            return;
+        }
+        try {
+            updateExecutor.submit(task);
+        } catch (RejectedExecutionException ignored) {
+            // Update checks can finish while the activity is being replaced.
+        }
     }
 
     @Override
@@ -1574,7 +1599,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void createSyncSpaceShare(String shareDeviceId) {
         statusText.setText(isEnglish() ? "Creating shared space code..." : "正在生成共享空间码...");
-        updateExecutor.submit(() -> {
+        submitUpdateBackground(() -> {
             try {
                 JSONObject payload = new JSONObject();
                 payload.put("clientName", appDisplayName() + " Android");
@@ -1690,7 +1715,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         String targetServer = normalizeServerUrl(serverUrl);
         statusText.setText(isEnglish() ? "Joining shared space..." : "正在加入共享空间...");
-        updateExecutor.submit(() -> {
+        submitUpdateBackground(() -> {
             try {
                 JSONObject payload = new JSONObject();
                 payload.put("code", code);
@@ -2346,7 +2371,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void clearCloudRuns() {
         statusText.setText(isEnglish() ? "Deleting cloud runs..." : "正在删除云端运行记录...");
-        updateExecutor.submit(() -> {
+        submitUpdateBackground(() -> {
             try {
                 httpRequest(normalizedServerUrl() + "/api/runs", "DELETE");
                 clearRunCachesOnly();
@@ -2397,7 +2422,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void deleteSyncSpace() {
         statusText.setText(isEnglish() ? "Deleting shared space..." : "正在删除共享空间...");
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 httpRequest(normalizedServerUrl() + "/api/account", "DELETE");
                 handler.post(() -> {
@@ -2566,7 +2591,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void revokeDevices(List<JSONObject> devices) {
         statusText.setText(isEnglish() ? "Disconnecting device(s)..." : "正在断联设备...");
-        executor.submit(() -> {
+        submitBackground(() -> {
             int revoked = 0;
             Set<String> revokedIds = new HashSet<>();
             for (JSONObject device : devices) {
@@ -2864,6 +2889,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshHome(boolean manual) {
+        if (destroyed) {
+            return;
+        }
         if (manual) {
             if (statusText != null) {
                 statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
@@ -2880,6 +2908,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshRuns(boolean manual) {
+        if (destroyed) {
+            return;
+        }
         if (!beginRunsRefresh(manual)) {
             if (manual && hasCachedRuns()) {
                 mergeDevicesFromCachedRuns();
@@ -2906,7 +2937,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         // Later completions for old selections will be ignored to prevent
         // showing stale device data when user switches quickly.
         final String targetDevice = (selectedDeviceId == null || "all".equals(selectedDeviceId)) ? "all" : selectedDeviceId;
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
                 final JSONArray runs = applyPendingRunDeletes(attachCachedConsolePreviews(decryptRuns(new JSONObject(body).getJSONArray("runs"))));
@@ -2918,9 +2949,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     }
                     renderRuns(runs, false);
                 });
-                executor.submit(() -> saveRunsCache(runs));
+                submitBackground(() -> saveRunsCache(runs));
                 scheduleMissingLocalOutputsSync(runs);
-                executor.submit(this::syncPendingRunDeletesBlocking);
+                submitBackground(this::syncPendingRunDeletesBlocking);
             } catch (Exception e) {
                 Log.w(TAG, "refreshRuns failed for " + safeRequestLabel(requestUrl), e);
                 handler.post(() -> {
@@ -2946,6 +2977,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void refreshDevices(boolean manual) {
+        if (destroyed) {
+            return;
+        }
         if (!beginDevicesRefresh(manual)) {
             if (manual) {
                 mergeDevicesFromCachedRuns();
@@ -2956,7 +2990,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         final String requestUrl = normalizedServerUrl() + "/api/devices";
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
                 JSONArray devices = mergeCloudDevicesWithCache(new JSONObject(body).getJSONArray("devices"));
@@ -3000,7 +3034,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             runsRefreshQueued = false;
             runsRefreshQueuedManual = false;
         }
-        if (queued) {
+        if (queued && !destroyed) {
             handler.post(() -> refreshRuns(manual));
         }
     }
@@ -3027,7 +3061,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             devicesRefreshQueued = false;
             devicesRefreshQueuedManual = false;
         }
-        if (queued) {
+        if (queued && !destroyed) {
             handler.post(() -> refreshDevices(manual));
         }
     }
@@ -4135,7 +4169,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         statusText.setText(isEnglish() ? "Clearing history..." : "正在清空历史...");
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 httpRequest(normalizedServerUrl() + "/api/devices/" + Uri.encode(deviceId) + "/runs", "DELETE");
                 removeDeviceRunsFromCaches(deviceId);
@@ -4298,7 +4332,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         statusText.setText(isEnglish() ? "Renaming device..." : "正在重命名设备...");
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 JSONObject payload = new JSONObject();
                 payload.put("name", name);
@@ -4346,7 +4380,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         statusText.setText(isEnglish() ? "Revoking device..." : "正在撤销设备...");
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 httpRequest(normalizedServerUrl() + "/api/devices/" + Uri.encode(deviceId), "DELETE");
                 handler.post(() -> {
@@ -5715,7 +5749,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (consoleInterruptButton != null) {
             consoleInterruptButton.setEnabled(false);
         }
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 httpPostJson(normalizedServerUrl() + "/api/runs/" + Uri.encode(id) + "/interrupt", "{}");
                 handler.post(() -> {
@@ -5748,7 +5782,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (showLoading && statusText != null) {
             statusText.setText(isEnglish() ? "Loading console..." : "正在加载控制台...");
         }
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 StringBuilder url = new StringBuilder(normalizedServerUrl()).append("/api/runs/").append(id);
                 if (!showLoading && id.equals(selectedRunId)) {
@@ -5852,7 +5886,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         backgroundOutputSyncInFlight = true;
         lastBackgroundOutputSyncAt = now;
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 syncMissingLocalOutputs(runs);
             } finally {
@@ -6280,7 +6314,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         statusText.setText(isEnglish()
                 ? "Deleted locally. Cloud delete will sync when online."
                 : "已先从本机删除。联网后会继续删除云端。");
-        executor.submit(() -> {
+        submitBackground(() -> {
             boolean deleted = deleteRunFromCloud(id);
             if (deleted) {
                 forgetPendingRunDelete(id);
@@ -6367,7 +6401,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (pendingRunDeleteIds().isEmpty()) {
             return;
         }
-        executor.submit(() -> {
+        submitBackground(() -> {
             int synced = syncPendingRunDeletesBlocking();
             if (showResult && synced > 0) {
                 handler.post(() -> statusText.setText(isEnglish()
@@ -6976,7 +7010,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             pairButton.setEnabled(false);
         }
         statusText.setText(isEnglish() ? "Pairing..." : "正在配对...");
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 PairInfoResult pairInfo = fetchPairInfoWithFallback(targetServer, normalizedCode);
                 JSONObject info = pairInfo.info;
@@ -7426,7 +7460,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 updateBadgeButton.setVisibility(View.GONE);
             }
         }
-        executor.submit(() -> {
+        submitBackground(() -> {
             try {
                 JSONObject payload = null;
                 String usedUrl = "";
@@ -7561,7 +7595,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             updateBadgeButton.setVisibility(View.GONE);
         }
         statusText.setText(isEnglish() ? "Downloading update 0%..." : "正在下载更新 0%...");
-        executor.submit(() -> {
+        submitBackground(() -> {
             Exception lastError = null;
             try {
                 if (latestDownloadUrls.isEmpty()) {
@@ -7736,7 +7770,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (downloadId < 0 || !updateDownloading) {
             return;
         }
-        executor.submit(() -> {
+        submitBackground(() -> {
             Cursor cursor = null;
             try {
                 DownloadManager.Query query = new DownloadManager.Query().setFilterById(downloadId);
