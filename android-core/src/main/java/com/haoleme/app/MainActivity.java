@@ -147,6 +147,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final int HTTP_CONNECT_TIMEOUT_MS = 8000;
     private static final int HTTP_READ_TIMEOUT_MS = 12000;
     private static final int HTTP_LIST_READ_TIMEOUT_MS = 6500;
+    private static final long TRANSIENT_GET_RETRY_DELAY_MS = 250L;
+    private static final long READ_RATE_LIMIT_BACKOFF_MS = 30000L;
     private static final int MAX_BACKGROUND_OUTPUT_SYNC = 1;
     private static final String CACHE_RUNS = "cached_runs_json";
     private static final String CACHE_RUNS_AT = "cached_runs_at";
@@ -282,6 +284,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean runDetailRefreshQueuedShowLoading = false;
     private volatile boolean backgroundOutputSyncInFlight = false;
     private volatile long lastBackgroundOutputSyncAt = 0L;
+    private volatile long readRateLimitedUntilMs = 0L;
+    private volatile int runsRefreshFailureCount = 0;
+    private volatile int devicesRefreshFailureCount = 0;
 
     private final Runnable pollRunnable = new Runnable() {
         @Override
@@ -2941,6 +2946,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             try {
                 String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
                 final JSONArray runs = applyPendingRunDeletes(attachCachedConsolePreviews(decryptRuns(new JSONObject(body).getJSONArray("runs"))));
+                runsRefreshFailureCount = 0;
                 handler.post(() -> {
                     String current = (selectedDeviceId == null || "all".equals(selectedDeviceId)) ? "all" : selectedDeviceId;
                     if (!targetDevice.equals(current)) {
@@ -2954,6 +2960,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 submitBackground(this::syncPendingRunDeletesBlocking);
             } catch (Exception e) {
                 Log.w(TAG, "refreshRuns failed for " + safeRequestLabel(requestUrl), e);
+                if (e instanceof ReadRateLimitBackoffException) {
+                    if (manual) {
+                        handler.post(() -> statusText.setText(readRateLimitBackoffMessage()));
+                    }
+                    return;
+                }
+                final int failureCount = ++runsRefreshFailureCount;
                 handler.post(() -> {
                     if (hasCachedRuns()) {
                         if ("home".equals(currentTab)) {
@@ -2961,7 +2974,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                             loadCachedDevices();
                         }
                         loadCachedRuns();
-                        statusText.setText(cloudFailureMessage(e) + (isEnglish() ? " Showing local cache." : " 正在显示本地缓存。"));
+                        if (manual || failureCount >= 2) {
+                            statusText.setText(cloudFailureMessage(e) + (isEnglish() ? " Showing local cache." : " 正在显示本地缓存。"));
+                        }
                     } else {
                         statusText.setText(cloudFailureMessage(e));
                     }
@@ -2994,14 +3009,22 @@ public class MainActivity extends Activity implements LifecycleOwner {
             try {
                 String body = httpGet(requestUrl, HTTP_LIST_READ_TIMEOUT_MS);
                 JSONArray devices = mergeCloudDevicesWithCache(new JSONObject(body).getJSONArray("devices"));
+                devicesRefreshFailureCount = 0;
                 handler.post(() -> renderDevices(devices));
             } catch (Exception ignored) {
                 Log.w(TAG, "refreshDevices failed for " + safeRequestLabel(requestUrl), ignored);
+                if (ignored instanceof ReadRateLimitBackoffException) {
+                    if (manual) {
+                        handler.post(() -> statusText.setText(readRateLimitBackoffMessage()));
+                    }
+                    return;
+                }
+                final int failureCount = ++devicesRefreshFailureCount;
                 handler.post(() -> {
                     mergeDevicesFromCachedRuns();
                     if ("home".equals(currentTab)) {
                         loadCachedDevices();
-                        if (manual || !hasCachedRuns()) {
+                        if (manual || !hasCachedRuns() || failureCount >= 2) {
                             statusText.setText(cloudFailureMessage(ignored) + (isEnglish() ? " Showing saved devices." : " 正在显示已保存设备。"));
                         }
                     }
@@ -6679,14 +6702,59 @@ public class MainActivity extends Activity implements LifecycleOwner {
             boolean allowRegisterRetry,
             int readTimeoutMs
     ) throws Exception {
+        boolean retryableGet = "GET".equals(method) && includeToken;
+        if (retryableGet && System.currentTimeMillis() < readRateLimitedUntilMs) {
+            throw new ReadRateLimitBackoffException();
+        }
         try {
             return httpRequestOnce(target, method, includeToken, bodyJson, allowRegisterRetry, readTimeoutMs);
-        } catch (SocketException e) {
-            if (isConnectionReset(e)) {
+        } catch (Exception first) {
+            if (retryableGet && isReadRateLimit(first)) {
+                readRateLimitedUntilMs = System.currentTimeMillis() + READ_RATE_LIMIT_BACKOFF_MS;
+                throw first;
+            }
+            if (retryableGet && isTransientGetFailure(first)) {
+                try {
+                    Thread.sleep(TRANSIENT_GET_RETRY_DELAY_MS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw first;
+                }
+                try {
+                    return httpRequestOnce(target, method, includeToken, bodyJson, allowRegisterRetry, readTimeoutMs);
+                } catch (Exception second) {
+                    if (isReadRateLimit(second)) {
+                        readRateLimitedUntilMs = System.currentTimeMillis() + READ_RATE_LIMIT_BACKOFF_MS;
+                    }
+                    throw second;
+                }
+            }
+            if (first instanceof SocketException && isConnectionReset((SocketException) first)) {
                 return httpRequestOnce(target, method, includeToken, bodyJson, allowRegisterRetry, readTimeoutMs);
             }
-            throw e;
+            throw first;
         }
+    }
+
+    private boolean isReadRateLimit(Exception error) {
+        return error instanceof HaolemeHttpException
+                && ((HaolemeHttpException) error).statusCode == 429;
+    }
+
+    private boolean isTransientGetFailure(Exception error) {
+        Throwable cause = rootCause(error);
+        if (cause instanceof UnknownHostException
+                || cause instanceof SocketTimeoutException
+                || cause instanceof ConnectException
+                || cause instanceof SocketException) {
+            return true;
+        }
+        if (error instanceof HaolemeHttpException) {
+            int status = ((HaolemeHttpException) error).statusCode;
+            return status == 408 || status == 425 || status == 500
+                    || status == 502 || status == 503 || status == 504;
+        }
+        return cause instanceof IOException;
     }
 
     private String httpRequestOnce(
@@ -6850,6 +6918,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
             if (http.statusCode == 426) {
                 return isEnglish() ? "Cloud refresh failed: app is too old. Update first." : "云端刷新失败：App 版本太旧，请先更新。";
             }
+            if (http.statusCode == 429) {
+                return readRateLimitBackoffMessage();
+            }
             if (http.statusCode >= 500) {
                 return isEnglish() ? "Cloud refresh failed: cloud service is temporarily unavailable." : "云端刷新失败：云服务暂时不可用。";
             }
@@ -6864,6 +6935,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return isEnglish() ? "Cloud refresh failed." : "云端刷新失败。";
         }
         return (isEnglish() ? "Cloud refresh failed: " : "云端刷新失败：") + message.trim();
+    }
+
+    private String readRateLimitBackoffMessage() {
+        return isEnglish()
+                ? "Cloud is busy. Retrying automatically shortly."
+                : "云端请求较多，正在稍后自动重试。";
     }
 
     private String pairFailureMessage(Exception e) {
@@ -9006,6 +9083,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
             } catch (Exception ignored) {
                 return "";
             }
+        }
+    }
+
+    private static class ReadRateLimitBackoffException extends Exception {
+        ReadRateLimitBackoffException() {
+            super("read rate limit backoff");
         }
     }
 
