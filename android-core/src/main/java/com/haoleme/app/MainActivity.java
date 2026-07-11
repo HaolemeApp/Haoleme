@@ -30,7 +30,6 @@ import android.os.Environment;
 import android.provider.Settings;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.PowerManager;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
@@ -99,7 +98,6 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.PrintWriter;
-import java.io.RandomAccessFile;
 import java.io.StringWriter;
 import java.net.ConnectException;
 import java.net.HttpURLConnection;
@@ -183,7 +181,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String TAG_RUN_OUTPUT = "run_output";
     private static final int CONSOLE_RENDER_INITIAL_CHARS = 60000;
     private static final int CONSOLE_RENDER_STEP_CHARS = 60000;
-    private static final int CONSOLE_HISTORY_DEFAULT_CHARS = 100_000_000;
     private static final int CPU_HISTORY_MAX_POINTS = 36;
     private static final String THEME_LIGHT = "light";
     private static final String THEME_DARK = "dark";
@@ -263,7 +260,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean pairingInProgress = false;
     private String selectedStatusFilter = "all";
     private String currentConsoleOutput = "";
-    private long currentConsoleStoredBytes = 0L;
     private int consoleOutputSyncedLength = 0;
     private int outputChunkSyncedCount = 0;
     private boolean consoleIncrementalUsesChunks = false;
@@ -326,7 +322,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             requestNotificationPermission();
             buildUi();
             handlePairIntent(getIntent());
-            handleNotificationIntent(getIntent());
             loadCachedRuns();
             if (statusText != null) {
                 statusText.setText(isEnglish() ? "Refreshing..." : "正在刷新...");
@@ -337,9 +332,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 checkForUpdates(false);
             } else {
                 restoreUpdateBadgeFromPrefs();
-            }
-            if (hasPairedDevice() || !normalizedToken().isEmpty()) {
-                startHaolemeForegroundService();
             }
             handler.postDelayed(pollRunnable, pollDelayMs());
         } catch (Throwable throwable) {
@@ -418,7 +410,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         super.onNewIntent(intent);
         setIntent(intent);
         handlePairIntent(intent);
-        handleNotificationIntent(intent);
     }
 
     @Override
@@ -598,7 +589,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 }
             }
             editor.apply();
-            clearConsoleCacheFiles();
             buildUi();
             refreshDevices();
             refreshRuns();
@@ -1049,42 +1039,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         onOff(quietHoursEnabled()),
                         false,
                         v -> togglePreference(PREF_NOTIFY_QUIET_HOURS, false, v)
-                ),
-                settingsRow(
-                        "✓",
-                        color("#0EA5E9"),
-                        t("notification_health"),
-                        t("notification_health_subtitle"),
-                        notificationHealthLabel(),
-                        true,
-                        v -> showNotificationHealthDialog()
-                ),
-                settingsRow(
-                        "≡",
-                        color("#7C3AED"),
-                        t("notification_channels"),
-                        t("notification_channels_subtitle"),
-                        "",
-                        true,
-                        v -> openSystemNotificationSettings()
-                ),
-                settingsRow(
-                        "⊘",
-                        color("#F59E0B"),
-                        t("muted_projects"),
-                        t("muted_projects_subtitle"),
-                        mutedProjectsLabel(),
-                        true,
-                        v -> showMutedProjectsDialog()
-                ),
-                settingsRow(
-                        "mask_icon",
-                        color("#16A34A"),
-                        t("lock_screen_privacy"),
-                        t("lock_screen_privacy_subtitle"),
-                        t("protected"),
-                        false,
-                        null
                 )
         ));
     }
@@ -1563,10 +1517,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void showConsoleHistoryDialog(View row) {
-        int[] values = new int[]{10_000_000, 50_000_000, 100_000_000};
-        String[] labels = new String[]{"10M chars", "50M chars", "100M chars"};
+        int[] values = new int[]{30000, 100000, 300000, 1000000};
+        String[] labels = new String[]{"30k chars", "100k chars", "300k chars", "1M chars"};
         int current = consoleHistoryLimit();
-        int selected = values.length - 1;
+        int selected = 2;
         for (int i = 0; i < values.length; i++) {
             if (values[i] == current) {
                 selected = i;
@@ -1923,24 +1877,25 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private int consoleHistoryLimit() {
-        int saved = prefs == null
-                ? CONSOLE_HISTORY_DEFAULT_CHARS
-                : prefs.getInt(PREF_CONSOLE_HISTORY_CHARS, CONSOLE_HISTORY_DEFAULT_CHARS);
-        if (saved <= 1_000_000) {
-            return CONSOLE_HISTORY_DEFAULT_CHARS;
+        int saved = prefs == null ? 300000 : prefs.getInt(PREF_CONSOLE_HISTORY_CHARS, 300000);
+        if (saved <= 30000) {
+            return 30000;
         }
-        if (saved <= 10_000_000) {
-            return 10_000_000;
+        if (saved <= 100000) {
+            return 100000;
         }
-        if (saved <= 50_000_000) {
-            return 50_000_000;
+        if (saved <= 300000) {
+            return 300000;
         }
-        return 100_000_000;
+        return 1000000;
     }
 
     private String consoleHistoryLabel() {
         int limit = consoleHistoryLimit();
-        return (limit / 1_000_000) + "M chars";
+        if (limit >= 1000000) {
+            return "1M chars";
+        }
+        return (limit / 1000) + "k chars";
     }
 
     private String syncSpaceLabel() {
@@ -2038,15 +1993,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             case "minimum_run_time_subtitle": return en ? "Skip notifications for short commands" : "短命令不发送通知";
             case "quiet_hours": return en ? "Quiet Hours" : "勿扰时段";
             case "quiet_hours_subtitle": return en ? "Silence notifications from 22:00 to 08:00" : "22:00 到 08:00 静默通知";
-            case "notification_health": return en ? "Notification Health" : "通知健康";
-            case "notification_health_subtitle": return en ? "Permission, delivery and background status" : "检查权限、送达和后台状态";
-            case "notification_channels": return en ? "Notification Channels" : "通知渠道";
-            case "notification_channels_subtitle": return en ? "Set sound and vibration for each alert type" : "分别设置成功、失败、设备和安全提醒";
-            case "muted_projects": return en ? "Muted Projects" : "已静音项目";
-            case "muted_projects_subtitle": return en ? "Review projects muted from notification actions" : "管理从通知中静音的项目";
-            case "lock_screen_privacy": return en ? "Lock Screen Privacy" : "锁屏隐私";
-            case "lock_screen_privacy_subtitle": return en ? "Hide commands and console text until unlocked" : "解锁前隐藏命令和控制台内容";
-            case "protected": return en ? "Protected" : "已保护";
             case "security": return en ? "Security" : "安全";
             case "mask_sensitive": return en ? "Mask Sensitive Text" : "隐藏敏感文本";
             case "mask_sensitive_subtitle": return en ? "Hide tokens, passwords and API keys in UI" : "在界面中隐藏 token、密码和 API key";
@@ -2205,88 +2151,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         d.show();
     }
 
-    private String notificationHealthLabel() {
-        return HaolemeNotificationCenter.deliveryHealth(this, isEnglish());
-    }
-
-    private String mutedProjectsLabel() {
-        int count = HaolemeNotificationCenter.mutedProjects(this).size();
-        if (count == 0) {
-            return isEnglish() ? "None" : "无";
-        }
-        return isEnglish() ? count + " muted" : count + " 个";
-    }
-
-    private void showNotificationHealthDialog() {
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        boolean permission = Build.VERSION.SDK_INT < 33
-                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
-        boolean enabled = manager == null || Build.VERSION.SDK_INT < 24 || manager.areNotificationsEnabled();
-        PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        boolean batteryAllowed = power == null || Build.VERSION.SDK_INT < 23 || power.isIgnoringBatteryOptimizations(getPackageName());
-        String yes = isEnglish() ? "OK" : "正常";
-        String no = isEnglish() ? "Needs attention" : "需要处理";
-        String message = (isEnglish() ? "Permission: " : "通知权限：") + (permission ? yes : no)
-                + "\n" + (isEnglish() ? "System notifications: " : "系统通知：") + (enabled ? yes : no)
-                + "\n" + (isEnglish() ? "Background battery access: " : "后台电池权限：") + (batteryAllowed ? yes : no)
-                + "\n" + (isEnglish() ? "Delivery history: " : "送达记录：") + notificationHealthLabel();
-        AlertDialog d = dialogBuilder()
-                .setTitle(t("notification_health"))
-                .setMessage(message)
-                .setNegativeButton(t("close"), null)
-                .setNeutralButton(isEnglish() ? "Battery settings" : "电池设置", (dialog, which) -> openBatteryOptimizationSettings())
-                .setPositiveButton(isEnglish() ? "System settings" : "系统设置", (dialog, which) -> openSystemNotificationSettings())
-                .create();
-        applyDialogStyle(d);
-        d.show();
-    }
-
-    private void openSystemNotificationSettings() {
-        try {
-            Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
-            intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
-            startActivity(intent);
-        } catch (Exception e) {
-            statusText.setText(isEnglish() ? "Cannot open notification settings." : "无法打开通知设置。");
-        }
-    }
-
-    private void openBatteryOptimizationSettings() {
-        try {
-            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
-        } catch (Exception e) {
-            statusText.setText(isEnglish() ? "Cannot open battery settings." : "无法打开电池设置。");
-        }
-    }
-
-    private void showMutedProjectsDialog() {
-        List<String> projects = new ArrayList<>(HaolemeNotificationCenter.mutedProjects(this));
-        Collections.sort(projects, String.CASE_INSENSITIVE_ORDER);
-        if (projects.isEmpty()) {
-            AlertDialog d = dialogBuilder()
-                    .setTitle(t("muted_projects"))
-                    .setMessage(isEnglish() ? "No projects are muted." : "当前没有被静音的项目。")
-                    .setPositiveButton(t("ok"), null)
-                    .create();
-            applyDialogStyle(d);
-            d.show();
-            return;
-        }
-        String[] labels = projects.toArray(new String[0]);
-        AlertDialog d = dialogBuilder()
-                .setTitle(isEnglish() ? "Tap a project to unmute" : "点击项目即可恢复通知")
-                .setItems(labels, (dialog, which) -> {
-                    HaolemeNotificationCenter.unmuteProject(this, projects.get(which));
-                    dialog.dismiss();
-                    buildUi();
-                    statusText.setText(isEnglish() ? "Project notifications restored." : "已恢复该项目的通知。");
-                })
-                .setNegativeButton(t("cancel"), null)
-                .create();
-        applyDialogStyle(d);
-        d.show();
-    }
-
     private String localCacheSizeLabel() {
         long bytes = localCacheBytes();
         if (bytes < 1024) {
@@ -2318,146 +2182,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 total += 8;
             }
         }
-        return total + directoryBytes(consoleCacheDirectory());
-    }
-
-    private File consoleCacheDirectory() {
-        return new File(getCacheDir(), "console-history");
-    }
-
-    private File consoleCacheFile(String runId) {
-        String value = runId == null ? "" : runId;
-        StringBuilder name = new StringBuilder();
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
-            for (byte item : digest) {
-                name.append(String.format(Locale.US, "%02x", item & 0xff));
-            }
-        } catch (Exception ignored) {
-            name.append(Integer.toHexString(value.hashCode()));
-        }
-        return new File(consoleCacheDirectory(), name + ".log");
-    }
-
-    private long directoryBytes(File directory) {
-        if (directory == null || !directory.exists()) {
-            return 0L;
-        }
-        File[] files = directory.listFiles();
-        if (files == null) {
-            return 0L;
-        }
-        long total = 0L;
-        for (File file : files) {
-            total += file.isDirectory() ? directoryBytes(file) : file.length();
-        }
         return total;
-    }
-
-    private void writeConsoleCache(String runId, String output) {
-        if (runId == null || runId.trim().isEmpty() || output == null || isNoOutputPlaceholder(output)) {
-            return;
-        }
-        File directory = consoleCacheDirectory();
-        if (!directory.exists() && !directory.mkdirs()) {
-            return;
-        }
-        File file = consoleCacheFile(runId);
-        try (FileOutputStream stream = new FileOutputStream(file, false)) {
-            stream.write(output.getBytes(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            Log.w(TAG, "cannot write console cache", e);
-            return;
-        }
-        trimConsoleCache(file);
-    }
-
-    private void appendConsoleCache(String runId, String output) {
-        if (runId == null || runId.trim().isEmpty() || output == null || output.isEmpty()) {
-            return;
-        }
-        File directory = consoleCacheDirectory();
-        if (!directory.exists() && !directory.mkdirs()) {
-            return;
-        }
-        File file = consoleCacheFile(runId);
-        try (FileOutputStream stream = new FileOutputStream(file, true)) {
-            stream.write(output.getBytes(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            Log.w(TAG, "cannot append console cache", e);
-            return;
-        }
-        trimConsoleCache(file);
-    }
-
-    private void trimConsoleCache(File file) {
-        long limit = consoleHistoryLimit();
-        if (file == null || !file.exists() || file.length() <= limit) {
-            return;
-        }
-        File temporary = new File(file.getParentFile(), file.getName() + ".tmp");
-        byte[] buffer = new byte[64 * 1024];
-        try (RandomAccessFile source = new RandomAccessFile(file, "r");
-             FileOutputStream target = new FileOutputStream(temporary, false)) {
-            source.seek(Math.max(0L, source.length() - limit));
-            int count;
-            while ((count = source.read(buffer)) > 0) {
-                target.write(buffer, 0, count);
-            }
-        } catch (IOException e) {
-            Log.w(TAG, "cannot trim console cache", e);
-            temporary.delete();
-            return;
-        }
-        if (!file.delete() || !temporary.renameTo(file)) {
-            Log.w(TAG, "cannot replace trimmed console cache");
-        }
-    }
-
-    private String readConsoleCacheTail(String runId, int maxChars) {
-        File file = consoleCacheFile(runId);
-        if (!file.exists() || maxChars <= 0) {
-            return "";
-        }
-        long bytesToRead = Math.min(file.length(), Math.min((long) consoleHistoryLimit(), Math.max(4096L, (long) maxChars * 4L)));
-        if (bytesToRead > Integer.MAX_VALUE) {
-            bytesToRead = Integer.MAX_VALUE;
-        }
-        byte[] data = new byte[(int) bytesToRead];
-        try (RandomAccessFile source = new RandomAccessFile(file, "r")) {
-            source.seek(Math.max(0L, source.length() - bytesToRead));
-            source.readFully(data);
-        } catch (IOException e) {
-            Log.w(TAG, "cannot read console cache", e);
-            return "";
-        }
-        String output = new String(data, StandardCharsets.UTF_8);
-        if (!output.isEmpty() && output.charAt(0) == '\ufffd') {
-            output = output.substring(1);
-        }
-        return output.length() > maxChars ? output.substring(output.length() - maxChars) : output;
-    }
-
-    private void deleteConsoleCache(String runId) {
-        File file = consoleCacheFile(runId);
-        if (file.exists() && !file.delete()) {
-            Log.w(TAG, "cannot delete console cache for " + runId);
-        }
-    }
-
-    private int clearConsoleCacheFiles() {
-        File directory = consoleCacheDirectory();
-        File[] files = directory.listFiles();
-        if (files == null) {
-            return 0;
-        }
-        int removed = 0;
-        for (File file : files) {
-            if (file.isFile() && file.delete()) {
-                removed++;
-            }
-        }
-        return removed;
     }
 
     private boolean isLocalCacheKey(String key) {
@@ -2500,7 +2225,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         }
         editor.apply();
-        removed += clearConsoleCacheFiles();
         knownStatuses.clear();
         return removed;
     }
@@ -2546,7 +2270,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         for (String id : removedIds) {
             editor.remove(CACHE_RUN_PREFIX + id).remove("notified_terminal_" + id);
-            deleteConsoleCache(id);
             knownStatuses.remove(id);
         }
         editor.apply();
@@ -2681,7 +2404,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         }
         editor.apply();
-        clearConsoleCacheFiles();
         knownStatuses.clear();
     }
 
@@ -2738,7 +2460,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         }
         editor.apply();
-        clearConsoleCacheFiles();
         knownStatuses.clear();
         selectedDeviceId = "all";
         selectedRunId = null;
@@ -4724,8 +4445,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         // Notifications must fire regardless of which tab is showing (the run list
         // only exists on the Runs tab now), so notify before the container guard.
         if (!fromCache) {
-            for (int i = 0; i < runs.length(); i++) {
-                JSONObject run = runs.optJSONObject(i);
+            for (int i = 0; i < visibleRuns.length(); i++) {
+                JSONObject run = visibleRuns.optJSONObject(i);
                 if (run != null) {
                     maybeNotify(run);
                 }
@@ -5442,7 +5163,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         outputChunkSyncedCount = 0;
         consoleIncrementalUsesChunks = false;
         currentConsoleOutput = "";
-        currentConsoleStoredBytes = 0L;
         buildConsoleUi();
         loadCachedRunDetail(id);
         refreshRunDetail(id, true);
@@ -5907,7 +5627,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         consoleTopMoreButton.setOnClickListener(v -> {
             consoleRenderLimit = Math.min(consoleHistoryLimit(), consoleRenderLimit + CONSOLE_RENDER_STEP_CHARS);
             consoleAutoScroll = false;
-            reloadCurrentConsoleWindow();
             renderConsoleText();
             if (consoleVerticalScroll != null) {
                 consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_UP));
@@ -6066,7 +5785,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         submitBackground(() -> {
             try {
                 StringBuilder url = new StringBuilder(normalizedServerUrl()).append("/api/runs/").append(id);
-                if (id.equals(selectedRunId)) {
+                if (!showLoading && id.equals(selectedRunId)) {
                     if (consoleIncrementalUsesChunks && outputChunkSyncedCount > 0) {
                         url.append("?outputSince=").append(outputChunkSyncedCount);
                     } else if (consoleOutputSyncedLength > 0) {
@@ -6151,17 +5870,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return null;
         }
         try {
-            JSONObject detail = new JSONObject(cached);
-            String legacyOutput = detail.optString("outputTail", "");
-            File cacheFile = consoleCacheFile(id);
-            if (!cacheFile.exists() && !legacyOutput.isEmpty() && !isNoOutputPlaceholder(legacyOutput)) {
-                writeConsoleCache(id, legacyOutput);
-            }
-            String diskOutput = readConsoleCacheTail(id, Math.max(CONSOLE_RENDER_INITIAL_CHARS, consoleRenderLimit));
-            if (!diskOutput.isEmpty()) {
-                detail.put("outputTail", diskOutput);
-            }
-            return detail;
+            return new JSONObject(cached);
         } catch (Exception ignored) {
             return null;
         }
@@ -6243,25 +5952,28 @@ public class MainActivity extends Activity implements LifecycleOwner {
             boolean incremental = payload.optBoolean("incremental", false);
             JSONObject run = decryptRun(payload.getJSONObject("run"), incremental ? null : payload.optJSONArray("outputChunks"));
             if (incremental) {
-                int remoteLength = payload.optInt("outputLength", run.optInt("outputLength", localLength));
+                String output = cachedConsoleOutput(cached);
+                int remoteLength = payload.optInt("outputLength", run.optInt("outputLength", output.length()));
+                boolean hasLocalOutput = !isNoOutputPlaceholder(output);
+                boolean alreadyApplied = hasLocalOutput && localLength > 0 && remoteLength > 0 && remoteLength <= localLength;
+                String append = payload.optString("outputAppend", "");
+                if (!alreadyApplied && !append.isEmpty()) {
+                    output += append;
+                }
                 JSONArray chunks = payload.optJSONArray("outputChunks");
-                int remoteChunks = run.optInt("outputChunkCount", -1);
-                boolean chunkMode = chunks != null || remoteChunks >= 0 || localChunks > 0;
-                if (chunkMode) {
-                    if (chunks != null && chunks.length() > 0 && (remoteChunks < 0 || remoteChunks > localChunks)) {
-                        appendConsoleCache(id, decryptOutputChunks(id, chunks));
-                        localChunks = remoteChunks >= 0 ? Math.max(localChunks, remoteChunks) : localChunks + chunks.length();
-                    } else if (remoteChunks >= 0) {
-                        localChunks = Math.max(localChunks, remoteChunks);
-                    }
-                } else {
-                    String append = payload.optString("outputAppend", "");
-                    if (!append.isEmpty() && (remoteLength <= 0 || remoteLength > localLength)) {
-                        appendConsoleCache(id, append);
+                if (chunks != null && chunks.length() > 0) {
+                    if (alreadyApplied) {
+                        localChunks = Math.max(localChunks, run.optInt("outputChunkCount", localChunks));
+                    } else {
+                        output += decryptOutputChunks(id, chunks);
+                        localChunks += chunks.length();
                     }
                 }
-                int length = Math.max(localLength, remoteLength);
-                prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunMetadataSnapshot(run, localChunks, length).toString()).apply();
+                if (localChunks <= 0) {
+                    localChunks = run.optInt("outputChunkCount", 0);
+                }
+                int length = Math.max(Math.max(output.length(), localLength), remoteLength);
+                prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, output, localChunks, length).toString()).apply();
             } else {
                 prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, consoleOutput(run)).toString()).apply();
             }
@@ -6283,29 +5995,32 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
 
-        String runId = run.optString("id", "");
         int remoteLength = payload.optInt("outputLength", run.optInt("outputLength", consoleOutputSyncedLength));
+        boolean hasCurrentOutput = !isNoOutputPlaceholder(currentConsoleOutput);
+        boolean alreadyApplied = hasCurrentOutput
+                && consoleOutputSyncedLength > 0
+                && remoteLength > 0
+                && remoteLength <= consoleOutputSyncedLength;
+
+        String appendText = payload.optString("outputAppend", "");
+        if (!alreadyApplied && !appendText.isEmpty()) {
+            currentConsoleOutput = (currentConsoleOutput == null ? "" : currentConsoleOutput) + appendText;
+            consoleOutputSyncedLength = currentConsoleOutput.length();
+        }
         JSONArray chunks = payload.optJSONArray("outputChunks");
-        int remoteChunkCount = run.optInt("outputChunkCount", -1);
-        boolean chunkMode = chunks != null || consoleIncrementalUsesChunks || remoteChunkCount >= 0;
-        if (chunkMode) {
+        if (chunks != null && chunks.length() > 0) {
             consoleIncrementalUsesChunks = true;
-            if (chunks != null && chunks.length() > 0 && (remoteChunkCount < 0 || remoteChunkCount > outputChunkSyncedCount)) {
-                appendConsoleCache(runId, decryptOutputChunks(runId, chunks));
-                outputChunkSyncedCount = remoteChunkCount >= 0
-                        ? Math.max(outputChunkSyncedCount, remoteChunkCount)
-                        : outputChunkSyncedCount + chunks.length();
-            } else if (remoteChunkCount >= 0) {
-                outputChunkSyncedCount = Math.max(outputChunkSyncedCount, remoteChunkCount);
-            }
-        } else {
-            String appendText = payload.optString("outputAppend", "");
-            if (!appendText.isEmpty() && (remoteLength <= 0 || remoteLength > consoleOutputSyncedLength)) {
-                appendConsoleCache(runId, appendText);
+            if (alreadyApplied) {
+                outputChunkSyncedCount = Math.max(outputChunkSyncedCount, run.optInt("outputChunkCount", outputChunkSyncedCount));
+            } else {
+                currentConsoleOutput = (currentConsoleOutput == null ? "" : currentConsoleOutput) + decryptOutputChunks(run.optString("id", ""), chunks);
+                outputChunkSyncedCount += chunks.length();
+                consoleOutputSyncedLength = currentConsoleOutput.length();
             }
         }
-        consoleOutputSyncedLength = Math.max(consoleOutputSyncedLength, remoteLength);
-        reloadCurrentConsoleWindow();
+        if (payload.has("outputLength")) {
+            consoleOutputSyncedLength = Math.max(consoleOutputSyncedLength, remoteLength);
+        }
         persistCurrentRunDetail(run);
 
         renderConsoleText();
@@ -6326,7 +6041,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         try {
             JSONObject base = currentRunDetail == null ? new JSONObject(run.toString()) : new JSONObject(currentRunDetail.toString());
             prefs.edit()
-                    .putString(CACHE_RUN_PREFIX + id, localRunMetadataSnapshot(base, outputChunkSyncedCount, consoleOutputSyncedLength).toString())
+                    .putString(CACHE_RUN_PREFIX + id, localRunSnapshot(base, currentConsoleOutput, outputChunkSyncedCount, consoleOutputSyncedLength).toString())
                     .apply();
         } catch (Exception ignored) {
         }
@@ -6334,38 +6049,23 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private JSONObject localRunSnapshot(JSONObject run, String output) {
         JSONArray chunks = run == null ? null : run.optJSONArray("outputChunks");
-        int remoteChunkCount = run == null ? -1 : run.optInt("outputChunkCount", -1);
-        int chunkCount = remoteChunkCount >= 0
-                ? remoteChunkCount
-                : (chunks == null ? cachedLocalOutputChunkCount(run) : chunks.length());
+        int chunkCount = chunks == null ? cachedLocalOutputChunkCount(run) : chunks.length();
         int outputLength = Math.max(run == null ? 0 : run.optInt("outputLength", 0), output == null ? 0 : output.length());
         return localRunSnapshot(run, output, chunkCount, outputLength);
     }
 
     private JSONObject localRunSnapshot(JSONObject run, String output, int chunkCount, int outputLength) {
-        String id = run == null ? "" : run.optString("id", "");
-        if (!id.isEmpty() && output != null && !isNoOutputPlaceholder(output)) {
-            writeConsoleCache(id, output);
-        }
-        return localRunMetadataSnapshot(run, chunkCount, outputLength);
-    }
-
-    private JSONObject localRunMetadataSnapshot(JSONObject run, int chunkCount, int outputLength) {
         JSONObject snapshot;
         try {
             snapshot = run == null ? new JSONObject() : new JSONObject(run.toString());
+            String safeOutput = output == null || isNoOutputPlaceholder(output) ? "" : limitConsoleOutput(output);
             snapshot.remove("outputChunks");
             snapshot.remove("e2ee");
-            snapshot.put("outputTail", "");
+            snapshot.put("outputTail", safeOutput);
             snapshot.put("stdoutTail", "");
             snapshot.put("stderrTail", "");
-            if (chunkCount > 0 || snapshot.optInt("outputChunkCount", 0) > 0) {
-                snapshot.put("localOutputChunkCount", Math.max(0, chunkCount));
-                snapshot.put("outputChunkCount", Math.max(snapshot.optInt("outputChunkCount", 0), Math.max(0, chunkCount)));
-            } else {
-                snapshot.remove("localOutputChunkCount");
-                snapshot.remove("outputChunkCount");
-            }
+            snapshot.put("localOutputChunkCount", Math.max(0, chunkCount));
+            snapshot.put("outputChunkCount", Math.max(snapshot.optInt("outputChunkCount", 0), Math.max(0, chunkCount)));
             snapshot.put("outputLength", Math.max(0, outputLength));
         } catch (Exception ignored) {
             snapshot = new JSONObject();
@@ -6381,6 +6081,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (!fromCache) {
             maybeNotify(run);
         }
+        currentRunDetail = run;
         String status = run.optString("status", "unknown");
         if (selectedRunId != null && selectedRunId.equals(run.optString("id", ""))) {
             selectedRunStatus = status;
@@ -6392,47 +6093,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setTextColor(statusColor(status));
         detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
-        String runId = run.optString("id", "");
-        String diskOutput = readConsoleCacheTail(runId, consoleRenderLimit);
-        currentConsoleOutput = diskOutput.isEmpty() ? consoleOutput(run) : diskOutput;
-        File cacheFile = consoleCacheFile(runId);
-        currentConsoleStoredBytes = cacheFile.exists()
-                ? cacheFile.length()
-                : currentConsoleOutput.getBytes(StandardCharsets.UTF_8).length;
+        currentConsoleOutput = consoleOutput(run);
         JSONArray chunks = run.optJSONArray("outputChunks");
-        int remoteChunkCount = run.optInt("outputChunkCount", -1);
-        outputChunkSyncedCount = remoteChunkCount >= 0
-                ? Math.max(cachedLocalOutputChunkCount(run), remoteChunkCount)
-                : (chunks == null ? cachedLocalOutputChunkCount(run) : chunks.length());
-        consoleIncrementalUsesChunks = outputChunkSyncedCount > 0 || run.optInt("outputChunkCount", 0) > 0;
+        outputChunkSyncedCount = chunks == null ? cachedLocalOutputChunkCount(run) : chunks.length();
+        consoleIncrementalUsesChunks = outputChunkSyncedCount > 0 || run.optInt("outputChunkCount", -1) >= 0;
         consoleOutputSyncedLength = Math.max(currentConsoleOutput == null ? 0 : currentConsoleOutput.length(), run.optInt("outputLength", 0));
-        run.remove("outputChunks");
-        run.remove("e2ee");
-        try {
-            run.put("outputTail", "");
-            run.put("stdoutTail", "");
-            run.put("stderrTail", "");
-        } catch (Exception ignored) {
-        }
-        currentRunDetail = run;
         renderConsoleText();
         if (("running".equals(status) || "created".equals(status)) && consoleAutoScroll && consoleVerticalScroll != null) {
             consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_DOWN));
         }
         if (statusText != null && !isConsoleRenderClipped() && (consoleSearchInput == null || consoleSearchInput.getText().toString().trim().isEmpty())) {
             statusText.setText(fromCache ? (isEnglish() ? "Saved console." : "已保存控制台。") : (isEnglish() ? "Console updated." : "控制台已更新。"));
-        }
-    }
-
-    private void reloadCurrentConsoleWindow() {
-        if (selectedRunId == null || selectedRunId.isEmpty()) {
-            return;
-        }
-        File cacheFile = consoleCacheFile(selectedRunId);
-        currentConsoleStoredBytes = cacheFile.exists() ? cacheFile.length() : 0L;
-        String diskOutput = readConsoleCacheTail(selectedRunId, consoleRenderLimit);
-        if (!diskOutput.isEmpty()) {
-            currentConsoleOutput = diskOutput;
         }
     }
 
@@ -6502,11 +6173,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private boolean isConsoleRenderClipped() {
-        if (currentConsoleOutput == null) {
-            return false;
-        }
-        long loadedBytes = currentConsoleOutput.getBytes(StandardCharsets.UTF_8).length;
-        return currentConsoleOutput.length() > consoleRenderLimit || currentConsoleStoredBytes > loadedBytes;
+        return currentConsoleOutput != null && currentConsoleOutput.length() > consoleRenderLimit;
     }
 
     private String consoleRenderStatusText() {
@@ -6514,11 +6181,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return isEnglish() ? "Console ready." : "控制台就绪。";
         }
         return isEnglish()
-                ? "Showing last " + consoleRenderLabel(consoleRenderLimit) + " of " + consoleRenderLabel(Math.max(currentConsoleOutput.length(), currentConsoleStoredBytes)) + "."
-                : "正在显示最后 " + consoleRenderLabel(consoleRenderLimit) + " / 共 " + consoleRenderLabel(Math.max(currentConsoleOutput.length(), currentConsoleStoredBytes)) + "。";
+                ? "Showing last " + consoleRenderLabel(consoleRenderLimit) + " of " + consoleRenderLabel(currentConsoleOutput.length()) + "."
+                : "正在显示最后 " + consoleRenderLabel(consoleRenderLimit) + " / 共 " + consoleRenderLabel(currentConsoleOutput.length()) + "。";
     }
 
-    private String consoleRenderLabel(long chars) {
+    private String consoleRenderLabel(int chars) {
         if (chars >= 1000000) {
             return (chars / 1000000) + "M chars";
         }
@@ -6779,7 +6446,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void removeRunFromCaches(String id) {
-        deleteConsoleCache(id);
         SharedPreferences.Editor editor = prefs.edit()
                 .remove(CACHE_RUN_PREFIX + id)
                 .remove("notified_terminal_" + id);
@@ -6843,7 +6509,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     String id = run.optString("id", "");
                     if (!id.isEmpty()) {
                         prefs.edit().remove(CACHE_RUN_PREFIX + id).remove("notified_terminal_" + id).apply();
-                        deleteConsoleCache(id);
                     }
                     continue;
                 }
@@ -6886,14 +6551,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
 
-        if ("created".equals(status) || "running".equals(status)) {
-            boolean startedDuringSession = parseTimestamp(run.optString("startedAt", "")) >= notificationSessionStartedAt;
-            if (!firstLoad || startedDuringSession) {
-                HaolemeNotificationCenter.notifyRunning(this, run, isEnglish());
-            }
-            return;
-        }
-
         boolean isTerminal = "succeeded".equals(status) || "failed".equals(status) || "cancelled".equals(status);
         if (!isTerminal) {
             return;
@@ -6904,7 +6561,29 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if ((!wasRunning && !completedDuringSession) || (firstLoad && !completedDuringSession)) {
             return;
         }
-        HaolemeNotificationCenter.notifyTerminal(this, run, isEnglish());
+        if (!shouldNotifyTerminalRun(run, status)) {
+            return;
+        }
+        String notifyKey = "notified_terminal_" + id;
+        if (status.equals(prefs.getString(notifyKey, ""))) {
+            return;
+        }
+        sendNotification(run);
+        prefs.edit().putString(notifyKey, status).apply();
+    }
+
+    private boolean shouldNotifyTerminalRun(JSONObject run, String status) {
+        if ("succeeded".equals(status) && !notifySuccessEnabled()) {
+            return false;
+        }
+        if (("failed".equals(status) || "cancelled".equals(status)) && !notifyFailureEnabled()) {
+            return false;
+        }
+        int minSeconds = notifyMinSeconds();
+        if (minSeconds > 0 && runDurationSeconds(run) < minSeconds) {
+            return false;
+        }
+        return !quietHoursEnabled() || !isQuietHourNow();
     }
 
     private long runDurationSeconds(JSONObject run) {
@@ -6926,6 +6605,26 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean isQuietHourNow() {
         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
         return hour >= 22 || hour < 8;
+    }
+
+    private void sendNotification(JSONObject run) {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        android.app.Notification.Builder builder = Build.VERSION.SDK_INT >= 26
+                ? new android.app.Notification.Builder(this, CHANNEL_ID)
+                : new android.app.Notification.Builder(this);
+
+        String command = displayText(commandTextForDisplay(run, "Command"));
+        String status = run.optString("status", "finished");
+        String summary = notificationSummary(run, command, status);
+        builder.setContentTitle(appDisplayName() + ": " + status)
+                .setContentText(summary)
+                .setSmallIcon(android.R.drawable.stat_notify_more)
+                .setAutoCancel(true);
+        manager.notify(run.optString("id", command).hashCode(), builder.build());
     }
 
     private void startHaolemeForegroundService() {
@@ -7378,12 +7077,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         buildUi();
                     }
                     statusText.setText(isEnglish() ? "Paired with " + finalDeviceName + ". Refreshing..." : "已配对 " + finalDeviceName + "，正在刷新...");
-                    startHaolemeForegroundService();
-                    HaolemeNotificationCenter.notifySecurity(
-                            this,
-                            isEnglish() ? "Device paired" : "设备配对成功",
-                            isEnglish() ? finalDeviceName + " can now sync command status." : finalDeviceName + " 已可以同步命令状态。",
-                            isEnglish());
                     refreshHome(false);
                     maybePromptRenameLongPairedDevice(finalDeviceId, finalDeviceName);
                 });
@@ -7686,29 +7379,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         handlePairUri(intent.getData());
-    }
-
-    private void handleNotificationIntent(Intent intent) {
-        if (intent == null) {
-            return;
-        }
-        String runId = intent.getStringExtra(HaolemeNotificationCenter.EXTRA_RUN_ID);
-        if (runId == null || runId.trim().isEmpty()) {
-            return;
-        }
-        String action = intent.getStringExtra("notification_action");
-        String finalRunId = runId.trim();
-        intent.removeExtra(HaolemeNotificationCenter.EXTRA_RUN_ID);
-        intent.removeExtra("notification_action");
-        HaolemeNotificationCenter.markViewed(this, finalRunId);
-        openRunDetail(finalRunId);
-        if (HaolemeNotificationCenter.ACTION_CONFIRM_INTERRUPT.equals(action)) {
-            handler.postDelayed(() -> {
-                if (finalRunId.equals(selectedRunId)) {
-                    confirmInterruptRun();
-                }
-            }, 250L);
-        }
     }
 
     private void handlePairText(String raw) {
@@ -8670,7 +8340,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void createNotificationChannel() {
-        HaolemeNotificationCenter.ensureChannels(this, isEnglish());
+        if (Build.VERSION.SDK_INT < 26) {
+            return;
+        }
+        NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "Command runs",
+                NotificationManager.IMPORTANCE_DEFAULT
+        );
+        channel.setDescription(isEnglish()
+                ? "Notifications when Haoleme commands finish."
+                : "好了么命令结束时发送通知。");
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        manager.createNotificationChannel(channel);
     }
 
     private void requestNotificationPermission() {
