@@ -50,6 +50,8 @@ HEARTBEAT_STAGGER_SECONDS = 20
 HEARTBEAT_ACTIVE_POLL_SECONDS = 3
 ACTIVE_RUN_RESYNC_SECONDS = 30
 GITHUB_UPDATE_JSON_URL = "https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json"
+UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+UPDATE_NOTICE_INTERVAL_SECONDS = 24 * 60 * 60
 ORPHANED_RUN_GRACE_SECONDS = 30
 INTERRUPT_NOTE = "\n[好了么] Interrupted from mobile app.\n"
 
@@ -1459,7 +1461,121 @@ def fetch_update_manifest(timeout: float = 8.0) -> tuple[dict[str, object], str]
     raise RuntimeError(detail)
 
 
-def latest_python_release(manifest: dict[str, object]) -> dict[str, str]:
+def update_check_cache_path() -> Path:
+    return default_config_path().parent / "update-check.json"
+
+
+def read_update_check_cache(path: Path | None = None) -> dict[str, object]:
+    cache_path = path or update_check_cache_path()
+    try:
+        loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def write_update_check_cache(data: dict[str, object], path: Path | None = None) -> None:
+    cache_path = path or update_check_cache_path()
+    temporary = cache_path.with_name(
+        f"{cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(cache_path)
+    except OSError:
+        unlink_missing(temporary)
+
+
+def automatic_update_checks_enabled() -> bool:
+    value = os.environ.get("HAOLEME_NO_UPDATE_CHECK", "").strip().lower()
+    return value not in {"1", "true", "yes", "on"}
+
+
+def cached_timestamp(value: object) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def check_cli_update(
+    *,
+    force: bool = False,
+    allow_network: bool = True,
+    check_pypi: bool = False,
+    now: float | None = None,
+) -> dict[str, object]:
+    checked_at = time.time() if now is None else now
+    cached = read_update_check_cache()
+    last_checked = cached_timestamp(cached.get("checkedAt"))
+    if not force and checked_at - last_checked < UPDATE_CHECK_INTERVAL_SECONDS:
+        return cached
+    if not allow_network:
+        return cached
+    try:
+        manifest, source = fetch_update_manifest(timeout=3.0)
+        release = latest_python_release(manifest, check_pypi=check_pypi)
+        latest = str(release.get("version") or "").strip()
+        if not latest:
+            return cached
+        updated = dict(cached)
+        updated.update({
+            "checkedAt": checked_at,
+            "currentVersion": __version__,
+            "latestVersion": latest,
+            "source": source,
+        })
+        write_update_check_cache(updated)
+        return updated
+    except Exception:
+        return cached
+
+
+def start_background_update_check() -> dict[str, object]:
+    state: dict[str, object] = {"status": read_update_check_cache()}
+    if not automatic_update_checks_enabled():
+        return state
+    cached = state["status"] if isinstance(state.get("status"), dict) else {}
+    checked_at = cached_timestamp(cached.get("checkedAt"))
+    if time.time() - checked_at < UPDATE_CHECK_INTERVAL_SECONDS:
+        return state
+
+    def worker() -> None:
+        state["status"] = check_cli_update()
+
+    thread = threading.Thread(target=worker, name="haoleme-update-check", daemon=True)
+    state["thread"] = thread
+    thread.start()
+    return state
+
+
+def print_update_notice_after_command(state: dict[str, object]) -> bool:
+    if not automatic_update_checks_enabled():
+        return False
+    thread = state.get("thread")
+    if isinstance(thread, threading.Thread) and thread.is_alive():
+        thread.join(timeout=0.2)
+    status = state.get("status") if isinstance(state.get("status"), dict) else read_update_check_cache()
+    latest = str(status.get("latestVersion") or "").strip()
+    if not latest or compare_versions(__version__, latest) >= 0:
+        return False
+    now = time.time()
+    notified_version = str(status.get("notifiedVersion") or "")
+    notified_at = cached_timestamp(status.get("notifiedAt"))
+    if notified_version == latest and now - notified_at < UPDATE_NOTICE_INTERVAL_SECONDS:
+        return False
+    updated = dict(status)
+    updated["notifiedVersion"] = latest
+    updated["notifiedAt"] = now
+    write_update_check_cache(updated)
+    print()
+    print(f"New haoleme version available: {__version__} -> {latest}")
+    print("Run: hao update")
+    return True
+
+
+def latest_python_release(manifest: dict[str, object], *, check_pypi: bool = True) -> dict[str, str]:
     python = manifest.get("python")
     version = ""
     package_url = ""
@@ -1471,7 +1587,7 @@ def latest_python_release(manifest: dict[str, object]) -> dict[str, str]:
 
     # Fallback / override with actual latest from PyPI to keep "hao --version" accurate
     # even if the project's update.json on server is slightly behind.
-    pypi_version = _fetch_pypi_latest_version()
+    pypi_version = _fetch_pypi_latest_version() if check_pypi else ""
     if pypi_version and (not version or compare_versions(pypi_version, version) > 0):
         version = pypi_version
         wheel_url = ""
@@ -1538,19 +1654,14 @@ def version_command(argv: Sequence[str]) -> int:
     print(f"Python  {sys.version.split()[0]}")
     print(f"hao     {shutil.which('hao') or sys.argv[0]}")
 
-    try:
-        manifest, source = fetch_update_manifest()
-    except Exception as exc:
-        print(f"Update check: unavailable ({exc})")
-        return 1 if ns.check else 0
-
-    release = latest_python_release(manifest)
-    latest = release.get("version", "")
+    status = check_cli_update(force=True, check_pypi=True)
+    latest = str(status.get("latestVersion") or "").strip()
+    source = str(status.get("source") or "").strip()
     if not latest:
-        print("Update check: manifest has no python.version")
+        print("Update check: unavailable")
         return 1 if ns.check else 0
 
-    print(f"Latest  {latest} ({source})")
+    print(f"Latest  {latest}" + (f" ({source})" if source else ""))
     if compare_versions(__version__, latest) < 0:
         print("Status  update available (run: hao update)")
         return 1 if ns.check else 0
@@ -1739,6 +1850,21 @@ def doctor_command(argv: Sequence[str]) -> int:
     else:
         report("project", "WARN", "none; run inside a git repo or use: hao project use NAME")
 
+    update_status = check_cli_update(
+        force=not ns.no_network,
+        allow_network=not ns.no_network,
+        check_pypi=not ns.no_network,
+    )
+    latest_version = str(update_status.get("latestVersion") or "").strip()
+    if latest_version and compare_versions(__version__, latest_version) < 0:
+        report("cli update", "WARN", f"{__version__} -> {latest_version}; run: hao update")
+    elif latest_version:
+        report("cli update", "OK", f"{__version__} is latest")
+    elif ns.no_network:
+        report("cli update", "WARN", "not checked (--no-network)")
+    else:
+        report("cli update", "WARN", "check unavailable")
+
     if ns.no_network:
         report("cloud health", "WARN", "skipped")
     elif config is not None:
@@ -1795,6 +1921,7 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
             print("hao: missing command after environment assignment", file=sys.stderr)
             return 2
 
+    update_check_state = start_background_update_check()
     start_heartbeat_daemon()
     run_id = str(uuid.uuid4())
     store = RunStore()
@@ -1835,6 +1962,7 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
             store.finish_run(run_id, 127)
             syncer.close()
             print(f"hao: command not found: {missing_command}", file=sys.stderr)
+            print_update_notice_after_command(update_check_state)
             return 127
     finally:
         watcher.stop()
@@ -1848,6 +1976,7 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
             print(f"好了么 interrupt poll warning: {watcher.last_error}", file=sys.stderr)
         if syncer.last_error:
             print(f"好了么 cloud sync warning: {syncer.last_error}", file=sys.stderr)
+        print_update_notice_after_command(update_check_state)
         return 130
 
     store.finish_run(run_id, exit_code)
@@ -1855,6 +1984,7 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
     print(f"好了么 finished: {run_id} exit={exit_code}")
     if syncer.last_error:
         print(f"好了么 cloud sync warning: {syncer.last_error}", file=sys.stderr)
+    print_update_notice_after_command(update_check_state)
     return exit_code
 
 
