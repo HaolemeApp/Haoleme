@@ -5676,7 +5676,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void copyConsoleOutput() {
-        String output = currentConsoleOutput == null || currentConsoleOutput.isEmpty() ? (isEnglish() ? "No output yet." : "还没有输出。") : displayText(collapseCarriageReturns(currentConsoleOutput));
+        String output = currentConsoleOutput == null || currentConsoleOutput.isEmpty() ? (isEnglish() ? "No output yet." : "还没有输出。") : displayText(renderTerminalText(currentConsoleOutput));
         copyText(appDisplayName() + " console", output);
         if (statusText != null) {
             statusText.setText(isEnglish() ? "Console copied." : "控制台已复制。");
@@ -6088,7 +6088,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
 
         String lowerQuery = query.toLowerCase(Locale.US);
-        String searchable = collapseCarriageReturns(consoleWindowRaw());
+        String searchable = renderTerminalText(consoleWindowRaw());
         String[] lines = searchable.split("\\r?\\n", -1);
         StringBuilder matches = new StringBuilder();
         int count = 0;
@@ -6112,44 +6112,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
         updateConsoleMoreButton();
     }
 
-    // Render carriage-return progress frames the way a terminal would: each '\r'
-    // rewrites the current line in place, so an updating progress bar collapses to
-    // its latest frame instead of spamming a new line per update. While the bar is
-    // still running it is simply the last (un-terminated) line, which sits at the
-    // bottom of the console; once it finishes (a '\n' arrives) it stays as one line
-    // in the history.
-    private String collapseCarriageReturns(String s) {
-        if (s == null) {
-            return "";
-        }
-        if (s.indexOf('\r') < 0) {
-            return s;
-        }
-        StringBuilder out = new StringBuilder(s.length());
-        int lineStart = 0;
-        for (int i = 0; i < s.length(); i++) {
-            char ch = s.charAt(i);
-            if (ch == '\n') {
-                out.append('\n');
-                lineStart = out.length();
-            } else if (ch == '\r') {
-                // "\r\n" is a normal line ending (a PTY maps \n -> \r\n), so the
-                // \r must NOT wipe the line — let the following \n finalize it.
-                // Only a bare \r (carriage return) is an in-place overwrite
-                // (progress-bar frame), which restarts the current line.
-                if (i + 1 < s.length() && s.charAt(i + 1) == '\n') {
-                    continue;
-                }
-                out.setLength(lineStart);
-            } else {
-                out.append(ch);
-            }
-        }
-        return out.toString();
+    private String renderTerminalText(String value) {
+        return TerminalTextRenderer.render(value);
     }
 
     private String displayConsoleOutput() {
-        String output = collapseCarriageReturns(consoleWindowRaw());
+        String output = renderTerminalText(consoleWindowRaw());
         if (output.isEmpty()) {
             return "";
         }
@@ -8490,7 +8458,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (output.isEmpty()) {
             output = run.optString("stdoutTail", "");
         }
-        String[] lines = output.split("\\r?\\n");
+        String[] lines = renderTerminalText(output).split("\\r?\\n");
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim();
             if (!line.isEmpty()) {
