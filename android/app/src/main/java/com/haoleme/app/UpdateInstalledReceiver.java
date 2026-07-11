@@ -11,7 +11,7 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 
 public class UpdateInstalledReceiver extends BroadcastReceiver {
-    private static final String CHANNEL_ID = HaolemeNotificationCenter.CHANNEL_UPDATES;
+    private static final String CHANNEL_ID = "updates";
     private static final int NOTIFICATION_ID = 4701;
     private static final String PREFS = "haoleme";
     private static final String PREF_LANGUAGE_MODE = "language_mode";
@@ -31,7 +31,6 @@ public class UpdateInstalledReceiver extends BroadcastReceiver {
             return;
         }
         boolean english = isEnglish(context);
-        HaolemeNotificationCenter.ensureChannels(context, english);
         createChannel(manager, english);
 
         android.app.Notification.Builder builder = Build.VERSION.SDK_INT >= 26
