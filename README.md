@@ -36,6 +36,11 @@
   </a>
 </p>
 
+## 官方地址
+
+- 官网：<https://haolemeapp.github.io/>
+- GitHub：<https://github.com/HaolemeApp/Haoleme>
+
 ## 这是什么
 
 好了么是一个命令运行监控工具。
