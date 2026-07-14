@@ -36,6 +36,11 @@
   </a>
 </p>
 
+## Official Links
+
+- Website: <https://haolemeapp.github.io/>
+- GitHub: <https://github.com/HaolemeApp/Haoleme>
+
 ## What Is It
 
 Haoleme is a command monitoring tool.
