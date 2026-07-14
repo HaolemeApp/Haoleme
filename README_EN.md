@@ -58,21 +58,19 @@ The home screen shows active and completed runs in one place. Settings covers pa
   </tr>
 </table>
 
-## Download
-
-- Website: [haolemeapp.github.io](https://haolemeapp.github.io/)
-- Android app: [GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)
-- CLI: [PyPI](https://pypi.org/project/haoleme/)
-
 ## Quick Start
 
-Install the CLI:
+### 1. Download the App
+
+[Download the latest Android app from GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)
+
+### 2. Install the CLI
 
 ```bash
 pip install -U haoleme
 ```
 
-Pair your computer or server:
+### 3. Pair a Device
 
 ```bash
 hao login
@@ -80,7 +78,9 @@ hao login
 
 Open the app, then scan the QR code or enter the 6-digit pairing code.
 
-Run commands by prefixing them with `hao`:
+### 4. Run a Command
+
+Prefix your original command with `hao`:
 
 ```bash
 hao python train.py

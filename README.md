@@ -58,20 +58,19 @@
   </tr>
 </table>
 
-## 下载
-
-- 官方网站：[haolemeapp.github.io](https://haolemeapp.github.io/)
-- Android App：[GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)
-
 ## 快速开始
 
-安装命令行工具：
+### 1. 下载 App
+
+[从 GitHub Releases 下载最新版 Android App](https://github.com/HaolemeApp/Haoleme/releases/latest)
+
+### 2. 安装 CLI
 
 ```bash
 pip install -U haoleme
 ```
 
-在电脑或服务器上配对：
+### 3. 配对设备
 
 ```bash
 hao login
@@ -79,7 +78,9 @@ hao login
 
 打开 App，扫码或输入 6 位配对码。
 
-以后直接在命令前加 `hao`：
+### 4. 运行命令
+
+直接在原命令前加 `hao`：
 
 ```bash
 hao python train.py
