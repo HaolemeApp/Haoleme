@@ -27,7 +27,7 @@
     <img src="https://img.shields.io/github/v/release/HaolemeApp/Haoleme?label=version&logo=github" alt="Latest version">
   </a>
   <a href="https://github.com/HaolemeApp/Haoleme/issues">
-    <img src="https://img.shields.io/github/issues/HaolemeApp/Haoleme?label=issues&logo=github" alt="GitHub Issues">
+    <img src="https://img.shields.io/github/issues-search/HaolemeApp/Haoleme?query=is%3Aissue&label=issues&logo=github" alt="Total GitHub Issues">
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="License: AGPL-3.0-or-later">
