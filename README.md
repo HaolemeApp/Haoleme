@@ -17,6 +17,8 @@
 </p>
 
 <p align="center">
+  <a href="https://haolemeapp.github.io/">官网</a>
+  ·
   <a href="https://github.com/HaolemeApp/Haoleme/releases/latest">下载 App</a>
   ·
   <a href="https://pypi.org/project/haoleme/">PyPI</a>
@@ -53,6 +55,7 @@
 
 ## 下载
 
+- 官方网站：[haolemeapp.github.io](https://haolemeapp.github.io/)
 - Android App：[GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)
 
 ## 快速开始
