@@ -17,6 +17,8 @@
 </p>
 
 <p align="center">
+  <a href="https://haolemeapp.github.io/">Website</a>
+  ·
   <a href="https://github.com/HaolemeApp/Haoleme/releases/latest">Download App</a>
   ·
   <a href="https://pypi.org/project/haoleme/">PyPI</a>
@@ -53,6 +55,7 @@ The home screen shows active and completed runs in one place. Settings covers pa
 
 ## Download
 
+- Website: [haolemeapp.github.io](https://haolemeapp.github.io/)
 - Android app: [GitHub Releases](https://github.com/HaolemeApp/Haoleme/releases/latest)
 - CLI: [PyPI](https://pypi.org/project/haoleme/)
 
