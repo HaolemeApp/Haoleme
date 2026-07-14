@@ -1,4 +1,12 @@
 <p align="center">
+  <strong>
+    <a href="README.md">简体中文</a>
+    &nbsp;|&nbsp;
+    <a href="README_EN.md">English</a>
+  </strong>
+</p>
+
+<p align="center">
   <img src="docs/assets/haoleme_icon_light.png" width="96" alt="Haoleme">
 </p>
 
@@ -9,14 +17,18 @@
 </p>
 
 <p align="center">
-  <a href="README.md">中文</a>
-  ·
   <a href="https://github.com/HaolemeApp/Haoleme/releases/latest">Download App</a>
   ·
   <a href="https://pypi.org/project/haoleme/">PyPI</a>
 </p>
 
 <p align="center">
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/latest">
+    <img src="https://img.shields.io/github/v/release/HaolemeApp/Haoleme?label=version&logo=github" alt="Latest version">
+  </a>
+  <a href="https://github.com/HaolemeApp/Haoleme/issues">
+    <img src="https://img.shields.io/github/issues/HaolemeApp/Haoleme?label=issues&logo=github" alt="GitHub Issues">
+  </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="License: AGPL-3.0-or-later">
   </a>
