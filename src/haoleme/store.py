@@ -64,7 +64,8 @@ class RunRecord:
     stderr_tail: str
     output_tail: str
     output_length: int
-    cloud_synced_at: str
+    cloud_output_cursor: int = 0
+    cloud_synced_at: str = ""
 
     @property
     def commandText(self) -> str:
@@ -87,6 +88,7 @@ class RunRecord:
             stderr_tail=row["stderr_tail"] or "",
             output_tail=row["output_tail"] or "",
             output_length=max(0, int(row["output_length"] or 0)),
+            cloud_output_cursor=max(0, int(row["cloud_output_cursor"] or 0)),
             cloud_synced_at=row["cloud_synced_at"] or "",
         )
 
@@ -141,6 +143,7 @@ class RunStore:
                     output_tail TEXT NOT NULL DEFAULT '',
                     output_length INTEGER NOT NULL DEFAULT 0,
                     project TEXT NOT NULL DEFAULT '',
+                    cloud_output_cursor INTEGER NOT NULL DEFAULT 0,
                     cloud_synced_at TEXT NOT NULL DEFAULT ''
                 )
                 """
@@ -165,6 +168,8 @@ class RunStore:
                     WHERE cloud_synced_at = ''
                     """
                 )
+            if "cloud_output_cursor" not in columns:
+                conn.execute("ALTER TABLE runs ADD COLUMN cloud_output_cursor INTEGER NOT NULL DEFAULT 0")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runs_updated_at ON runs(updated_at DESC)"
             )
@@ -335,6 +340,17 @@ class RunStore:
             conn.execute(
                 "UPDATE runs SET cloud_synced_at = ? WHERE id = ?",
                 (utc_now(), run_id),
+            )
+
+    def mark_cloud_output_cursor(self, run_id: str, cursor: int) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE runs
+                SET cloud_output_cursor = max(cloud_output_cursor, ?)
+                WHERE id = ?
+                """,
+                (max(0, int(cursor)), run_id),
             )
 
     def mark_cloud_pending(self, run_id: str) -> None:

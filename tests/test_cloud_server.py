@@ -64,6 +64,16 @@ from haoleme.cloud_server import (
 
 
 class CloudServerDeviceTest(unittest.TestCase):
+    def test_server_initializes_rate_limits_before_serving_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = HaolemeCloudServer(("127.0.0.1", 0), Path(tmp) / "cloud.db", 22)
+            try:
+                self.assertIsInstance(server.pair_confirm_attempts, dict)
+                self.assertIsInstance(server.read_attempts, dict)
+                self.assertIsInstance(server.write_attempts, dict)
+            finally:
+                server.server_close()
+
     def test_renamed_device_is_not_overwritten_by_later_sync(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
@@ -792,8 +802,10 @@ class CloudServerDeviceTest(unittest.TestCase):
                     (account_key, "run-1"),
                 ).fetchone()["payload"])
             self.assertEqual(payload["status"], "succeeded")
-            self.assertEqual(len(payload.get("outputChunks") or []), 1)
-            self.assertEqual(payload["outputChunks"][0]["ciphertext"], "abc")
+            self.assertNotIn("outputChunks", payload)
+            detail = get_run(db_path, account_key, "run-1")
+            self.assertEqual(len(detail.get("outputChunks") or []), 1)
+            self.assertEqual(detail["outputChunks"][0]["ciphertext"], "abc")
             self.assertEqual(payload.get("outputLength"), 10)
 
     def test_append_run_update_ignores_duplicate_plaintext_output(self):
@@ -847,9 +859,39 @@ class CloudServerDeviceTest(unittest.TestCase):
                 "outputLength": 10,
             }, auth)
 
-            self.assertEqual(len(stored.get("outputChunks") or []), 1)
-            self.assertEqual(stored["outputChunks"][0]["ciphertext"], "abc")
+            self.assertNotIn("outputChunks", stored)
+            detail = get_run(db_path, account_key, "run-1")
+            self.assertEqual(len(detail.get("outputChunks") or []), 1)
+            self.assertEqual(detail["outputChunks"][0]["ciphertext"], "abc")
             self.assertEqual(stored["outputLength"], 10)
+
+    def test_append_run_update_rejects_partially_overlapping_encrypted_chunk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_1"
+            init_db(db_path)
+            upsert_run(db_path, account_key, self.sample_run("run-overlap", device_id, "Server A", "running"))
+            auth = AuthContext(account_key=account_key, token_hash="h", scope="write",
+                               device_id=device_id, device_name="Server A")
+
+            append_run_update(db_path, account_key, {
+                "id": "run-overlap", "status": "running", "outputStart": 0, "outputLength": 10,
+                "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n1", "ciphertext": "first"},
+            }, auth)
+            conflict = append_run_update(db_path, account_key, {
+                "id": "run-overlap", "status": "running", "outputStart": 5, "outputLength": 15,
+                "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n2", "ciphertext": "overlap"},
+            }, auth)
+            append_run_update(db_path, account_key, {
+                "id": "run-overlap", "status": "running", "outputStart": 10, "outputLength": 15,
+                "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n3", "ciphertext": "second"},
+            }, auth)
+
+            detail = get_run(db_path, account_key, "run-overlap")
+            self.assertEqual(conflict["outputLength"], 10)
+            self.assertEqual([item["ciphertext"] for item in detail["outputChunks"]], ["first", "second"])
+            self.assertEqual(detail["outputLength"], 15)
 
     def test_list_runs_omits_console_chunks_but_keeps_counts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -909,6 +951,46 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertEqual(detail["outputChunkOffset"], 2)
             self.assertEqual([item["seq"] for item in detail["outputChunks"]], [2, 3, 4])
             self.assertEqual([item["ciphertext"] for item in incremental["outputChunks"]], ["chunk-3", "chunk-4"])
+
+    def test_encrypted_chunks_are_retained_by_bytes_without_growing_run_payload(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "haoleme.cloud_server.cloud_output_bytes_limit", return_value=10
+        ):
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_1"
+            init_db(db_path)
+            upsert_run(db_path, account_key, self.sample_run("run-bytes", device_id, "Server A", "running"))
+            auth = AuthContext(account_key=account_key, token_hash="h", scope="write",
+                               device_id=device_id, device_name="Server A")
+            for index in range(3):
+                append_run_update(db_path, account_key, {
+                    "id": "run-bytes",
+                    "status": "running",
+                    "outputStart": index,
+                    "outputLength": index + 1,
+                    "e2eeOutputChunk": {
+                        "v": 1, "alg": "AES-256-GCM", "nonce": "n",
+                        "ciphertext": "chunk" + str(index),
+                    },
+                }, auth)
+
+            with connect(db_path) as db:
+                payload = db.execute(
+                    "SELECT payload FROM runs WHERE account_key = ? AND id = ?",
+                    (account_key, "run-bytes"),
+                ).fetchone()["payload"]
+                rows = db.execute(
+                    "SELECT seq FROM run_output_chunks WHERE account_key = ? AND run_id = ? ORDER BY seq",
+                    (account_key, "run-bytes"),
+                ).fetchall()
+
+            self.assertLess(len(payload), 4096)
+            self.assertNotIn("outputChunks", json.loads(payload))
+            self.assertEqual([row["seq"] for row in rows], [2])
+            detail = get_run(db_path, account_key, "run-bytes")
+            self.assertEqual(detail["outputChunkCount"], 3)
+            self.assertEqual(detail["outputChunkOffset"], 2)
 
     def test_plaintext_incremental_cursor_uses_absolute_output_length(self):
         run = self.sample_run("run-plain", "dev_1", "Server A", "running")

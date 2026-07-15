@@ -51,6 +51,8 @@ RUNNING_SYNC_MAX_INTERVAL_SECONDS = 10.0
 SYNC_COALESCE_SECONDS = 0.35
 SYNC_RETRY_MAX_SECONDS = 30.0
 INTERRUPT_POLL_SECONDS = 1.0
+OUTPUT_CHUNK_BYTES = 256 * 1024
+LIVE_SYNC_MAX_CHUNKS = 4
 LEGACY_CLOUD_URLS = {
     "http://api.haoleme.cloud",
 }
@@ -253,6 +255,11 @@ class CloudClient:
 
     def upsert_run(self, run: RunRecord, *, include_output: bool = True) -> None:
         payload = run.to_dict()
+        if not include_output:
+            # The authoritative cloud cursor advances only after a chunk is
+            # committed. Advertising the local total here would make a retry
+            # look fully uploaded before any output reached the server.
+            payload["outputLength"] = 0
         meta = client_run_metadata()
         payload["cliVersion"] = meta["cliVersion"]
         payload["os"] = meta["os"]
@@ -267,7 +274,13 @@ class CloudClient:
             raise RuntimeError("E2EE is not configured; run `hao login` from the app again before cloud sync")
         self.request("POST", "/api/runs", {"run": payload})
 
-    def append_run_update(self, run: RunRecord, deltas: dict[str, str]) -> None:
+    def append_run_update(
+        self,
+        run: RunRecord,
+        deltas: dict[str, str],
+        output_start: int | None = None,
+        output_end: int | None = None,
+    ) -> dict[str, Any]:
         patch: dict[str, Any] = {
             "id": run.id,
             "status": run.status,
@@ -276,8 +289,10 @@ class CloudClient:
             "endedAt": run.ended_at,
             "updatedAt": run.updated_at,
             "project": run.project,
-            "outputLength": run.output_length,
+            "outputLength": run.output_length if output_end is None else output_end,
         }
+        if output_start is not None:
+            patch["outputStart"] = max(0, output_start)
         if self.config.device_id:
             patch["deviceId"] = self.config.device_id
         if self.config.device_name:
@@ -301,7 +316,7 @@ class CloudClient:
                 patch["stdoutDelta"] = stdout_delta
             if stderr_delta:
                 patch["stderrDelta"] = stderr_delta
-        self.request("POST", "/api/runs", {"append": True, "run": patch})
+        return self.request("POST", "/api/runs", {"append": True, "run": patch})
 
     def heartbeat(self, gpus: list[dict[str, Any]] | None = None, cpu: dict[str, Any] | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {}
@@ -486,13 +501,15 @@ class CloudSyncer:
         self.client = client
         self._event = threading.Event()
         self._stop = threading.Event()
+        self._sync_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self.last_error: str | None = None
         self._last_sync_at = 0.0
         self._started_at = time.monotonic()
         self._last_output_at = time.monotonic()
         self._initial_synced = False
-        self._synced_output_len = 0
+        run = self.store.get_run(self.run_id)
+        self._synced_output_len = run.cloud_output_cursor if run is not None else 0
         self._synced_stdout_len = 0
         self._synced_stderr_len = 0
         self._failure_count = 0
@@ -544,20 +561,27 @@ class CloudSyncer:
         return 5.0 + (idle - 600) / (1800 - 600) * (RUNNING_SYNC_MAX_INTERVAL_SECONDS - 5.0)
 
     def _output_deltas(self, run: RunRecord) -> dict[str, str]:
-        new_output_chars = max(0, run.output_length - self._synced_output_len)
-        output_delta = run.output_tail[-min(new_output_chars, len(run.output_tail)) :] if new_output_chars else ""
+        output_delta, _start, _end = next_output_chunk(run, self._synced_output_len)
         return {
             "output_tail": output_delta,
             "stdout_tail": "",
             "stderr_tail": "",
         }
 
-    def _mark_output_synced(self, run: RunRecord) -> None:
-        self._synced_output_len = run.output_length
+    def _mark_output_synced(self, run: RunRecord, cursor: int | None = None) -> None:
+        self._synced_output_len = run.output_length if cursor is None else max(0, cursor)
         self._synced_stdout_len = len(run.stdout_tail)
         self._synced_stderr_len = len(run.stderr_tail)
 
     def _sync_once(self, force: bool = False) -> None:
+        sync_lock = getattr(self, "_sync_lock", None)
+        if sync_lock is None:
+            sync_lock = threading.Lock()
+            self._sync_lock = sync_lock
+        with sync_lock:
+            self._sync_once_locked(force)
+
+    def _sync_once_locked(self, force: bool = False) -> None:
         if self.client is None:
             return
         run = self.store.get_run(self.run_id)
@@ -568,25 +592,36 @@ class CloudSyncer:
             if self._last_sync_at and now - self._last_sync_at < self._running_sync_interval():
                 return
         try:
-            deltas = self._output_deltas(run)
-            has_output = any(deltas.values())
-            if has_output:
-                self._last_output_at = time.monotonic()
             running = run.status in {"created", "running"}
 
             if not self._initial_synced:
                 self.client.upsert_run(run, include_output=False)
                 self._initial_synced = True
-                self.client.append_run_update(run, deltas if has_output else {})
-            elif running:
-                self.client.append_run_update(run, deltas if has_output else {})
-            else:
-                if has_output:
-                    self.client.append_run_update(run, deltas)
+
+            sent_output = False
+            for _ in range(LIVE_SYNC_MAX_CHUNKS):
+                output_delta, output_start, output_end = next_output_chunk(run, self._synced_output_len)
+                if not output_delta:
+                    break
+                deltas = {"output_tail": output_delta, "stdout_tail": "", "stderr_tail": ""}
+                response = self.client.append_run_update(run, deltas, output_start, output_end)
+                remote_cursor = int(response.get("outputLength", output_end) or output_end)
+                acknowledged = min(remote_cursor, run.output_length)
+                self.store.mark_cloud_output_cursor(run.id, acknowledged)
+                self._mark_output_synced(run, acknowledged)
+                self._last_output_at = time.monotonic()
+                sent_output = True
+
+            if running and not sent_output:
+                self.client.append_run_update(run, {})
+            elif not running:
                 self.client.upsert_run(run, include_output=False)
 
-            self.store.mark_cloud_synced(run.id)
-            self._mark_output_synced(run)
+            if self._synced_output_len >= run.output_length:
+                self.store.mark_cloud_synced(run.id)
+            else:
+                self.store.mark_cloud_pending(run.id)
+                self._event.set()
             self._last_sync_at = time.monotonic()
             self._failure_count = 0
             self._next_retry_at = 0.0
@@ -600,3 +635,29 @@ class CloudSyncer:
             self._failure_count = min(self._failure_count + 1, 8)
             delay = min(SYNC_RETRY_MAX_SECONDS, 2.0 ** min(self._failure_count - 1, 5))
             self._next_retry_at = time.monotonic() + delay
+
+
+def utf8_prefix(text: str, max_bytes: int = OUTPUT_CHUNK_BYTES) -> str:
+    if not text:
+        return ""
+    if len(text.encode("utf-8")) <= max_bytes:
+        return text
+    low = 1
+    high = len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(text[:middle].encode("utf-8")) <= max_bytes:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low]
+
+
+def next_output_chunk(run: RunRecord, cursor: int) -> tuple[str, int, int]:
+    available_start = max(0, run.output_length - len(run.output_tail))
+    start = max(0, cursor, available_start)
+    if start >= run.output_length:
+        return "", start, start
+    relative_start = max(0, start - available_start)
+    chunk = utf8_prefix(run.output_tail[relative_start:])
+    return chunk, start, start + len(chunk)
