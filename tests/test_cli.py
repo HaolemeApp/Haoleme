@@ -15,6 +15,7 @@ from pathlib import Path
 from haoleme.cli import (
     HEARTBEAT_INTERVAL_SECONDS,
     ORPHANED_RUN_GRACE_SECONDS,
+    acquire_process_file_lock,
     command_needs_shell,
     compare_versions,
     collect_cpu_stats,
@@ -124,6 +125,27 @@ class CliPairingTest(unittest.TestCase):
 
             self.assertEqual(output.getvalue().count("Run: hao update"), 1)
 
+    def test_short_command_waits_for_background_update_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "update-check.json"
+            state = {"status": {}}
+
+            def finish_check():
+                time.sleep(0.05)
+                state["status"] = {"checkedAt": time.time(), "latestVersion": "9.9.9"}
+
+            thread = threading.Thread(target=finish_check, daemon=True)
+            state["thread"] = thread
+            thread.start()
+            output = io.StringIO()
+            with patch("haoleme.cli.update_check_cache_path", return_value=cache_path), \
+                    patch("haoleme.cli.__version__", "0.0.1"), \
+                    patch("sys.stdout", output):
+                shown = print_update_notice_after_command(state)
+
+            self.assertTrue(shown)
+            self.assertIn("Run: hao update", output.getvalue())
+
     def test_doctor_reports_available_cli_update(self):
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp, \
@@ -135,6 +157,31 @@ class CliPairingTest(unittest.TestCase):
 
         self.assertIn("cli update", output.getvalue())
         self.assertIn("run: hao update", output.getvalue())
+
+    def test_doctor_does_not_upload_pending_runs(self):
+        class HealthyClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def health(self):
+                return {"storage": {"ok": True}, "disk": {"ok": True, "freeBytes": 1024 * 1024}}
+
+            def list_devices(self):
+                return []
+
+        output = io.StringIO()
+        config = CloudConfig(api_url="https://example.test", account="default", token="x" * 32)
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"HAOLEME_HOME": tmp}), \
+                patch("haoleme.cli.CloudConfig.load", return_value=config), \
+                patch("haoleme.cli.CloudClient", HealthyClient), \
+                patch("haoleme.cli.check_cli_update", return_value={"latestVersion": "0.4.24"}), \
+                patch("haoleme.cli.sync_pending_runs", side_effect=AssertionError("doctor must not upload")), \
+                patch("sys.stdout", output):
+            exit_code = doctor_command([])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(output.getvalue().count("cloud health"), 1)
 
     def test_update_check_reports_available_release(self):
         buffer = io.StringIO()
@@ -326,6 +373,20 @@ class CliPairingTest(unittest.TestCase):
                 patch("haoleme.cli.Path.read_bytes", return_value=b"python\0train.py\0"):
             self.assertFalse(is_heartbeat_process_running(4321))
 
+    @unittest.skipUnless(os.name == "posix", "file-lock semantics are platform specific")
+    def test_heartbeat_file_lock_allows_only_one_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "heartbeat.lock"
+            first = acquire_process_file_lock(path, blocking=False)
+            self.assertIsNotNone(first)
+            try:
+                self.assertIsNone(acquire_process_file_lock(path, blocking=False))
+            finally:
+                first.close()
+            third = acquire_process_file_lock(path, blocking=False)
+            self.assertIsNotNone(third)
+            third.close()
+
     def test_pending_sync_honors_expired_maintenance_deadline(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(Path(tmp) / "runs.db")
@@ -336,6 +397,21 @@ class CliPairingTest(unittest.TestCase):
                     raise AssertionError("sync started after its maintenance deadline")
 
             synced = sync_pending_runs(store, UnexpectedClient(), deadline=time.monotonic() - 1)
+
+            self.assertEqual(synced, 0)
+            self.assertEqual(store.count_unsynced_runs(), 1)
+
+    def test_background_sync_skips_active_run_owned_by_live_syncer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-active", ["sleep", "10"], "/tmp")
+            store.mark_running("run-active", 123)
+
+            class UnexpectedClient:
+                def upsert_run(self, *_args, **_kwargs):
+                    raise AssertionError("heartbeat duplicated a live run upload")
+
+            synced = sync_pending_runs(store, UnexpectedClient(), include_active=False)
 
             self.assertEqual(synced, 0)
             self.assertEqual(store.count_unsynced_runs(), 1)
