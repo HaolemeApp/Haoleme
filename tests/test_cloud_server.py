@@ -115,6 +115,27 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertEqual(device["name"], "Server A")
             self.assertEqual(device["lastSeenAt"], "2026-06-18T01:05:00Z")
 
+    def test_old_backlog_sync_cannot_move_device_last_seen_backwards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_5090"
+            init_db(db_path)
+
+            record_device_heartbeat(
+                db_path,
+                account_key,
+                device_id,
+                "5090",
+                "2026-07-15T16:28:33.541513Z",
+                cpu={"cores": 208, "utilization": 3, "load1": 7.43},
+            )
+            upsert_device(db_path, account_key, device_id, "5090", "2026-07-11T04:59:06+00:00")
+
+            device = list_devices(db_path, account_key)[0]
+            self.assertEqual(device["lastSeenAt"], "2026-07-15T16:28:33.541513Z")
+            self.assertEqual(device["cpuUpdatedAt"], "2026-07-15T16:28:33.541513Z")
+
     def test_active_user_stats_counts_distinct_accounts_by_recency(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
