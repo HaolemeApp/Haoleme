@@ -19,6 +19,7 @@ from haoleme.cli import (
     command_needs_shell,
     compare_versions,
     collect_cpu_stats,
+    collect_gpu_stats,
     check_cli_update,
     doctor_command,
     heartbeat_initial_delay,
@@ -48,6 +49,7 @@ from haoleme.cli import (
     terminate_windows_process,
     write_update_check_cache,
     write_heartbeat_state,
+    _parse_windows_gpu_payload,
 )
 from haoleme.cloud import CloudConfig, DEFAULT_CLOUD_URL, InterruptWatcher
 from haoleme.store import RunStore
@@ -443,6 +445,46 @@ class CliPairingTest(unittest.TestCase):
         if "utilization" in stats:
             self.assertGreaterEqual(stats["utilization"], 0)
             self.assertLessEqual(stats["utilization"], 100)
+
+    def test_collect_cpu_stats_uses_windows_cim_utilization(self):
+        with patch("haoleme.cli.os.name", "nt"), patch(
+            "haoleme.cli._linux_cpu_totals", return_value=None
+        ), patch("haoleme.cli._windows_cpu_utilization", return_value=47):
+            stats = collect_cpu_stats()
+
+        self.assertEqual(stats["utilization"], 47)
+
+    def test_parse_windows_gpu_payload_supports_amd_adapter(self):
+        payload = {
+            "adapters": [
+                {"name": "AMD Radeon RX 7900 XTX", "adapterRam": 8589934592},
+                {"name": "Microsoft Basic Display Adapter", "adapterRam": None},
+            ],
+            "engines": [
+                {"instance": "pid_12_luid_0x0_0x1_phys_0_eng_0_engtype_3d", "value": 72.4},
+                {"instance": "pid_12_luid_0x0_0x1_phys_0_eng_1_engtype_copy", "value": 18.0},
+            ],
+        }
+
+        gpus = _parse_windows_gpu_payload(payload)
+
+        self.assertEqual(len(gpus), 1)
+        self.assertEqual(gpus[0]["name"], "AMD Radeon RX 7900 XTX")
+        self.assertEqual(gpus[0]["utilization"], 72)
+        self.assertEqual(gpus[0]["memoryTotal"], 8192)
+
+    def test_collect_gpu_stats_merges_windows_amd_with_nvidia(self):
+        nvidia = [{"index": 0, "name": "NVIDIA GeForce RTX 4090", "utilization": 10}]
+        windows = [
+            {"index": 0, "name": "NVIDIA GeForce RTX 4090", "utilization": 11},
+            {"index": 1, "name": "AMD Radeon Graphics", "utilization": 33},
+        ]
+        with patch("haoleme.cli.os.name", "nt"), patch(
+            "haoleme.cli._collect_nvidia_gpu_stats", return_value=nvidia
+        ), patch("haoleme.cli._collect_windows_gpu_stats", return_value=windows):
+            gpus = collect_gpu_stats()
+
+        self.assertEqual([gpu["name"] for gpu in gpus], ["NVIDIA GeForce RTX 4090", "AMD Radeon Graphics"])
 
     def test_heartbeat_recovers_orphaned_running_run(self):
         with tempfile.TemporaryDirectory() as tmp:
