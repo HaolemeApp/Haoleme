@@ -51,11 +51,14 @@ HEARTBEAT_ACTIVE_POLL_SECONDS = 3
 HEARTBEAT_MAINTENANCE_BUDGET_SECONDS = 20
 HEARTBEAT_SYNC_RUN_LIMIT = 25
 HEARTBEAT_SYNC_MAX_CHUNKS_PER_RUN = 4
+HEARTBEAT_MAINTENANCE_RETRY_MIN_SECONDS = 5
+HEARTBEAT_MAINTENANCE_RETRY_MAX_SECONDS = 300
 BACKGROUND_SYNC_MAX_CHUNKS_PER_RUN = 16
 ACTIVE_RUN_RESYNC_SECONDS = 30
 GITHUB_UPDATE_JSON_URL = "https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json"
 UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 UPDATE_NOTICE_INTERVAL_SECONDS = 24 * 60 * 60
+UPDATE_CHECK_FINISH_WAIT_SECONDS = 3.2
 ORPHANED_RUN_GRACE_SECONDS = 30
 INTERRUPT_NOTE = "\n[好了么] Interrupted from mobile app.\n"
 OUTPUT_STORE_BATCH_CHARS = 64 * 1024
@@ -992,6 +995,41 @@ def heartbeat_state_path() -> Path:
     return default_config_path().with_name("heartbeat.json")
 
 
+def heartbeat_start_lock_path() -> Path:
+    return default_config_path().with_name("heartbeat-start.lock")
+
+
+def heartbeat_daemon_lock_path() -> Path:
+    return default_config_path().with_name("heartbeat-daemon.lock")
+
+
+def acquire_process_file_lock(path: Path, *, blocking: bool) -> object | None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = path.open("a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"0")
+                lock_file.flush()
+            lock_file.seek(0)
+            mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+            msvcrt.locking(lock_file.fileno(), mode, 1)
+        else:
+            import fcntl
+
+            operation = fcntl.LOCK_EX
+            if not blocking:
+                operation |= fcntl.LOCK_NB
+            fcntl.flock(lock_file.fileno(), operation)
+    except (ImportError, OSError):
+        lock_file.close()
+        return None
+    return lock_file
+
+
 def read_heartbeat_pid() -> int | None:
     try:
         raw = heartbeat_pid_path().read_text(encoding="utf-8").strip()
@@ -1115,33 +1153,40 @@ def start_heartbeat_daemon() -> tuple[bool, str]:
     if config is None:
         return False, "not configured (run hao login)"
 
-    pid_path = heartbeat_pid_path()
-    pid = read_heartbeat_pid()
-    if pid and is_heartbeat_process_running(pid):
-        state = read_heartbeat_state()
-        if state.get("haolemeVersion") != __version__:
-            stop_heartbeat_daemon()
-        else:
-            return True, f"already running (pid {pid})"
+    start_lock = acquire_process_file_lock(heartbeat_start_lock_path(), blocking=True)
+    if start_lock is None:
+        return False, "could not acquire heartbeat startup lock"
+    try:
+        pid_path = heartbeat_pid_path()
+        pid = read_heartbeat_pid()
+        if pid and is_heartbeat_process_running(pid):
+            state = read_heartbeat_state()
+            if state.get("haolemeVersion") != __version__:
+                stop_heartbeat_daemon()
+            else:
+                return True, f"already running (pid {pid})"
 
-    pid_path.parent.mkdir(parents=True, exist_ok=True)
-    unlink_missing(pid_path)
-    log_path = heartbeat_log_path()
-    with log_path.open("a", encoding="utf-8") as log_file:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "haoleme", "heartbeat", "run"],
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            close_fds=True,
-        )
-    pid_path.write_text(f"{proc.pid}\n", encoding="utf-8")
-    time.sleep(0.15)
-    if proc.poll() is not None:
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
         unlink_missing(pid_path)
-        return False, f"exited immediately; check {log_path}"
-    return True, f"started (pid {proc.pid})"
+        log_path = heartbeat_log_path()
+        with log_path.open("a", encoding="utf-8") as log_file:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "haoleme", "heartbeat", "run"],
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+        pid_path.write_text(f"{proc.pid}\n", encoding="utf-8")
+        time.sleep(0.2)
+        if proc.poll() is not None:
+            if read_heartbeat_pid() == proc.pid:
+                unlink_missing(pid_path)
+            return False, f"exited immediately; check {log_path}"
+        return True, f"started (pid {proc.pid})"
+    finally:
+        start_lock.close()
 
 
 def stop_heartbeat_daemon() -> tuple[bool, str]:
@@ -1267,12 +1312,21 @@ def heartbeat_run_foreground() -> int:
         print("hao: cloud is not configured. Run hao login.", file=sys.stderr)
         return 1
 
+    daemon_lock = acquire_process_file_lock(heartbeat_daemon_lock_path(), blocking=False)
+    if daemon_lock is None:
+        print("好了么 heartbeat is already running; duplicate daemon stopped.", flush=True)
+        return 0
+
+    pid_path = heartbeat_pid_path()
+    pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
     previous_sighup = ignore_sighup()
     write_heartbeat_state(haolemeVersion=__version__)
     delay = heartbeat_initial_delay(config)
     print(f"好了么 heartbeat started. First heartbeat in {delay}s, then every {HEARTBEAT_INTERVAL_SECONDS}s.", flush=True)
     next_heartbeat_at = 0.0
+    next_maintenance_at = 0.0
     last_heartbeat_ok = True
+    maintenance_failures = 0
     try:
         time.sleep(delay)
         while True:
@@ -1306,47 +1360,78 @@ def heartbeat_run_foreground() -> int:
                     write_heartbeat_state(lastError=error)
                     print(f"Heartbeat failed: {error}", flush=True)
                 next_heartbeat_at = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
-
-            maintenance_deadline = min(
-                time.monotonic() + HEARTBEAT_MAINTENANCE_BUDGET_SECONDS,
-                next_heartbeat_at - 2.0,
-            )
-            try:
                 if not last_heartbeat_ok:
-                    raise RuntimeError("heartbeat unavailable; maintenance deferred")
-                interrupted = apply_cloud_interrupts(store, client, deadline=maintenance_deadline)
-                if interrupted:
-                    print(f"Applied {interrupted} cloud interrupt(s).", flush=True)
-                recovered = reconcile_orphaned_running_runs(store, client, deadline=maintenance_deadline)
-                if recovered:
-                    print(f"Recovered {recovered} orphaned run(s).", flush=True)
-                refreshed = mark_stale_active_runs_pending(store)
-                if refreshed:
-                    print(f"Queued {refreshed} active run(s) for cloud refresh.", flush=True)
-                synced = sync_pending_runs(
-                    store,
-                    client,
-                    limit=HEARTBEAT_SYNC_RUN_LIMIT,
-                    deadline=maintenance_deadline,
-                    max_chunks_per_run=HEARTBEAT_SYNC_MAX_CHUNKS_PER_RUN,
+                    next_maintenance_at = next_heartbeat_at
+
+            active = bool(store.list_active_runs(limit=1))
+            pending = store.count_unsynced_runs()
+            maintenance_due = (
+                last_heartbeat_ok
+                and (active or pending > 0)
+                and time.monotonic() >= next_maintenance_at
+            )
+            if maintenance_due:
+                maintenance_deadline = min(
+                    time.monotonic() + HEARTBEAT_MAINTENANCE_BUDGET_SECONDS,
+                    next_heartbeat_at - 2.0,
                 )
-                if synced:
-                    print(f"Synced {synced} pending run(s).", flush=True)
-                    write_heartbeat_state(lastSyncAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), lastSyncedRuns=synced)
-            except Exception as exc:
-                error = describe_cloud_error(exc)
-                if last_heartbeat_ok and "maintenance deferred" not in str(exc):
+                try:
+                    # An idle device has nothing to interrupt, so avoid the
+                    # read request entirely. Live run output is owned by that
+                    # command's CloudSyncer; this daemon only catches terminal
+                    # backlog and orphaned commands.
+                    if active:
+                        interrupted = apply_cloud_interrupts(store, client, deadline=maintenance_deadline)
+                        if interrupted:
+                            print(f"Applied {interrupted} cloud interrupt(s).", flush=True)
+                        recovered = reconcile_orphaned_running_runs(store, client, deadline=maintenance_deadline)
+                        if recovered:
+                            print(f"Recovered {recovered} orphaned run(s).", flush=True)
+                    synced = sync_pending_runs(
+                        store,
+                        client,
+                        limit=HEARTBEAT_SYNC_RUN_LIMIT,
+                        deadline=maintenance_deadline,
+                        max_chunks_per_run=HEARTBEAT_SYNC_MAX_CHUNKS_PER_RUN,
+                        include_active=False,
+                    )
+                    if synced:
+                        print(f"Synced {synced} pending run(s).", flush=True)
+                        write_heartbeat_state(
+                            lastSyncAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            lastSyncedRuns=synced,
+                        )
+                    maintenance_failures = 0
+                    next_maintenance_at = time.monotonic() + HEARTBEAT_ACTIVE_POLL_SECONDS
+                    write_heartbeat_state(lastMaintenanceError="")
+                except Exception as exc:
+                    maintenance_failures = min(maintenance_failures + 1, 10)
+                    retry_delay = min(
+                        HEARTBEAT_MAINTENANCE_RETRY_MAX_SECONDS,
+                        HEARTBEAT_MAINTENANCE_RETRY_MIN_SECONDS * (2 ** (maintenance_failures - 1)),
+                    )
+                    next_maintenance_at = time.monotonic() + retry_delay
+                    error = describe_cloud_error(exc)
                     write_heartbeat_state(lastMaintenanceError=error)
-                    print(f"Heartbeat maintenance warning: {error}", flush=True)
-            has_active_work = bool(store.list_active_runs(limit=1)) or store.count_unsynced_runs() > 0
-            until_heartbeat = max(0.2, next_heartbeat_at - time.monotonic())
-            sleep_seconds = min(HEARTBEAT_ACTIVE_POLL_SECONDS, until_heartbeat) if has_active_work else until_heartbeat
-            time.sleep(sleep_seconds)
+                    print(f"Heartbeat maintenance warning: {error}; retry in {retry_delay}s", flush=True)
+
+            active = bool(store.list_active_runs(limit=1))
+            pending = store.count_unsynced_runs()
+            now = time.monotonic()
+            wake_at = next_heartbeat_at
+            if active:
+                wake_at = min(wake_at, now + HEARTBEAT_ACTIVE_POLL_SECONDS)
+            if pending > 0:
+                wake_at = min(wake_at, max(now + 0.2, next_maintenance_at))
+            time.sleep(max(0.2, wake_at - now))
     except KeyboardInterrupt:
         print("好了么 heartbeat stopped.", flush=True)
         return 130
     finally:
+        if read_heartbeat_pid() == os.getpid():
+            unlink_missing(pid_path)
         restore_sighup(previous_sighup)
+        daemon_lock.close()
 
 
 def reconcile_orphaned_running_runs(
@@ -1380,11 +1465,14 @@ def sync_pending_runs(
     limit: int = 100,
     deadline: float | None = None,
     max_chunks_per_run: int = BACKGROUND_SYNC_MAX_CHUNKS_PER_RUN,
+    include_active: bool = True,
 ) -> int:
     synced = 0
     for run in store.list_unsynced_runs(limit=limit):
         if deadline is not None and time.monotonic() >= deadline:
             break
+        if not include_active and run.status in {"created", "running"}:
+            continue
         client.upsert_run(run, include_output=False)
         cursor = run.cloud_output_cursor
         for _ in range(max(1, max_chunks_per_run)):
@@ -1667,7 +1755,10 @@ def print_update_notice_after_command(state: dict[str, object]) -> bool:
         return False
     thread = state.get("thread")
     if isinstance(thread, threading.Thread) and thread.is_alive():
-        thread.join(timeout=0.2)
+        # The check starts before the command. Long tasks pay no delay, while a
+        # very short task waits briefly so its first update notice is not lost
+        # when the daemon thread exits with the CLI process.
+        thread.join(timeout=UPDATE_CHECK_FINISH_WAIT_SECONDS)
     status = state.get("status") if isinstance(state.get("status"), dict) else read_update_check_cache()
     latest = str(status.get("latestVersion") or "").strip()
     if not latest or compare_versions(__version__, latest) >= 0:
@@ -1992,21 +2083,18 @@ def doctor_command(argv: Sequence[str]) -> int:
                 free = int(disk.get("freeBytes") or 0)
                 detail = f"{free // (1024 * 1024)} MB free" if free else str(disk.get("error") or "")
                 report("cloud disk", "OK" if disk.get("ok") else "WARN", detail)
-            synced = sync_pending_runs(store, client, limit=100)
-            if synced:
-                report("pending sync retry", "OK", f"uploaded {synced} run(s)")
-            elif pending:
-                report("pending sync retry", "WARN", "nothing uploaded")
-
-            # Device summary (bonus for doctor)
+        except Exception as exc:
+            report("cloud health", "FAIL", describe_cloud_error(exc))
+        else:
+            # Doctor diagnoses only. Uploading a large historical backlog here
+            # used to turn an otherwise healthy check into repeated 413/429
+            # requests and a misleading second "cloud health" failure.
             try:
                 devs = client.list_devices()
                 active_devs = sum(1 for d in devs if d.get("online"))
                 report("cloud devices", "OK", f"{len(devs)} total ({active_devs} online)")
-            except Exception:
-                report("cloud devices", "WARN", "could not list")
-        except Exception as exc:
-            report("cloud health", "FAIL", describe_cloud_error(exc))
+            except Exception as exc:
+                report("cloud devices", "WARN", describe_cloud_error(exc))
 
     print()
     if failures:
