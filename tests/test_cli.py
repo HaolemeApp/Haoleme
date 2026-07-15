@@ -22,6 +22,7 @@ from haoleme.cli import (
     doctor_command,
     heartbeat_initial_delay,
     heartbeat_state_path,
+    is_heartbeat_process_running,
     is_process_running,
     main,
     mark_stale_active_runs_pending,
@@ -42,6 +43,7 @@ from haoleme.cli import (
     should_continue_relogin,
     split_leading_env_assignments,
     stream_output,
+    sync_pending_runs,
     terminate_windows_process,
     write_update_check_cache,
     write_heartbeat_state,
@@ -312,6 +314,31 @@ class CliPairingTest(unittest.TestCase):
     def test_process_running_handles_unexpected_oserror(self):
         with patch("haoleme.cli.os.name", "posix"), patch("haoleme.cli.os.kill", side_effect=OSError(11, "bad executable")):
             self.assertFalse(is_process_running(12345))
+
+    def test_heartbeat_pid_must_belong_to_heartbeat_command(self):
+        with patch("haoleme.cli.os.name", "posix"), \
+                patch("haoleme.cli.is_process_running", return_value=True), \
+                patch("haoleme.cli.Path.read_bytes", return_value=b"python\0-m\0haoleme\0heartbeat\0run\0"):
+            self.assertTrue(is_heartbeat_process_running(4321))
+
+        with patch("haoleme.cli.os.name", "posix"), \
+                patch("haoleme.cli.is_process_running", return_value=True), \
+                patch("haoleme.cli.Path.read_bytes", return_value=b"python\0train.py\0"):
+            self.assertFalse(is_heartbeat_process_running(4321))
+
+    def test_pending_sync_honors_expired_maintenance_deadline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-pending", ["echo", "hello"], "/tmp")
+
+            class UnexpectedClient:
+                def upsert_run(self, *_args, **_kwargs):
+                    raise AssertionError("sync started after its maintenance deadline")
+
+            synced = sync_pending_runs(store, UnexpectedClient(), deadline=time.monotonic() - 1)
+
+            self.assertEqual(synced, 0)
+            self.assertEqual(store.count_unsynced_runs(), 1)
 
     def test_windows_process_running_parses_tasklist_csv(self):
         result = subprocess.CompletedProcess(
