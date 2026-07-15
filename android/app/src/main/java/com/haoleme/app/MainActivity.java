@@ -143,7 +143,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final int CAMERA_REQUEST = 4108;
     private static final long POLL_MS = 6000L;
     private static final long LIST_ACTIVE_POLL_MS = 3500L;
-    private static final long CONSOLE_RUNNING_POLL_MS = 1000L;
+    private static final long CONSOLE_RUNNING_POLL_MS = 1500L;
     private static final long BACKGROUND_OUTPUT_SYNC_COOLDOWN_MS = 15000L;
     private static final int HTTP_CONNECT_TIMEOUT_MS = 8000;
     private static final int HTTP_READ_TIMEOUT_MS = 12000;

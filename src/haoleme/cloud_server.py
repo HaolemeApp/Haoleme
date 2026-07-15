@@ -37,6 +37,8 @@ AUTH_FAILURE_RATE_LIMIT = 120
 MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_TAIL = 100_000_000
 MAX_OUTPUT_CHUNKS = 100_000
+DEFAULT_CLOUD_OUTPUT_BYTES = 20 * 1024 * 1024
+MAX_CLOUD_OUTPUT_BYTES = 100 * 1024 * 1024
 MAX_LIST_OUTPUT_PREVIEW = 2000
 MAX_LIST_E2EE_CIPHERTEXT = 64 * 1024
 DEFAULT_LOG_MAX_BYTES = 50 * 1024 * 1024
@@ -48,6 +50,7 @@ DEFAULT_BACKUP_KEEP = 14
 DEFAULT_MONITOR_MIN_FREE_BYTES = 512 * 1024 * 1024
 DEFAULT_MONITOR_MAX_BACKUP_AGE_HOURS = 30
 SPACE_JOIN_CODE_TTL_SECONDS = 300
+DEFAULT_MAX_REQUEST_THREADS = 32
 
 
 @dataclass(frozen=True)
@@ -63,11 +66,28 @@ class RequestBodyTooLarge(ValueError):
     pass
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class HaolemeCloudServer(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
+    request_queue_size = 128
+
     def __init__(self, server_address: tuple[str, int], db_path: Path, min_android_version_code: int) -> None:
         super().__init__(server_address, HaolemeCloudHandler)
         self.db_path = db_path
         self.min_android_version_code = min_android_version_code
+        try:
+            configured_threads = int(os.environ.get("HAOLEME_MAX_REQUEST_THREADS", str(DEFAULT_MAX_REQUEST_THREADS)))
+        except ValueError:
+            configured_threads = DEFAULT_MAX_REQUEST_THREADS
+        self.request_slots = threading.BoundedSemaphore(max(4, min(configured_threads, 128)))
         self.pair_confirm_attempts: dict[str, list[float]] = {}
         self.pair_confirm_attempts_lock = threading.Lock()
         self.pair_start_attempts: dict[str, list[float]] = {}
@@ -81,6 +101,20 @@ class HaolemeCloudServer(ThreadingHTTPServer):
         self.write_attempts: dict[str, list[float]] = {}
         self.write_attempts_lock = threading.Lock()
         init_db(db_path)
+
+    def process_request(self, request, client_address) -> None:
+        self.request_slots.acquire()
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.request_slots.release()
 
 
 class HaolemeCloudHandler(BaseHTTPRequestHandler):
@@ -157,18 +191,24 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                         status=HTTPStatus.TOO_MANY_REQUESTS,
                     )
                     return
-                run = get_run(self.server.db_path, auth.account_key, run_id)
+                query = parse_qs(parsed.query)
+                output_since = parse_output_since(query)
+                run = get_run(
+                    self.server.db_path,
+                    auth.account_key,
+                    run_id,
+                    output_since=output_since if output_since > 0 else None,
+                )
                 if run is None:
                     self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
                     return
                 if not can_read_run(auth, run):
                     self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
                     return
-                query = parse_qs(parsed.query)
                 self.send_json(
                     build_run_fetch_payload(
                         run,
-                        output_since=parse_output_since(query),
+                        output_since=output_since,
                         output_length=parse_output_length(query),
                     )
                 )
@@ -310,8 +350,11 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                     stored["deviceId"] = auth.device_id
                     if not stored.get("deviceName"):
                         stored["deviceName"] = auth.device_name
-                touch_token(self.server.db_path, auth.token_hash, stored.get("updatedAt", "") or iso_now())
-                self.send_json({"ok": True, "outputLength": stored.get("outputLength", 0), "outputChunks": len(stored.get("outputChunks") or [])})
+                self.send_json({
+                    "ok": True,
+                    "outputLength": stored.get("outputLength", 0),
+                    "outputChunks": stored.get("outputChunkCount", 0),
+                })
                 return
             stored = normalize_run(run)
             if server_requires_e2ee() and not is_e2ee_run(stored):
@@ -1083,6 +1126,8 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
 def init_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with connect(db_path) as db:
+        db.execute("PRAGMA journal_mode = WAL")
+        db.execute("PRAGMA synchronous = NORMAL")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS pairs (
@@ -1119,6 +1164,22 @@ def init_db(db_path: Path) -> None:
                 project TEXT NOT NULL DEFAULT '',
                 payload TEXT NOT NULL,
                 PRIMARY KEY (account_key, id)
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS run_output_chunks (
+                account_key TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                output_start INTEGER NOT NULL DEFAULT 0,
+                output_end INTEGER NOT NULL DEFAULT 0,
+                ciphertext_bytes INTEGER NOT NULL DEFAULT 0,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (account_key, run_id, seq),
+                UNIQUE (account_key, run_id, output_start, output_end)
             )
             """
         )
@@ -1205,6 +1266,7 @@ def init_db(db_path: Path) -> None:
         db.execute("CREATE INDEX IF NOT EXISTS idx_runs_account_status_updated ON runs(account_key, status, updated_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_runs_account_device_updated ON runs(account_key, device_id, updated_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_runs_account_project_updated ON runs(account_key, project, updated_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_run_chunks_lookup ON run_output_chunks(account_key, run_id, seq)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_devices_account_seen ON devices(account_key, revoked_at, last_seen_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_devices_account_machine ON devices(account_key, machine_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_device_tokens_device ON device_tokens(account_key, device_id)")
@@ -1213,8 +1275,10 @@ def init_db(db_path: Path) -> None:
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    db = sqlite3.connect(db_path)
+    db = sqlite3.connect(db_path, timeout=15.0, factory=ClosingConnection)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA busy_timeout = 15000")
+    db.execute("PRAGMA foreign_keys = ON")
     return db
 
 
@@ -1229,12 +1293,14 @@ def health_payload(db_path: Path, min_android_version_code: int, detailed: bool 
     db_error = ""
     stats: dict[str, int] = {}
     try:
-        init_db(db_path)
         with connect(db_path) as db:
-            db.execute("PRAGMA quick_check").fetchone()
-            for table in ("runs", "devices", "device_tokens", "app_tokens", "pairs", "space_join_codes"):
-                row = db.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
-                stats[table] = int(row["count"]) if row is not None else 0
+            if detailed:
+                db.execute("PRAGMA quick_check").fetchone()
+                for table in ("runs", "devices", "device_tokens", "app_tokens", "pairs", "space_join_codes"):
+                    row = db.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                    stats[table] = int(row["count"]) if row is not None else 0
+            else:
+                db.execute("SELECT 1").fetchone()
         db_ok = True
     except Exception as exc:
         db_error = str(exc)
@@ -1819,6 +1885,139 @@ def touch_token(db_path: Path, token_hash_value: str, used_at: str) -> None:
         )
 
 
+def cloud_output_bytes_limit() -> int:
+    raw = os.environ.get("HAOLEME_CLOUD_OUTPUT_BYTES", str(DEFAULT_CLOUD_OUTPUT_BYTES))
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_CLOUD_OUTPUT_BYTES
+    return max(1024 * 1024, min(parsed, MAX_CLOUD_OUTPUT_BYTES))
+
+
+def migrate_embedded_output_chunks(
+    db: sqlite3.Connection,
+    account_key: str,
+    run_id: str,
+    run: dict[str, Any],
+) -> bool:
+    chunks = run.get("outputChunks")
+    if not isinstance(chunks, list) or not chunks:
+        return False
+    offset = max(0, int_or_none(run.get("outputChunkOffset")) or 0)
+    for index, item in enumerate(chunks):
+        if not isinstance(item, dict) or not str(item.get("ciphertext") or ""):
+            continue
+        seq = int_or_none(item.get("seq"))
+        if seq is None:
+            seq = offset + index
+        chunk = {
+            "v": int_or_none(item.get("v")) or 1,
+            "alg": str(item.get("alg") or "AES-256-GCM")[:40],
+            "nonce": str(item.get("nonce") or "")[:128],
+            "ciphertext": str(item.get("ciphertext") or ""),
+        }
+        db.execute(
+            """
+            INSERT OR IGNORE INTO run_output_chunks(
+                account_key, run_id, seq, output_start, output_end,
+                ciphertext_bytes, payload, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_key,
+                run_id,
+                seq,
+                seq,
+                seq + 1,
+                len(chunk["ciphertext"].encode("utf-8")),
+                json.dumps(chunk, ensure_ascii=False, separators=(",", ":")),
+                iso_now(),
+            ),
+        )
+    run["outputChunkCount"] = max(
+        offset + len(chunks),
+        int_or_none(run.get("outputChunkCount")) or 0,
+    )
+    run.pop("outputChunks", None)
+    run.pop("outputChunkOffset", None)
+    trim_output_chunks(db, account_key, run_id)
+    return True
+
+
+def output_chunk_stats(db: sqlite3.Connection, account_key: str, run_id: str) -> tuple[int, int]:
+    row = db.execute(
+        """
+        SELECT MIN(seq) AS first_seq, MAX(seq) AS last_seq
+        FROM run_output_chunks
+        WHERE account_key = ? AND run_id = ?
+        """,
+        (account_key, run_id),
+    ).fetchone()
+    if row is None or row["last_seq"] is None:
+        return 0, 0
+    return int(row["first_seq"]), int(row["last_seq"]) + 1
+
+
+def trim_output_chunks(db: sqlite3.Connection, account_key: str, run_id: str) -> None:
+    rows = db.execute(
+        """
+        SELECT seq, ciphertext_bytes
+        FROM run_output_chunks
+        WHERE account_key = ? AND run_id = ?
+        ORDER BY seq DESC
+        """,
+        (account_key, run_id),
+    ).fetchall()
+    byte_limit = cloud_output_bytes_limit()
+    retained_bytes = 0
+    keep_from: int | None = None
+    kept = 0
+    for row in rows:
+        size = max(0, int(row["ciphertext_bytes"] or 0))
+        if kept >= MAX_OUTPUT_CHUNKS or (kept > 0 and retained_bytes + size > byte_limit):
+            break
+        retained_bytes += size
+        keep_from = int(row["seq"])
+        kept += 1
+    if keep_from is None:
+        db.execute(
+            "DELETE FROM run_output_chunks WHERE account_key = ? AND run_id = ?",
+            (account_key, run_id),
+        )
+        return
+    db.execute(
+        "DELETE FROM run_output_chunks WHERE account_key = ? AND run_id = ? AND seq < ?",
+        (account_key, run_id, keep_from),
+    )
+
+
+def load_output_chunks(
+    db: sqlite3.Connection,
+    account_key: str,
+    run_id: str,
+    output_since: int | None = None,
+) -> list[dict[str, Any]]:
+    where = "account_key = ? AND run_id = ?"
+    values: list[Any] = [account_key, run_id]
+    if output_since is not None and output_since > 0:
+        where += " AND seq >= ?"
+        values.append(output_since)
+    rows = db.execute(
+        f"SELECT seq, payload FROM run_output_chunks WHERE {where} ORDER BY seq ASC",
+        values,
+    ).fetchall()
+    chunks: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            chunk = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(chunk, dict) and str(chunk.get("ciphertext") or ""):
+            chunk["seq"] = int(row["seq"])
+            chunks.append(chunk)
+    return chunks
+
+
 def upsert_run(db_path: Path, account_key: str, run: dict[str, Any]) -> None:
     with connect(db_path) as db:
         existing_row = db.execute(
@@ -1830,23 +2029,31 @@ def upsert_run(db_path: Path, account_key: str, run: dict[str, Any]) -> None:
                 existing = json.loads(existing_row["payload"])
             except json.JSONDecodeError:
                 existing = {}
+            migrate_embedded_output_chunks(db, account_key, run["id"], existing)
             if existing.get("interruptRequestedAt") and not run.get("interruptRequestedAt"):
                 run["interruptRequestedAt"] = existing["interruptRequestedAt"]
-            # Output is streamed via append_run_update (outputChunks / tails). A
-            # full payload replace here must NOT drop it, or the final status
-            # upsert on completion wipes the console. Preserve accumulated output
-            # whenever this upsert didn't carry its own.
-            if not run.get("outputChunks") and existing.get("outputChunks"):
-                run["outputChunks"] = existing["outputChunks"]
-                if not run.get("outputLength") and existing.get("outputLength"):
-                    run["outputLength"] = existing["outputLength"]
-                if existing.get("outputChunkCount") is not None:
-                    run["outputChunkCount"] = existing["outputChunkCount"]
-                if existing.get("outputChunkOffset") is not None:
-                    run["outputChunkOffset"] = existing["outputChunkOffset"]
+            # Console chunks live in run_output_chunks. Metadata upserts must not
+            # reset their absolute cursor or the total output length.
+            if existing.get("outputLength") is not None:
+                run["outputLength"] = max(
+                    int_or_none(run.get("outputLength")) or 0,
+                    int_or_none(existing.get("outputLength")) or 0,
+                )
+            if existing.get("outputChunkCount") is not None:
+                run["outputChunkCount"] = max(
+                    int_or_none(run.get("outputChunkCount")) or 0,
+                    int_or_none(existing.get("outputChunkCount")) or 0,
+                )
             for tail in ("outputTail", "stdoutTail", "stderrTail"):
                 if not run.get(tail) and existing.get(tail):
                     run[tail] = existing[tail]
+        migrate_embedded_output_chunks(db, account_key, run["id"], run)
+        first_seq, table_chunk_count = output_chunk_stats(db, account_key, run["id"])
+        if table_chunk_count:
+            run["outputChunkCount"] = max(table_chunk_count, int_or_none(run.get("outputChunkCount")) or 0)
+            run["outputChunkOffset"] = first_seq
+        run.pop("outputChunks", None)
+        run.pop("outputChunkOffset", None)
         db.execute(
             """
             INSERT INTO runs(account_key, id, updated_at, status, device_id, device_name, project, payload)
@@ -1961,7 +2168,12 @@ def list_events(db_path: Path, account_key: str, since: str | None, limit: int) 
     ]
 
 
-def get_run(db_path: Path, account_key: str, run_id: str) -> dict[str, Any] | None:
+def get_run(
+    db_path: Path,
+    account_key: str,
+    run_id: str,
+    output_since: int | None = None,
+) -> dict[str, Any] | None:
     with connect(db_path) as db:
         expire_stale_running_runs(db, account_key)
         row = db.execute(
@@ -1969,7 +2181,25 @@ def get_run(db_path: Path, account_key: str, run_id: str) -> dict[str, Any] | No
             (account_key, run_id),
         ).fetchone()
         names = device_names(db, account_key)
-    return None if row is None else decode_run(row["payload"], names)
+        if row is None:
+            return None
+        run = decode_run(row["payload"], names)
+        migrated = migrate_embedded_output_chunks(db, account_key, run_id, run)
+        first_seq, table_chunk_count = output_chunk_stats(db, account_key, run_id)
+        chunks = load_output_chunks(db, account_key, run_id, output_since)
+        if table_chunk_count:
+            run["outputChunkCount"] = max(table_chunk_count, int_or_none(run.get("outputChunkCount")) or 0)
+            run["outputChunkOffset"] = first_seq
+            run["outputChunks"] = chunks
+        if migrated:
+            metadata = dict(run)
+            metadata.pop("outputChunks", None)
+            metadata.pop("outputChunkOffset", None)
+            db.execute(
+                "UPDATE runs SET payload = ? WHERE account_key = ? AND id = ?",
+                (json.dumps(metadata, ensure_ascii=False), account_key, run_id),
+            )
+    return run
 
 
 def append_run_update(
@@ -1992,6 +2222,7 @@ def append_run_update(
             existing = json.loads(row["payload"])
         except json.JSONDecodeError:
             existing = {}
+        migrate_embedded_output_chunks(db, account_key, run_id, existing)
         if auth.scope == "write":
             device_id = str(existing.get("deviceId") or "")
             if device_id and device_id != auth.device_id:
@@ -2015,6 +2246,7 @@ def append_run_update(
             for delta_key in ("outputDelta", "stdoutDelta", "stderrDelta")
         )
         patch_output_length = int_or_none(patch.get("outputLength"))
+        patch_output_start = int_or_none(patch.get("outputStart"))
         stored_output_length = int_or_none(existing.get("outputLength"))
         existing_output_length = stored_output_length if stored_output_length is not None else (
             len(str(existing.get("outputTail") or "")) if has_plain_delta else 0
@@ -2025,35 +2257,58 @@ def append_run_update(
             and existing_output_length > 0
             and patch_output_length <= existing_output_length
         )
+        overlapping_output = (
+            (has_e2ee_chunk or has_plain_delta)
+            and patch_output_start is not None
+            and patch_output_length is not None
+            and patch_output_start < existing_output_length < patch_output_length
+        )
 
         if has_e2ee_chunk:
-            chunks = existing.get("outputChunks")
-            if not isinstance(chunks, list):
-                chunks = []
-            chunk_offset = max(0, int_or_none(existing.get("outputChunkOffset")) or 0)
-            chunk_count = max(
-                chunk_offset + len(chunks),
-                int_or_none(existing.get("outputChunkCount")) or 0,
-            )
-            if not already_applied_output:
+            first_seq, table_chunk_count = output_chunk_stats(db, account_key, run_id)
+            chunk_count = max(table_chunk_count, int_or_none(existing.get("outputChunkCount")) or 0)
+            output_start = patch_output_start
+            if output_start is None:
+                output_start = existing_output_length
+            output_end = patch_output_length
+            if output_end is None:
+                output_end = max(output_start, existing_output_length)
+            if not already_applied_output and not overlapping_output:
                 chunk_copy = {
                     "v": int_or_none(chunk.get("v")) or 1,
                     "alg": str(chunk.get("alg") or "AES-256-GCM")[:40],
                     "nonce": str(chunk.get("nonce") or "")[:128],
                     "ciphertext": str(chunk.get("ciphertext") or ""),
-                    "seq": chunk_count,
                 }
-                chunks.append(chunk_copy)
-                chunk_count += 1
-                retained_chunks = chunks[-MAX_OUTPUT_CHUNKS:]
-                existing["outputChunks"] = retained_chunks
-                existing["outputChunkCount"] = chunk_count
-                existing["outputChunkOffset"] = max(0, chunk_count - len(retained_chunks))
-            else:
-                existing["outputChunkCount"] = chunk_count
-                existing["outputChunkOffset"] = chunk_offset
-            if patch_output_length is not None:
-                existing["outputLength"] = max(0, existing_output_length, patch_output_length)
+                cursor = db.execute(
+                    """
+                    INSERT OR IGNORE INTO run_output_chunks(
+                        account_key, run_id, seq, output_start, output_end,
+                        ciphertext_bytes, payload, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        account_key,
+                        run_id,
+                        chunk_count,
+                        max(0, output_start),
+                        max(0, output_end),
+                        len(chunk_copy["ciphertext"].encode("utf-8")),
+                        json.dumps(chunk_copy, ensure_ascii=False, separators=(",", ":")),
+                        iso_now(),
+                    ),
+                )
+                if cursor.rowcount > 0:
+                    chunk_count += 1
+                    trim_output_chunks(db, account_key, run_id)
+            existing["outputChunkCount"] = chunk_count
+            existing.pop("outputChunks", None)
+            existing.pop("outputChunkOffset", None)
+            existing["outputLength"] = max(
+                0,
+                existing_output_length,
+                existing_output_length if overlapping_output else output_end,
+            )
         else:
             appended_plain_output = False
             for target, delta_key in (
@@ -2062,7 +2317,7 @@ def append_run_update(
                 ("stderrTail", "stderrDelta"),
             ):
                 delta = str(patch.get(delta_key) or "")
-                if not delta or already_applied_output:
+                if not delta or already_applied_output or overlapping_output:
                     continue
                 merged = str(existing.get(target) or "") + delta
                 existing[target] = merged[-MAX_OUTPUT_TAIL:]
@@ -2071,13 +2326,15 @@ def append_run_update(
                 existing["outputLength"] = max(
                     0,
                     existing_output_length,
-                    patch_output_length,
+                    existing_output_length if overlapping_output else patch_output_length,
                     len(str(existing.get("outputTail") or "")),
                 )
             elif appended_plain_output:
                 existing["outputLength"] = max(0, len(str(existing.get("outputTail") or "")))
 
         stored = normalize_run(existing)
+        stored.pop("outputChunks", None)
+        stored.pop("outputChunkOffset", None)
         db.execute(
             """
             INSERT INTO runs(account_key, id, updated_at, status, device_id, device_name, project, payload)
@@ -2100,14 +2357,6 @@ def append_run_update(
                 normalize_project_name(stored.get("project")),
                 json.dumps(stored, ensure_ascii=False),
             ),
-        )
-    if stored.get("deviceId"):
-        upsert_device(
-            db_path,
-            account_key,
-            stored.get("deviceId", ""),
-            stored.get("deviceName", "") or "好了么 CLI",
-            stored.get("updatedAt", "") or iso_now(),
         )
     return stored
 
@@ -2152,8 +2401,14 @@ def build_run_fetch_payload(
             int_or_none(slim.get("outputChunkCount")) or 0,
         )
         chunk_offset = max(0, int_or_none(slim.get("outputChunkOffset")) or (chunk_count - len(chunks)))
-        relative_start = max(0, output_since - chunk_offset)
-        new_chunks = chunks[relative_start:] if output_since > 0 else chunks
+        if output_since > 0 and any(int_or_none(item.get("seq")) is not None for item in chunks if isinstance(item, dict)):
+            new_chunks = [
+                item for item in chunks
+                if isinstance(item, dict) and (int_or_none(item.get("seq")) or 0) >= output_since
+            ]
+        else:
+            relative_start = max(0, output_since - chunk_offset)
+            new_chunks = chunks[relative_start:] if output_since > 0 else chunks
         slim["outputChunkCount"] = chunk_count
         slim["outputChunkOffset"] = chunk_offset
         slim.pop("outputChunks", None)
@@ -2265,12 +2520,14 @@ def request_run_interrupt(
 
 def delete_run(db_path: Path, account_key: str, run_id: str) -> bool:
     with connect(db_path) as db:
+        db.execute("DELETE FROM run_output_chunks WHERE account_key = ? AND run_id = ?", (account_key, run_id))
         cursor = db.execute("DELETE FROM runs WHERE account_key = ? AND id = ?", (account_key, run_id))
         return cursor.rowcount > 0
 
 
 def delete_all_runs(db_path: Path, account_key: str) -> int:
     with connect(db_path) as db:
+        db.execute("DELETE FROM run_output_chunks WHERE account_key = ?", (account_key,))
         cursor = db.execute("DELETE FROM runs WHERE account_key = ?", (account_key,))
         return cursor.rowcount
 
@@ -2279,6 +2536,15 @@ def delete_runs_for_device(db_path: Path, account_key: str, device_id: str) -> i
     if not device_id:
         return 0
     with connect(db_path) as db:
+        db.execute(
+            """
+            DELETE FROM run_output_chunks
+            WHERE account_key = ? AND run_id IN (
+                SELECT id FROM runs WHERE account_key = ? AND device_id = ?
+            )
+            """,
+            (account_key, account_key, device_id),
+        )
         cursor = db.execute(
             "DELETE FROM runs WHERE account_key = ? AND device_id = ?",
             (account_key, device_id),
@@ -2291,7 +2557,7 @@ def delete_account(db_path: Path, account_key: str) -> int:
         return 0
     deleted = 0
     with connect(db_path) as db:
-        for table in ("runs", "devices", "device_tokens", "app_tokens", "space_join_codes"):
+        for table in ("run_output_chunks", "runs", "devices", "device_tokens", "app_tokens", "space_join_codes"):
             cursor = db.execute(f"DELETE FROM {table} WHERE account_key = ?", (account_key,))
             deleted += cursor.rowcount
     return deleted
@@ -2684,6 +2950,8 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
             0,
             int_or_none(run.get("outputChunkOffset")) or (chunk_count - len(normalized["outputChunks"])),
         )
+    elif int_or_none(run.get("outputChunkCount")) is not None:
+        normalized["outputChunkCount"] = max(0, int_or_none(run.get("outputChunkCount")) or 0)
     output_length = int_or_none(run.get("outputLength"))
     if output_length is not None:
         normalized["outputLength"] = max(0, output_length)

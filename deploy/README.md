@@ -70,6 +70,24 @@ sudo -u haoleme haoleme-cloud monitor
 
 The monitor checks database health, disk free space, permission boundaries, and the newest backup age/checksum. Set `HAOLEME_ALERT_WEBHOOK_URL=https://...` in the monitor service if you want failures POSTed to an external alert endpoint.
 
+## Standby Sync
+
+For a second server, use the incremental standby templates instead of copying the
+complete SQLite file every minute. Keep the host and SSH key outside the repo:
+
+```bash
+sudo install -m 755 deploy/haoleme-sync-standby /usr/local/sbin/
+sudo cp deploy/haoleme-sync-standby.{service,timer} /etc/systemd/system/
+sudo sh -c 'printf "%s\n" "HAOLEME_STANDBY_HOST=root@standby.example.com" > /etc/haoleme-standby-sync.env'
+sudo chmod 600 /etc/haoleme-standby-sync.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now haoleme-sync-standby.timer
+```
+
+The source database is snapshotted through SQLite, rsync transfers changed blocks
+to a persistent standby file, and the verified snapshot is atomically installed.
+The included unit limits backup CPU, I/O priority, and memory usage.
+
 ## Upload App / CLI Releases
 
 From the repo root, after bumping versions in `src/haoleme/__init__.py` and/or

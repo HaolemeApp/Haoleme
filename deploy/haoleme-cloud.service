@@ -15,9 +15,14 @@ Environment=MIN_ANDROID_VERSION_CODE=66
 Environment=HAOLEME_REQUIRE_E2EE=1
 Environment=HAOLEME_ALLOW_LEGACY_ADMIN_TOKENS=0
 Environment=HAOLEME_ALLOW_EXISTING_LEGACY_ACCOUNTS=1
+Environment=HAOLEME_CLOUD_OUTPUT_BYTES=20971520
+Environment=HAOLEME_MAX_REQUEST_THREADS=32
 ExecStart=/usr/local/bin/haoleme-cloud serve
 Restart=always
 RestartSec=3
+MemoryHigh=1G
+MemoryMax=1400M
+TasksMax=96
 NoNewPrivileges=true
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE

@@ -23,7 +23,7 @@ from socket import gethostname
 
 from . import __version__
 from ._compat import remove_prefix, shlex_join, unlink_missing
-from .cloud import DEFAULT_CLOUD_URL, CloudClient, CloudConfig, CloudSyncer, InterruptWatcher, PairingClient, default_config_path, describe_cloud_error, generate_account_token, generate_device_id, get_or_create_machine_id
+from .cloud import DEFAULT_CLOUD_URL, CloudClient, CloudConfig, CloudSyncer, InterruptWatcher, PairingClient, default_config_path, describe_cloud_error, generate_account_token, generate_device_id, get_or_create_machine_id, next_output_chunk
 from .crypto import decrypt_account_key, generate_pair_keypair
 from .server import serve
 from .store import RunRecord, RunStore, default_db_path
@@ -48,12 +48,15 @@ PUBLIC_URL_RE = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
 HEARTBEAT_INTERVAL_SECONDS = 45
 HEARTBEAT_STAGGER_SECONDS = 20
 HEARTBEAT_ACTIVE_POLL_SECONDS = 3
+BACKGROUND_SYNC_MAX_CHUNKS_PER_RUN = 16
 ACTIVE_RUN_RESYNC_SECONDS = 30
 GITHUB_UPDATE_JSON_URL = "https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json"
 UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 UPDATE_NOTICE_INTERVAL_SECONDS = 24 * 60 * 60
 ORPHANED_RUN_GRACE_SECONDS = 30
 INTERRUPT_NOTE = "\n[好了么] Interrupted from mobile app.\n"
+OUTPUT_STORE_BATCH_CHARS = 64 * 1024
+OUTPUT_STORE_FLUSH_SECONDS = 0.25
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -727,7 +730,7 @@ def cancel_command(argv: Sequence[str]) -> int:
             try:
                 updated = store.get_run(run.id)
                 if updated:
-                    client.upsert_run(updated)
+                    client.upsert_run(updated, include_output=False)
             except Exception as e2:
                 print(f"Cloud sync warning: {describe_cloud_error(e2)}", file=sys.stderr)
 
@@ -1285,16 +1288,33 @@ def reconcile_orphaned_running_runs(
         recovered += 1
         updated = store.get_run(run.id)
         if client is not None and updated is not None:
-            client.upsert_run(updated)
+            client.upsert_run(updated, include_output=False)
     return recovered
 
 
 def sync_pending_runs(store: RunStore, client: CloudClient, limit: int = 100) -> int:
     synced = 0
     for run in store.list_unsynced_runs(limit=limit):
-        client.upsert_run(run)
-        store.mark_cloud_synced(run.id)
-        synced += 1
+        client.upsert_run(run, include_output=False)
+        cursor = run.cloud_output_cursor
+        for _ in range(BACKGROUND_SYNC_MAX_CHUNKS_PER_RUN):
+            output_delta, output_start, output_end = next_output_chunk(run, cursor)
+            if not output_delta:
+                break
+            response = client.append_run_update(
+                run,
+                {"output_tail": output_delta, "stdout_tail": "", "stderr_tail": ""},
+                output_start,
+                output_end,
+            )
+            remote_cursor = int(response.get("outputLength", output_end) or output_end)
+            cursor = min(remote_cursor, run.output_length)
+            store.mark_cloud_output_cursor(run.id, cursor)
+        if cursor >= run.output_length:
+            store.mark_cloud_synced(run.id)
+            synced += 1
+        else:
+            store.mark_cloud_pending(run.id)
     return synced
 
 
@@ -1922,7 +1942,7 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
             return 2
 
     update_check_state = start_background_update_check()
-    start_heartbeat_daemon()
+    heartbeat_started, _heartbeat_message = start_heartbeat_daemon()
     run_id = str(uuid.uuid4())
     store = RunStore()
     project = default_project() if project_override is None else normalize_project_name(project_override)
@@ -1948,7 +1968,9 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
     env = child_environment(env_overrides)
 
     interrupt_event = threading.Event()
-    watcher = InterruptWatcher(syncer.client, run_id, interrupt_event.set)
+    # The heartbeat daemon polls interrupts once per device. Keep the per-run
+    # watcher only as a fallback when that daemon could not be started.
+    watcher = InterruptWatcher(None if heartbeat_started else syncer.client, run_id, interrupt_event.set)
     watcher.start()
     try:
         try:
@@ -2090,22 +2112,6 @@ def kill_process_tree(pid: int) -> None:
     send_signal_to_pid(pid, signal.SIGKILL)
 
 
-def refresh_interrupt_event(
-    run_id: str,
-    client: CloudClient | None,
-    interrupt_event: threading.Event | None,
-) -> None:
-    if interrupt_event is None or client is None or interrupt_event.is_set():
-        return
-    try:
-        for item in client.list_pending_interrupts():
-            if item.get("id") == run_id and item.get("interruptRequestedAt"):
-                interrupt_event.set()
-                return
-    except Exception:
-        return
-
-
 def apply_cloud_interrupts(store: RunStore, client: CloudClient) -> int:
     applied = 0
     pending_ids = {str(item.get("id") or "") for item in client.list_pending_interrupts() if item.get("id")}
@@ -2119,7 +2125,7 @@ def apply_cloud_interrupts(store: RunStore, client: CloudClient) -> int:
         store.interrupt_run(run.id, INTERRUPT_NOTE)
         updated = store.get_run(run.id)
         if updated is not None:
-            client.upsert_run(updated)
+            client.upsert_run(updated, include_output=False)
         applied += 1
     return applied
 
@@ -2193,11 +2199,11 @@ def run_command_with_pty(
             previous_sigwinch = None
     stdin_fd = sys.stdin.fileno() if sys.stdin is not None and sys.stdin.isatty() else None
     output = bytearray()
+    last_output_flush = 0.0
 
     interrupted = False
     try:
         while proc.poll() is None:
-            refresh_interrupt_event(run_id, syncer.client, interrupt_event)
             if interrupt_event is not None and terminate_process_on_interrupt(proc, interrupt_event):
                 interrupted = True
                 break
@@ -2209,7 +2215,14 @@ def run_command_with_pty(
                 chunk = read_pty_chunk(master_fd)
                 if chunk:
                     output.extend(chunk)
-                    flush_pty_output(output, store, run_id, syncer)
+                    if flush_pty_output(
+                        output,
+                        store,
+                        run_id,
+                        syncer,
+                        flush_due=time.monotonic() - last_output_flush >= OUTPUT_STORE_FLUSH_SECONDS,
+                    ):
+                        last_output_flush = time.monotonic()
                     write_bytes(sys.stdout, chunk)
             if stdin_fd is not None and stdin_fd in ready:
                 try:
@@ -2230,7 +2243,14 @@ def run_command_with_pty(
             if not chunk:
                 break
             output.extend(chunk)
-            flush_pty_output(output, store, run_id, syncer)
+            if flush_pty_output(
+                output,
+                store,
+                run_id,
+                syncer,
+                flush_due=time.monotonic() - last_output_flush >= OUTPUT_STORE_FLUSH_SECONDS,
+            ):
+                last_output_flush = time.monotonic()
             write_bytes(sys.stdout, chunk)
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
@@ -2309,15 +2329,17 @@ def flush_pty_output(
     run_id: str,
     syncer: CloudSyncer,
     force: bool = False,
-) -> None:
+    flush_due: bool = False,
+) -> bool:
     if not output:
-        return
-    if not force and b"\n" not in output and b"\r" not in output and len(output) < 1024:
-        return
+        return False
+    if not force and not flush_due and len(output) < OUTPUT_STORE_BATCH_CHARS:
+        return False
     text = output.decode(errors="replace")
     output.clear()
     store.append_output(run_id, "stdout_tail", text)
     syncer.request_sync()
+    return True
 
 
 def run_command_with_pipes(
@@ -2372,15 +2394,14 @@ def run_command_with_pipes(
             thread.start()
 
         while proc.poll() is None:
-            refresh_interrupt_event(run_id, syncer.client, interrupt_event)
             if interrupt_event is not None and terminate_process_on_interrupt(proc, interrupt_event):
                 interrupted = True
                 break
             time.sleep(0.2)
         exit_code = proc.returncode if proc.returncode is not None else proc.wait()
-        stop_forwarding.set()
         for thread in threads:
             thread.join(timeout=2)
+        stop_forwarding.set()
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)
@@ -2407,14 +2428,35 @@ def stream_output(
 ) -> None:
     if pipe is None:
         return
+    buffered: list[str] = []
+    buffered_chars = 0
+    last_flush = 0.0
+
+    def flush_buffer() -> None:
+        nonlocal buffered_chars, last_flush
+        if not buffered:
+            return
+        store.append_output(run_id, stream_name, "".join(buffered))
+        buffered.clear()
+        buffered_chars = 0
+        last_flush = time.monotonic()
+        if on_update is not None:
+            on_update()
+
     while not stop.is_set():
         chunk = pipe.readline()
         if chunk == "":
             break
-        store.append_output(run_id, stream_name, chunk)
-        if on_update is not None:
-            on_update()
         write_text(target, chunk)
+        buffered.append(chunk)
+        buffered_chars += len(chunk)
+        if (
+            last_flush == 0.0
+            or buffered_chars >= OUTPUT_STORE_BATCH_CHARS
+            or time.monotonic() - last_flush >= OUTPUT_STORE_FLUSH_SECONDS
+        ):
+            flush_buffer()
+    flush_buffer()
 
 
 def ignore_sighup():

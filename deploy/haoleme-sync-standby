@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${HAOLEME_STANDBY_HOST:?Set HAOLEME_STANDBY_HOST in /etc/haoleme-standby-sync.env}"
+
+PRIMARY_DIR="${HAOLEME_PRIMARY_DIR:-/opt/haoleme-cloud-data}"
+PRIMARY_DB="$PRIMARY_DIR/haoleme-cloud.db"
+SSH_KEY="${HAOLEME_STANDBY_SSH_KEY:-/root/.ssh/haoleme_sync_ed25519}"
+REMOTE_DIR="${HAOLEME_STANDBY_DIR:-/opt/haoleme-cloud-data}"
+LOCK_FILE="/run/haoleme-sync-standby.lock"
+
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+TMP_DIR="$(mktemp -d /tmp/haoleme-standby-sync.XXXXXX)"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+python3.11 - "$PRIMARY_DB" "$TMP_DIR/haoleme-cloud.db" <<'PY'
+import sqlite3
+import sys
+
+source_path, snapshot_path = sys.argv[1:3]
+source = sqlite3.connect(source_path, timeout=30)
+snapshot = sqlite3.connect(snapshot_path)
+try:
+    source.backup(snapshot)
+finally:
+    snapshot.close()
+    source.close()
+PY
+sqlite3 "$TMP_DIR/haoleme-cloud.db" "PRAGMA quick_check;" | grep -qx ok
+
+SSH=(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes)
+RSYNC_SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+REMOTE_SYNC="$REMOTE_DIR/.haoleme-cloud.db.sync"
+
+# Keep the remote sync file between runs so rsync transfers changed SQLite
+# blocks instead of copying the complete database every minute.
+rsync -az --inplace --no-whole-file -e "$RSYNC_SSH" \
+    "$TMP_DIR/haoleme-cloud.db" "$HAOLEME_STANDBY_HOST:$REMOTE_SYNC"
+
+"${SSH[@]}" "$HAOLEME_STANDBY_HOST" REMOTE_DIR="$REMOTE_DIR" 'bash -s' <<'REMOTE'
+set -euo pipefail
+sqlite3 "$REMOTE_DIR/.haoleme-cloud.db.sync" "PRAGMA quick_check;" | grep -qx ok
+systemctl stop haoleme-cloud
+install -o haoleme -g haoleme -m 640 \
+    "$REMOTE_DIR/.haoleme-cloud.db.sync" "$REMOTE_DIR/haoleme-cloud.db.new"
+mv -f "$REMOTE_DIR/haoleme-cloud.db.new" "$REMOTE_DIR/haoleme-cloud.db"
+rm -f "$REMOTE_DIR/haoleme-cloud.db-wal" "$REMOTE_DIR/haoleme-cloud.db-shm"
+systemctl start haoleme-cloud
+REMOTE
+
+if [ -d "$PRIMARY_DIR/downloads" ]; then
+    rsync -az --delete -e "$RSYNC_SSH" \
+        "$PRIMARY_DIR/downloads/" "$HAOLEME_STANDBY_HOST:$REMOTE_DIR/downloads/"
+fi
+if [ -f "$PRIMARY_DIR/update.json" ]; then
+    rsync -az -e "$RSYNC_SSH" \
+        "$PRIMARY_DIR/update.json" "$HAOLEME_STANDBY_HOST:$REMOTE_DIR/update.json"
+fi
+
+echo "$(date -Is) standby sync completed"

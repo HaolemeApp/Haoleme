@@ -1,0 +1,13 @@
+[Unit]
+Description=Incrementally sync Haoleme data to a standby server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/haoleme-standby-sync.env
+ExecStart=/usr/local/sbin/haoleme-sync-standby
+Nice=10
+CPUQuota=25%
+IOSchedulingClass=idle
+MemoryMax=512M
