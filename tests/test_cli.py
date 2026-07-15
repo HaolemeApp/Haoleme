@@ -54,7 +54,7 @@ class DummyCloudClient:
     def __init__(self):
         self.synced = []
 
-    def upsert_run(self, run):
+    def upsert_run(self, run, *, include_output=True):
         self.synced.append(run)
 
 

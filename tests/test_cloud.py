@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import haoleme.cloud as cloud_module
-from haoleme.cloud import CloudClient, CloudConfig, CloudSyncer, DEFAULT_CLOUD_URL, generate_account_token, get_or_create_machine_id, normalize_cloud_url
+from haoleme.cloud import CloudClient, CloudConfig, CloudSyncer, DEFAULT_CLOUD_URL, OUTPUT_CHUNK_BYTES, generate_account_token, get_or_create_machine_id, next_output_chunk, normalize_cloud_url
 from haoleme.crypto import generate_account_key
 from haoleme.store import RunRecord, RunStore
 
@@ -79,6 +79,49 @@ class CloudSyncerReliabilityTest(unittest.TestCase):
             self.assertEqual(store.get_run("run-1").cloud_synced_at, "")
             self.assertIn("offline", syncer.last_error)
             self.assertGreater(syncer._next_retry_at, 0)
+
+    def test_large_output_is_split_and_persistent_cursor_advances(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-1", ["train"], "/tmp")
+            store.mark_running("run-1", 123)
+            store.append_output("run-1", "stdout_tail", "x" * (OUTPUT_CHUNK_BYTES + 1000))
+            client = SuccessfulChunkClient()
+
+            syncer = CloudSyncer.__new__(CloudSyncer)
+            syncer.store = store
+            syncer.run_id = "run-1"
+            syncer.client = client
+            syncer._event = threading.Event()
+            syncer._stop = threading.Event()
+            syncer._thread = None
+            syncer.last_error = None
+            syncer._last_sync_at = 0.0
+            syncer._started_at = 0.0
+            syncer._last_output_at = 0.0
+            syncer._initial_synced = False
+            syncer._synced_output_len = 0
+            syncer._synced_stdout_len = 0
+            syncer._synced_stderr_len = 0
+            syncer._failure_count = 0
+            syncer._next_retry_at = 0.0
+
+            syncer._sync_once(force=True)
+
+            run = store.get_run("run-1")
+            self.assertEqual(len(client.chunks), 2)
+            self.assertTrue(all(len(item["text"].encode("utf-8")) <= OUTPUT_CHUNK_BYTES for item in client.chunks))
+            self.assertEqual(run.cloud_output_cursor, run.output_length)
+            self.assertTrue(run.cloud_synced_at)
+
+    def test_utf8_chunk_boundary_never_exceeds_wire_limit(self):
+        run = replace(sample_run_record(), output_tail="你" * 100_000, output_length=100_000)
+
+        chunk, start, end = next_output_chunk(run, 0)
+
+        self.assertEqual(start, 0)
+        self.assertEqual(end, len(chunk))
+        self.assertLessEqual(len(chunk.encode("utf-8")), OUTPUT_CHUNK_BYTES)
 
 
 class CloudConfigTest(unittest.TestCase):
@@ -202,6 +245,19 @@ class CloudConfigTest(unittest.TestCase):
         self.assertEqual(payload["commandText"], "Encrypted command")
         self.assertNotIn("secret", json.dumps(payload))
 
+    def test_metadata_upsert_does_not_advance_remote_output_cursor(self):
+        config = CloudConfig(
+            api_url="https://example.com",
+            account="default",
+            token="x" * 32,
+            encryption_key=generate_account_key(),
+        )
+        client = CapturingCloudClient(config)
+
+        client.upsert_run(sample_run_record(), include_output=False)
+
+        self.assertEqual(client.requests[0][2]["run"]["outputLength"], 0)
+
 
 class CapturingCloudClient(CloudClient):
     def __init__(self, config):
@@ -214,11 +270,25 @@ class CapturingCloudClient(CloudClient):
 
 
 class FailingSyncClient:
-    def append_run_update(self, _run, _deltas):
+    def append_run_update(self, _run, _deltas, *_cursor):
         raise RuntimeError("offline")
 
     def upsert_run(self, _run, *, include_output=True):
         raise RuntimeError("offline")
+
+
+class SuccessfulChunkClient:
+    def __init__(self):
+        self.chunks = []
+
+    def upsert_run(self, _run, *, include_output=True):
+        return None
+
+    def append_run_update(self, _run, deltas, output_start=None, output_end=None):
+        text = deltas.get("output_tail", "")
+        if text:
+            self.chunks.append({"text": text, "start": output_start, "end": output_end})
+        return {"ok": True, "outputLength": output_end or 0}
 
 
 def sample_run_record():
