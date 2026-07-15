@@ -368,15 +368,16 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 if not stored.get("deviceName"):
                     stored["deviceName"] = auth.device_name
             upsert_run(self.server.db_path, auth.account_key, stored)
+            received_at = iso_now()
             if stored.get("deviceId"):
                 upsert_device(
                     self.server.db_path,
                     auth.account_key,
                     stored.get("deviceId", ""),
                     stored.get("deviceName", "") or "好了么 CLI",
-                    stored.get("updatedAt", "") or iso_now(),
+                    received_at,
                 )
-            touch_token(self.server.db_path, auth.token_hash, stored.get("updatedAt", "") or iso_now())
+            touch_token(self.server.db_path, auth.token_hash, received_at)
             self.send_json({"ok": True})
             return
 
@@ -1876,12 +1877,26 @@ def touch_token(db_path: Path, token_hash_value: str, used_at: str) -> None:
         return
     with connect(db_path) as db:
         db.execute(
-            "UPDATE device_tokens SET last_used_at = ? WHERE token_hash = ? AND revoked_at = ''",
-            (used_at, token_hash_value),
+            """
+            UPDATE device_tokens
+            SET last_used_at = CASE
+                WHEN julianday(last_used_at) IS NULL OR julianday(?) >= julianday(last_used_at) THEN ?
+                ELSE last_used_at
+            END
+            WHERE token_hash = ? AND revoked_at = ''
+            """,
+            (used_at, used_at, token_hash_value),
         )
         db.execute(
-            "UPDATE app_tokens SET last_used_at = ? WHERE token_hash = ? AND revoked_at = ''",
-            (used_at, token_hash_value),
+            """
+            UPDATE app_tokens
+            SET last_used_at = CASE
+                WHEN julianday(last_used_at) IS NULL OR julianday(?) >= julianday(last_used_at) THEN ?
+                ELSE last_used_at
+            END
+            WHERE token_hash = ? AND revoked_at = ''
+            """,
+            (used_at, used_at, token_hash_value),
         )
 
 
@@ -2581,7 +2596,13 @@ def upsert_device(db_path: Path, account_key: str, device_id: str, name: str, se
                     WHEN excluded.machine_id != '' THEN excluded.machine_id
                     ELSE devices.machine_id
                 END,
-                last_seen_at = excluded.last_seen_at,
+                last_seen_at = CASE
+                    WHEN julianday(excluded.last_seen_at) IS NULL THEN devices.last_seen_at
+                    WHEN julianday(devices.last_seen_at) IS NULL
+                         OR julianday(excluded.last_seen_at) >= julianday(devices.last_seen_at)
+                    THEN excluded.last_seen_at
+                    ELSE devices.last_seen_at
+                END,
                 revoked_at = ''
             """,
             (account_key, device_id, name or "好了么 CLI", seen_at, seen_at, clean_machine_id),
@@ -2650,15 +2671,14 @@ def sanitize_cpu(value: Any) -> dict[str, Any]:
 def rename_device(db_path: Path, account_key: str, device_id: str, name: str) -> dict[str, Any] | None:
     if not device_id or not name:
         return None
-    seen_at = iso_now()
     with connect(db_path) as db:
         cursor = db.execute(
             """
             UPDATE devices
-            SET name = ?, manual_name = 1, last_seen_at = ?
+            SET name = ?, manual_name = 1
             WHERE account_key = ? AND id = ?
             """,
-            (name, seen_at, account_key, device_id),
+            (name, account_key, device_id),
         )
         if cursor.rowcount == 0:
             return None
