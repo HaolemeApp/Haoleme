@@ -13,9 +13,9 @@
     "notes": "修复长时间训练日志停止更新的问题，控制台历史默认提升至 100MB，并改为手机本地按需加载。"
   },
   "python": {
-    "version": "0.4.25",
+    "version": "0.4.26",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.25-py3-none-any.whl",
-    "notes": "修复重复心跳和无效重试，积压记录改为分块补传并自动退避，任务结束后提示 CLI 更新。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.26-py3-none-any.whl",
+    "notes": "新增 Windows CPU 利用率与 AMD 显卡指标，支持 AMD、NVIDIA 和 Intel 混合显卡；修复补传旧记录导致设备误显示离线。"
   }
 }
