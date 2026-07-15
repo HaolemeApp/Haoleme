@@ -1222,8 +1222,7 @@ def _parse_int(value: str):
         return None
 
 
-def collect_gpu_stats() -> list:
-    """Snapshot NVIDIA GPU utilization via nvidia-smi. Empty list if unavailable."""
+def _collect_nvidia_gpu_stats() -> list:
     nvidia_smi = shutil.which("nvidia-smi")
     if not nvidia_smi:
         return []
@@ -1258,6 +1257,127 @@ def collect_gpu_stats() -> list:
     return gpus
 
 
+def _windows_powershell() -> str | None:
+    return shutil.which("powershell") or shutil.which("pwsh")
+
+
+def _windows_json_command(script: str):
+    powershell = _windows_powershell()
+    if not powershell:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " + script,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=8,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout.decode("utf-8-sig", errors="replace"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_windows_gpu_payload(payload) -> list:
+    if not isinstance(payload, dict):
+        return []
+    adapters = payload.get("adapters") or payload.get("Adapters") or []
+    engines = payload.get("engines") or payload.get("Engines") or []
+    if isinstance(adapters, dict):
+        adapters = [adapters]
+    if isinstance(engines, dict):
+        engines = [engines]
+
+    utilization_by_physical = {}
+    all_utilization = []
+    for engine in engines if isinstance(engines, list) else []:
+        if not isinstance(engine, dict):
+            continue
+        instance = str(engine.get("instance") or engine.get("Instance") or "")
+        raw_value = engine.get("value") if "value" in engine else engine.get("Value")
+        try:
+            value = max(0.0, min(100.0, float(raw_value)))
+        except (TypeError, ValueError):
+            continue
+        all_utilization.append(value)
+        match = re.search(r"(?:^|_)phys_(\d+)(?:_|$)", instance, re.IGNORECASE)
+        if match:
+            physical_index = int(match.group(1))
+            utilization_by_physical[physical_index] = max(
+                utilization_by_physical.get(physical_index, 0.0),
+                value,
+            )
+
+    gpus = []
+    for index, adapter in enumerate(adapters if isinstance(adapters, list) else []):
+        if not isinstance(adapter, dict):
+            continue
+        name = str(adapter.get("name") or adapter.get("Name") or "").strip()
+        if not name or "microsoft basic display" in name.lower():
+            continue
+        total_bytes = adapter.get("adapterRam") if "adapterRam" in adapter else adapter.get("AdapterRAM")
+        try:
+            memory_total = round(int(total_bytes) / (1024 * 1024)) if total_bytes is not None else None
+        except (TypeError, ValueError, OverflowError):
+            memory_total = None
+        utilization = utilization_by_physical.get(index)
+        if utilization is None and len(adapters) == 1 and all_utilization:
+            utilization = max(all_utilization)
+        gpus.append({
+            "index": index,
+            "name": name[:80],
+            "utilization": round(utilization) if utilization is not None else None,
+            "memoryUsed": None,
+            "memoryTotal": memory_total,
+            "temperature": None,
+        })
+    return gpus
+
+
+def _collect_windows_gpu_stats() -> list:
+    payload = _windows_json_command(
+        "$adapters=@(Get-CimInstance Win32_VideoController | "
+        "ForEach-Object { [PSCustomObject]@{ name=$_.Name; adapterRam=$_.AdapterRAM } }); "
+        "$engines=@(); try { $engines=@(Get-CimInstance "
+        "Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction Stop | "
+        "ForEach-Object { [PSCustomObject]@{ instance=$_.Name; value=$_.UtilizationPercentage } }) "
+        "} catch { try { $engines=@((Get-Counter '\\GPU Engine(*)\\Utilization Percentage' "
+        "-ErrorAction Stop).CounterSamples | ForEach-Object { "
+        "[PSCustomObject]@{ instance=$_.InstanceName; value=$_.CookedValue } }) } catch {} }; "
+        "[PSCustomObject]@{ adapters=$adapters; engines=$engines } | ConvertTo-Json -Depth 4 -Compress"
+    )
+    return _parse_windows_gpu_payload(payload)
+
+
+def _gpu_name_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", name.lower())
+
+
+def collect_gpu_stats() -> list:
+    """Snapshot GPU metrics using vendor tools plus native Windows counters."""
+    gpus = _collect_nvidia_gpu_stats()
+    if os.name != "nt":
+        return gpus
+
+    known_names = {_gpu_name_key(str(gpu.get("name") or "")) for gpu in gpus}
+    for gpu in _collect_windows_gpu_stats():
+        key = _gpu_name_key(str(gpu.get("name") or ""))
+        if key and key not in known_names:
+            gpus.append(gpu)
+            known_names.add(key)
+    return gpus
+
+
 def _linux_cpu_totals() -> tuple[int, int] | None:
     try:
         with open("/proc/stat", "r", encoding="utf-8") as fh:
@@ -1278,6 +1398,20 @@ def _linux_cpu_totals() -> tuple[int, int] | None:
     return total, idle
 
 
+def _windows_cpu_utilization():
+    payload = _windows_json_command(
+        "$value=(Get-CimInstance Win32_Processor | "
+        "Measure-Object -Property LoadPercentage -Average).Average; "
+        "[PSCustomObject]@{ utilization=$value } | ConvertTo-Json -Compress"
+    )
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return round(max(0.0, min(100.0, float(payload.get("utilization")))))
+    except (TypeError, ValueError):
+        return None
+
+
 def collect_cpu_stats() -> dict:
     """Snapshot host CPU utilization. Best effort and dependency-free."""
     cores = os.cpu_count() or 1
@@ -1291,6 +1425,8 @@ def collect_cpu_stats() -> dict:
             idle_delta = second[1] - first[1]
             if total_delta > 0:
                 utilization = round(max(0.0, min(100.0, (1.0 - idle_delta / total_delta) * 100.0)))
+    if utilization is None and os.name == "nt":
+        utilization = _windows_cpu_utilization()
     load1 = None
     try:
         load1 = os.getloadavg()[0]
