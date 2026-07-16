@@ -53,7 +53,9 @@ The home screen shows active and completed runs in one place. Settings covers pa
   </tr>
 </table>
 
-## Quick Start
+## Quick Start Guide
+
+> Download the app → Install the CLI → Scan to pair → Run a command → Get notified
 
 ### 1. Download the App
 
@@ -67,23 +69,32 @@ pip install -U haoleme
 
 ### 3. Pair a Device
 
+Run this on your computer or server:
+
 ```bash
 hao login
 ```
 
-Open the app, then scan the QR code or enter the 6-digit pairing code.
+Open Settings in the app, then scan the QR code shown in the terminal or enter its 6-digit pairing code.
 
-### 4. Run a Command
+### 4. Run Your First Command
 
-Prefix your original command with `hao`:
+Start with a command that works everywhere:
+
+```bash
+hao echo hello
+```
+
+For future commands, simply add `hao` before the original command:
 
 ```bash
 hao python train.py
 hao bash script.sh
-hao echo hello
 ```
 
-The app will show status and console output automatically.
+### 5. Check Your Phone
+
+Open Runs in the app. You should see the command status and its `hello` output. Future commands will notify your phone when they finish or fail.
 
 ## Features
 
