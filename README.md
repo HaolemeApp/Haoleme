@@ -28,8 +28,8 @@
   <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/Haoleme-0.9.43.apk"><img src="https://img.shields.io/badge/APK-v0.9.43-3DDC84?logo=android&logoColor=white" alt="Android APK 0.9.43"></a>
   <a href="https://pypi.org/project/haoleme/"><img src="https://img.shields.io/pypi/v/haoleme?label=CLI&logo=pypi&logoColor=white&color=F0B429" alt="Haoleme CLI on PyPI"></a>
   <a href="https://github.com/HaolemeApp/Haoleme/issues"><img src="https://img.shields.io/github/issues-search/HaolemeApp/Haoleme?query=is%3Aissue&label=issues&logo=github&color=E85D75" alt="Total GitHub Issues"></a>
-  <a href="https://github.com/HaolemeApp/Haoleme/stargazers"><img src="https://img.shields.io/github/stars/HaolemeApp/Haoleme?label=stars&logo=github&logoColor=white&color=F59E0B" alt="GitHub Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-8B5CF6" alt="License: AGPL-3.0-or-later"></a>
+  <a href="https://github.com/HaolemeApp/Haoleme/stargazers"><img src="https://img.shields.io/github/stars/HaolemeApp/Haoleme?style=social" alt="GitHub Stars"></a>
 </p>
 
 ## 官方地址
