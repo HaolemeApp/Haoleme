@@ -28,6 +28,8 @@
   <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/Haoleme-0.9.43.apk"><img src="https://img.shields.io/badge/APK-v0.9.43-3DDC84?logo=android&logoColor=white" alt="Android APK 0.9.43"></a>
   <a href="https://pypi.org/project/haoleme/"><img src="https://img.shields.io/pypi/v/haoleme?label=CLI&logo=pypi&logoColor=white&color=F0B429" alt="Haoleme CLI on PyPI"></a>
   <a href="https://github.com/HaolemeApp/Haoleme/issues"><img src="https://img.shields.io/github/issues-search/HaolemeApp/Haoleme?query=is%3Aissue&label=issues&logo=github&color=E85D75" alt="Total GitHub Issues"></a>
+  <a href="https://github.com/HaolemeApp/Haoleme/issues?q=is%3Aissue%20state%3Aopen"><img src="https://img.shields.io/github/issues/HaolemeApp/Haoleme?label=open%20issues&logo=github&logoColor=white&color=F97316" alt="Open GitHub Issues"></a>
+  <a href="https://api.haoleme.cloud/health"><img src="https://img.shields.io/website?url=https%3A%2F%2Fapi.haoleme.cloud%2Fhealth&label=server&up_message=online&down_message=offline&up_color=14B8A6&down_color=EF4444&logo=serverfault&logoColor=white" alt="Haoleme Server Status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-8B5CF6" alt="License: AGPL-3.0-or-later"></a>
 </p>
 
@@ -48,8 +50,8 @@ The home screen shows active and completed runs in one place. Settings covers pa
 
 <table>
   <tr>
-    <td align="center" valign="top"><img src="docs/assets/screenshots/home-runs.jpg" width="320" height="711" alt="Home run list"></td>
-    <td align="center" valign="top"><img src="docs/assets/screenshots/settings-pairing.jpg" width="320" height="711" alt="Settings and pairing"></td>
+    <td align="center" valign="top"><img src="docs/assets/screenshots/home-runs-en.png" width="320" height="711" alt="Home run list"></td>
+    <td align="center" valign="top"><img src="docs/assets/screenshots/settings-pairing-en.png" width="320" height="711" alt="Settings and pairing"></td>
   </tr>
 </table>
 
