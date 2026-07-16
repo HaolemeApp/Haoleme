@@ -19,20 +19,23 @@
 <p align="center">
   <a href="https://haolemeapp.github.io/">官网</a>
   ·
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/latest">下载 App</a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/Haoleme-0.9.43.apk">下载 APK</a>
   ·
   <a href="https://pypi.org/project/haoleme/">PyPI</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/latest">
-    <img src="https://img.shields.io/github/v/release/HaolemeApp/Haoleme?label=version&logo=github" alt="Latest version">
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/Haoleme-0.9.43.apk">
+    <img src="https://img.shields.io/badge/APK-v0.9.43-3DDC84?logo=android&logoColor=white" alt="Android APK 0.9.43">
+  </a>
+  <a href="https://pypi.org/project/haoleme/">
+    <img src="https://img.shields.io/pypi/v/haoleme?label=CLI&logo=pypi&logoColor=white&color=F0B429" alt="Haoleme CLI on PyPI">
   </a>
   <a href="https://github.com/HaolemeApp/Haoleme/issues">
-    <img src="https://img.shields.io/github/issues-search/HaolemeApp/Haoleme?query=is%3Aissue&label=issues&logo=github" alt="Total GitHub Issues">
+    <img src="https://img.shields.io/github/issues-search/HaolemeApp/Haoleme?query=is%3Aissue&label=issues&logo=github&color=E85D75" alt="Total GitHub Issues">
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="License: AGPL-3.0-or-later">
+    <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-8B5CF6" alt="License: AGPL-3.0-or-later">
   </a>
 </p>
 
@@ -62,7 +65,7 @@
 
 ### 1. 下载 App
 
-[从 GitHub Releases 下载最新版 Android App](https://github.com/HaolemeApp/Haoleme/releases/latest)
+[直接下载 Android APK 0.9.43](https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/Haoleme-0.9.43.apk)
 
 ### 2. 安装 CLI
 
