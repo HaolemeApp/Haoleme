@@ -21,6 +21,8 @@
   ·
   <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/Haoleme-0.9.43.apk">下载 APK</a>
   ·
+  <a href="#快速开始">快速开始</a>
+  ·
   <a href="https://pypi.org/project/haoleme/">PyPI</a>
 </p>
 
