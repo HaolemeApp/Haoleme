@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import platform
 import secrets
@@ -8,6 +9,7 @@ import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,8 +58,6 @@ LIVE_SYNC_MAX_CHUNKS = 4
 LEGACY_CLOUD_URLS = {
     "http://api.haoleme.cloud",
 }
-
-
 def env_flag(name: str, default: bool = False) -> bool:
     value = os.environ.get(name, "")
     if not value:
@@ -215,6 +215,22 @@ class CloudConfig:
 def normalize_cloud_url(raw: str) -> str:
     api_url = (raw or "").strip().rstrip("/")
     if api_url in LEGACY_CLOUD_URLS:
+        return DEFAULT_CLOUD_URL
+    try:
+        parsed = urllib.parse.urlsplit(api_url)
+        port = parsed.port
+    except ValueError:
+        return api_url
+    try:
+        host_is_public_ip = ipaddress.ip_address(parsed.hostname or "").is_global
+    except ValueError:
+        host_is_public_ip = False
+    if (parsed.scheme.lower() in {"http", "https"}
+            and host_is_public_ip
+            and port in {None, 80, 443}
+            and not parsed.path
+            and not parsed.query
+            and not parsed.fragment):
         return DEFAULT_CLOUD_URL
     return api_url
 
