@@ -183,6 +183,10 @@ class CloudConfigTest(unittest.TestCase):
     def test_legacy_cloud_urls_migrate_to_https_domain(self):
         legacy_urls = [
             "http://api.haoleme.cloud",
+            "http://8.8.8.8",
+            "https://8.8.8.8/",
+            "http://8.8.8.8:80/",
+            "https://8.8.8.8:443",
         ]
         for legacy in legacy_urls:
             with self.subTest(legacy=legacy):
@@ -195,7 +199,7 @@ class CloudConfigTest(unittest.TestCase):
                 json.dumps({
                     "cloud": {
                         "enabled": True,
-                        "api_url": "http://api.haoleme.cloud",
+                        "api_url": "http://8.8.8.8:80/",
                         "account": "default",
                         "token": "x" * 32,
                     }
@@ -209,6 +213,10 @@ class CloudConfigTest(unittest.TestCase):
             self.assertEqual(loaded.api_url, DEFAULT_CLOUD_URL)
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(saved["cloud"]["api_url"], DEFAULT_CLOUD_URL)
+
+    def test_private_ip_cloud_url_is_preserved(self):
+        self.assertEqual(normalize_cloud_url("http://127.0.0.1:8765"), "http://127.0.0.1:8765")
+        self.assertEqual(normalize_cloud_url("http://192.168.1.10:8000"), "http://192.168.1.10:8000")
 
     def test_disabled_cloud_config_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:

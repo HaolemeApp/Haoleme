@@ -8140,7 +8140,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private boolean shouldClearAuthForServerReplacement(String rawSavedServerUrl, String normalizedSavedServerUrl) {
         String raw = trimTrailingSlash(rawSavedServerUrl == null ? "" : rawSavedServerUrl.trim());
-        if (raw.isEmpty()) {
+        if (raw.isEmpty() || isLegacyServerUrl(raw)) {
             return false;
         }
         return !normalizedSavedServerUrl.equals(raw);
@@ -8175,7 +8175,45 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 return true;
             }
         }
+        try {
+            URL url = new URL(value);
+            int port = url.getPort();
+            boolean defaultPort = port == -1 || port == 80 || port == 443;
+            boolean basePath = url.getPath().isEmpty() || "/".equals(url.getPath());
+            boolean webScheme = "http".equalsIgnoreCase(url.getProtocol()) || "https".equalsIgnoreCase(url.getProtocol());
+            if (webScheme && defaultPort && basePath && url.getQuery() == null && url.getRef() == null
+                    && isPublicIpv4Host(url.getHost())) {
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
         return false;
+    }
+
+    private boolean isPublicIpv4Host(String host) {
+        String[] parts = host == null ? new String[0] : host.split("\\.", -1);
+        if (parts.length != 4) {
+            return false;
+        }
+        int[] octets = new int[4];
+        try {
+            for (int index = 0; index < parts.length; index++) {
+                octets[index] = Integer.parseInt(parts[index]);
+                if (octets[index] < 0 || octets[index] > 255) {
+                    return false;
+                }
+            }
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
+        int first = octets[0];
+        int second = octets[1];
+        return first > 0 && first < 224
+                && first != 10 && first != 127
+                && !(first == 100 && second >= 64 && second <= 127)
+                && !(first == 169 && second == 254)
+                && !(first == 172 && second >= 16 && second <= 31)
+                && !(first == 192 && second == 168);
     }
 
     private String trimTrailingSlash(String value) {
