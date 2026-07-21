@@ -13,9 +13,9 @@
     "notes": "修复长时间训练日志停止更新的问题，控制台历史默认提升至 100MB，并改为手机本地按需加载。"
   },
   "python": {
-    "version": "0.4.27",
+    "version": "0.4.28",
     "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.27-py3-none-any.whl",
-    "notes": "自动将旧公网 IP 地址迁移到官方 HTTPS 域名，并保留现有登录与配对信息。"
+    "wheelUrl": "https://api.haoleme.cloud/downloads/haoleme-0.4.28-py3-none-any.whl",
+    "notes": "修复多个 hao 进程并发写入时 SQLite 数据库锁定导致的崩溃，并增强本地运行记录的并发可靠性。"
   }
 }
