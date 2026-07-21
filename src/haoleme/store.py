@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ._compat import shlex_join
 
@@ -14,6 +16,10 @@ from ._compat import shlex_join
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 DEFAULT_OUTPUT_TAIL_CHARS = 100_000_000
 MAX_OUTPUT_TAIL_CHARS = 100_000_000
+DEFAULT_SQLITE_TIMEOUT_SECONDS = 15.0
+DEFAULT_SQLITE_WRITE_RETRIES = 8
+SQLITE_RETRY_BASE_SECONDS = 0.05
+SQLITE_RETRY_MAX_SECONDS = 1.0
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -113,19 +119,34 @@ class RunRecord:
 
 
 class RunStore:
-    def __init__(self, db_path: Path | str | None = None, output_tail_chars: int | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path | str | None = None,
+        output_tail_chars: int | None = None,
+        sqlite_timeout_seconds: float | None = None,
+        sqlite_write_retries: int | None = None,
+    ) -> None:
         self.db_path = Path(db_path) if db_path else default_db_path()
         self.output_tail_chars = normalize_output_tail_chars(output_tail_chars)
+        self.sqlite_timeout_seconds = normalize_sqlite_timeout_seconds(sqlite_timeout_seconds)
+        self.sqlite_write_retries = normalize_sqlite_write_retries(sqlite_write_retries)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.init_db()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, factory=ClosingConnection)
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=self.sqlite_timeout_seconds,
+            factory=ClosingConnection,
+        )
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {int(self.sqlite_timeout_seconds * 1000)}")
+        conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     def init_db(self) -> None:
-        with self.connect() as conn:
+        def initialize(conn: sqlite3.Connection) -> None:
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
@@ -177,10 +198,13 @@ class RunStore:
                 "CREATE INDEX IF NOT EXISTS idx_runs_project_updated ON runs(project, updated_at DESC)"
             )
 
+        self._write(initialize)
+
     def create_run(self, run_id: str, command: list[str], cwd: str, project: str = "") -> None:
         now = utc_now()
         project_name = normalize_project_name(project)
-        with self.connect() as conn:
+
+        def insert(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
                 INSERT INTO runs (
@@ -191,6 +215,8 @@ class RunStore:
                 (run_id, json.dumps(command), cwd, project_name, now, now),
             )
 
+        self._write(insert)
+
     def mark_running(self, run_id: str, pid: int) -> None:
         self._update(run_id, {"status": "running", "pid": pid})
 
@@ -198,7 +224,8 @@ class RunStore:
         if stream not in {"stdout_tail", "stderr_tail"}:
             raise ValueError(f"unsupported stream: {stream}")
         limit = normalize_output_tail_chars(max_chars if max_chars is not None else self.output_tail_chars)
-        with self.connect() as conn:
+
+        def append(conn: sqlite3.Connection) -> None:
             conn.execute(
                 f"""
                 UPDATE runs
@@ -212,10 +239,13 @@ class RunStore:
                 (text, limit, text, limit, text, utc_now(), run_id),
             )
 
+        self._write(append)
+
     def finish_run(self, run_id: str, exit_code: int) -> None:
         status = "succeeded" if exit_code == 0 else "failed"
         now = utc_now()
-        with self.connect() as conn:
+
+        def finish(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
                 UPDATE runs
@@ -225,10 +255,13 @@ class RunStore:
                 (status, exit_code, now, now, run_id),
             )
 
+        self._write(finish)
+
     def cancel_run(self, run_id: str, note: str = "") -> None:
         now = utc_now()
         limit = self.output_tail_chars
-        with self.connect() as conn:
+
+        def cancel(conn: sqlite3.Connection) -> None:
             if note:
                 conn.execute(
                     """
@@ -255,10 +288,13 @@ class RunStore:
                     (now, now, run_id),
                 )
 
+        self._write(cancel)
+
     def interrupt_run(self, run_id: str, note: str = "") -> None:
         now = utc_now()
         limit = self.output_tail_chars
-        with self.connect() as conn:
+
+        def interrupt(conn: sqlite3.Connection) -> None:
             if note:
                 conn.execute(
                     """
@@ -285,15 +321,19 @@ class RunStore:
                     (now, now, run_id),
                 )
 
+        self._write(interrupt)
+
     def get_run(self, run_id: str) -> RunRecord | None:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return RunRecord.from_row(row) if row else None
 
     def delete_run(self, run_id: str) -> bool:
-        with self.connect() as conn:
+        def delete(conn: sqlite3.Connection) -> bool:
             cursor = conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
             return cursor.rowcount > 0
+
+        return bool(self._write(delete))
 
     def list_runs(self, limit: int = 100) -> list[RunRecord]:
         with self.connect() as conn:
@@ -336,14 +376,16 @@ class RunStore:
         return [RunRecord.from_row(row) for row in rows]
 
     def mark_cloud_synced(self, run_id: str) -> None:
-        with self.connect() as conn:
+        def mark(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "UPDATE runs SET cloud_synced_at = ? WHERE id = ?",
                 (utc_now(), run_id),
             )
 
+        self._write(mark)
+
     def mark_cloud_output_cursor(self, run_id: str, cursor: int) -> None:
-        with self.connect() as conn:
+        def mark(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
                 UPDATE runs
@@ -353,9 +395,13 @@ class RunStore:
                 (max(0, int(cursor)), run_id),
             )
 
+        self._write(mark)
+
     def mark_cloud_pending(self, run_id: str) -> None:
-        with self.connect() as conn:
+        def mark(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE runs SET cloud_synced_at = '' WHERE id = ?", (run_id,))
+
+        self._write(mark)
 
     def list_unsynced_runs(self, limit: int = 100) -> list[RunRecord]:
         with self.connect() as conn:
@@ -382,8 +428,23 @@ class RunStore:
         fields["cloud_synced_at"] = ""
         assignments = ", ".join(f"{name} = ?" for name in fields)
         values = list(fields.values()) + [run_id]
-        with self.connect() as conn:
+
+        def update(conn: sqlite3.Connection) -> None:
             conn.execute(f"UPDATE runs SET {assignments} WHERE id = ?", values)
+
+        self._write(update)
+
+    def _write(self, operation: Callable[[sqlite3.Connection], Any]) -> Any:
+        for attempt in range(self.sqlite_write_retries + 1):
+            try:
+                with self.connect() as conn:
+                    return operation(conn)
+            except sqlite3.OperationalError as exc:
+                if not is_sqlite_busy_error(exc) or attempt >= self.sqlite_write_retries:
+                    raise
+                delay = min(SQLITE_RETRY_MAX_SECONDS, SQLITE_RETRY_BASE_SECONDS * (2 ** attempt))
+                time.sleep(delay * random.uniform(0.75, 1.25))
+        raise RuntimeError("unreachable SQLite retry state")
 
 
 def normalize_project_name(value: str | None) -> str:
@@ -399,3 +460,30 @@ def normalize_output_tail_chars(value: int | str | None = None) -> int:
     except (TypeError, ValueError):
         parsed = DEFAULT_OUTPUT_TAIL_CHARS
     return max(30_000, min(parsed, MAX_OUTPUT_TAIL_CHARS))
+
+
+def normalize_sqlite_timeout_seconds(value: float | str | None = None) -> float:
+    raw = value
+    if raw is None:
+        raw = os.environ.get("HAOLEME_SQLITE_TIMEOUT_SECONDS") or DEFAULT_SQLITE_TIMEOUT_SECONDS
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_SQLITE_TIMEOUT_SECONDS
+    return max(0.01, min(parsed, 120.0))
+
+
+def normalize_sqlite_write_retries(value: int | str | None = None) -> int:
+    raw = value
+    if raw is None:
+        raw = os.environ.get("HAOLEME_SQLITE_WRITE_RETRIES") or DEFAULT_SQLITE_WRITE_RETRIES
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_SQLITE_WRITE_RETRIES
+    return max(0, min(parsed, 20))
+
+
+def is_sqlite_busy_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
