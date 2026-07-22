@@ -10,7 +10,7 @@
   <img src="docs/assets/haoleme_icon_light.png" width="96" alt="好了么">
 </p>
 
-<h1 align="center">好了么</h1>
+<h3 align="center">好了么</h3>
 
 <p align="center">
   <a href="https://trendshift.io/repositories/85658?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85658" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85658/daily?language=Java" alt="HaolemeApp/Haoleme | Trendshift" width="250" height="55"></a>
