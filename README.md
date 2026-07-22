@@ -13,6 +13,10 @@
 <h1 align="center">好了么</h1>
 
 <p align="center">
+  <a href="https://trendshift.io/repositories/85658?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85658" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85658/daily?language=Java" alt="HaolemeApp/Haoleme | Trendshift" width="250" height="55"></a>
+</p>
+
+<p align="center">
   在手机上查看电脑和服务器里的命令运行状态。
 </p>
 
