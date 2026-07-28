@@ -1,0 +1,38 @@
+{
+    # RSA certificates are a little larger than ECDSA, but they work across
+    # more Android vendor TLS stacks and older command-line clients.
+    key_type rsa2048
+
+    servers {
+        protocols h1 h2
+    }
+}
+
+# Replace haoleme.example.com with your own domain after DNS points to the server.
+# Caddy will automatically request and renew HTTPS certificates.
+haoleme.example.com {
+    log {
+        output file /opt/haoleme-cloud-data/logs/caddy-access.log {
+            roll_size 10mb
+            roll_keep 5
+            roll_keep_for 72h
+        }
+        format console
+    }
+
+    reverse_proxy 127.0.0.1:8000
+}
+
+# Temporary compatibility for old clients. New apps and CLI should use HTTPS.
+:80 {
+    log {
+        output file /opt/haoleme-cloud-data/logs/caddy-access.log {
+            roll_size 10mb
+            roll_keep 5
+            roll_keep_for 72h
+        }
+        format console
+    }
+
+    reverse_proxy 127.0.0.1:8000
+}

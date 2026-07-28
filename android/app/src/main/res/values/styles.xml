@@ -1,0 +1,22 @@
+<resources>
+    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">@color/rm_background</item>
+        <item name="android:navigationBarColor">@color/rm_background</item>
+        <item name="android:statusBarColor">@color/rm_surface</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+
+    <!-- For nicer popup dialogs with rounded textured borders -->
+    <style name="AppDialog" parent="android:Theme.Material.Light.Dialog">
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
+
+    <style name="AppDialog.Dark" parent="android:Theme.Material.Dialog">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <!-- Force light text for dark dialog background -->
+        <item name="android:textColorPrimary">#F4F4F5</item>
+        <item name="android:textColorSecondary">#B8B8C2</item>
+        <item name="android:textColor">#F4F4F5</item>
+    </style>
+</resources>

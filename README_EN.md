@@ -102,11 +102,14 @@ The app will show status and console output automatically.
 ## Source
 
 - CLI and cloud protocol: `src/haoleme`
-- Android app: `android-core`
+- Android app: [`android`](android/README.md)
+- Cloud deployment examples: [`deploy`](deploy/README.md)
 
 ## Security
 
-The public source tree does not include official signing keys, private production deployment config, personal donation QR codes, or access tokens.
+The public source tree does not include official signing keys, private production deployment config, real IP addresses, passwords, personal donation QR codes, or access tokens.
+
+Official Android signing material and server credentials are injected through environment variables or private local configuration. See [SECURITY.md](SECURITY.md) for reporting guidance.
 
 The app and CLI connect to the official service by default. You can also self-host from source. Do not commit your own keys, tokens, databases, signing files, or server passwords to a public repository.
 

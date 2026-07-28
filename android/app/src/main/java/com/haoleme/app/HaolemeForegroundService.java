@@ -44,9 +44,9 @@ public class HaolemeForegroundService extends Service {
     private static final String PREFS = "haoleme";
     private static final String RUN_CHANNEL_ID = "runs";
     private static final String MONITOR_CHANNEL_ID = "monitor";
-    private static final String DEFAULT_SERVER_URL = "https://your-haoleme-server.example.com";
+    private static final String DEFAULT_SERVER_URL = BuildConfig.HAOLEME_DEFAULT_SERVER_URL;
     private static final String[] LEGACY_SERVER_URLS = new String[]{
-            "http://your-haoleme-server.example.com"
+            "http://api.haoleme.cloud"
     };
     private static final long POLL_MS = 7000L;
     private static final int HTTP_TIMEOUT_MS = 12000;

@@ -1,0 +1,16 @@
+[Unit]
+Description=Backup Haoleme Cloud SQLite database
+
+[Service]
+Type=oneshot
+User=haoleme
+Group=haoleme
+Environment=HAOLEME_CLOUD_DB=/opt/haoleme-cloud-data/haoleme-cloud.db
+Environment=HAOLEME_CLOUD_BACKUP_DIR=/opt/haoleme-cloud-data/backups
+Environment=HAOLEME_CLOUD_BACKUP_KEEP=30
+ExecStart=/usr/local/bin/haoleme-cloud backup
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/haoleme-cloud-data

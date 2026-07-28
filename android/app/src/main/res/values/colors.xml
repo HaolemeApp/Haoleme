@@ -1,0 +1,9 @@
+<resources>
+    <color name="rm_background">#F7F8FA</color>
+    <color name="rm_surface">#FFFFFF</color>
+    <color name="rm_text">#1F2933</color>
+    <color name="rm_muted">#6B7280</color>
+    <color name="rm_primary">#176B87</color>
+    <color name="rm_success">#16794C</color>
+    <color name="rm_failed">#B42318</color>
+</resources>

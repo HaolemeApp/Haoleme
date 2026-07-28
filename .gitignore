@@ -1,20 +1,45 @@
 .venv/
+.venv-*/
 __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
-.DS_Store
+.pytest_cache/
+.coverage
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+secrets.properties
+keystore.properties
+google-services.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+
+# Runtime data
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+backups/
 
 .gradle/
 build/
 android/.gradle/
 android/**/build/
 local.properties
+android/**/debug.keystore
 xcuserdata/
 *.xcuserstate
-*.keystore
-*.jks
 android/legacy/
 android/build/manual/
 
+.idea/
+.claude/
 .DS_Store

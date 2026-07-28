@@ -106,11 +106,14 @@ hao echo hello
 ## 源码
 
 - CLI 和云端协议：`src/haoleme`
-- Android App：`android-core`
+- Android App：[`android`](android/README.md)
+- 云端部署示例：[`deploy`](deploy/README.md)
 
 ## 安全
 
-公开源码不包含官方签名密钥、生产服务器私密配置、个人收款码或访问令牌。
+公开源码不包含官方签名密钥、生产服务器私密配置、真实 IP、密码、个人收款码或访问令牌。
+
+Android 官方签名和服务器凭据只通过环境变量或本机私密配置注入，不会写入源码。安全问题请参阅 [SECURITY.md](SECURITY.md)。
 
 App 和 CLI 采用端对端加密，保证用户数据安全。
 

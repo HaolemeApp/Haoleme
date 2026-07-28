@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic Haoleme Cloud monitor
+
+[Timer]
+OnBootSec=3m
+OnUnitActiveSec=10m
+Persistent=true
+RandomizedDelaySec=2m
+
+[Install]
+WantedBy=timers.target

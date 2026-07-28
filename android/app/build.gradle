@@ -1,0 +1,81 @@
+plugins {
+    id "com.android.application"
+}
+
+def releaseStorePath = System.getenv("HAOLEME_ANDROID_KEYSTORE") ?: ""
+def releaseStorePassword = System.getenv("HAOLEME_ANDROID_KEYSTORE_PASSWORD") ?: ""
+def releaseKeyAlias = System.getenv("HAOLEME_ANDROID_KEY_ALIAS") ?: ""
+def releaseKeyPassword = System.getenv("HAOLEME_ANDROID_KEY_PASSWORD") ?: ""
+// Server URL + update manifest URLs. Override with -PHAOLEME_DEFAULT_SERVER_URL /
+// -PHAOLEME_UPDATE_URLS (or env vars) for self-hosting.
+// Update URLs support comma or space separated list. GitHub raw is included as a
+// reliable public fallback so the app can always discover new versions for self-update
+// even if the server manifest is temporarily stale or unreachable.
+def defaultServerUrl = (project.findProperty("HAOLEME_DEFAULT_SERVER_URL") ?: System.getenv("HAOLEME_DEFAULT_SERVER_URL") ?: "https://api.haoleme.cloud").toString()
+def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json https://api.haoleme.cloud/downloads/update.json").toString()
+
+// Official releases should set HAOLEME_ANDROID_KEYSTORE* environment variables.
+// Do not commit signing material to this repository.
+def hasReleaseSigning = releaseStorePath
+        && releaseStorePassword
+        && releaseKeyAlias
+        && releaseKeyPassword
+        && file(releaseStorePath).isFile()
+
+android {
+    namespace "com.haoleme.app"
+    compileSdk 35
+    buildToolsVersion "35.0.0"
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    signingConfigs {
+        haoleme {
+            if (hasReleaseSigning) {
+                storeFile file(releaseStorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+                println "Haoleme signing: using RELEASE keystore from env"
+            } else {
+                println "Haoleme signing: FALLBACK to local debug signing. Do not use this APK for official releases."
+                initWith signingConfigs.debug
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId "com.haoleme.app"
+        minSdk 23
+        targetSdk 35
+        versionCode 178
+        versionName "0.9.43"
+        buildConfigField "String", "HAOLEME_DEFAULT_SERVER_URL", "\"${defaultServerUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+        buildConfigField "String", "HAOLEME_UPDATE_URLS", "\"${defaultUpdateUrls.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")}\""
+
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            signingConfig signingConfigs.haoleme
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt")
+        }
+    }
+}
+
+dependencies {
+    def camerax_version = "1.5.1"
+    implementation "com.google.zxing:core:3.5.3"
+    implementation "androidx.camera:camera-camera2:$camerax_version"
+    implementation "androidx.camera:camera-lifecycle:$camerax_version"
+    implementation "androidx.camera:camera-view:$camerax_version"
+    implementation "com.google.mlkit:barcode-scanning:17.3.0"
+    testImplementation "junit:junit:4.13.2"
+}
