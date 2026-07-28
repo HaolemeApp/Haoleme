@@ -16,6 +16,11 @@
   Monitor commands on your computer or server from your phone.
 </p>
 
+> [!TIP]
+> **Codex / Claude Code Skills are now supported**
+>
+> Codex and Claude Code can automatically identify important training, full evaluations, and long-running tasks, then use `hao` to sync status and output to the Haoleme app. Dependency installs, quick pretests, and other routine commands stay local. [See installation](#agent-skill)
+
 <p align="center">
   <a href="https://haolemeapp.github.io/">Website</a>
   ·
@@ -86,6 +91,8 @@ hao echo hello
 ```
 
 The app will show status and console output automatically.
+
+<a id="agent-skill"></a>
 
 ### 5. Let Codex / Claude Code Monitor Important Tasks
 

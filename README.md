@@ -16,6 +16,11 @@
   在手机上查看电脑和服务器里的命令运行状态。
 </p>
 
+> [!TIP]
+> **现已支持 Codex / Claude Code Skills**
+>
+> Codex 和 Claude Code 可以自动识别重要的训练、完整评测与长时间任务，使用 `hao` 将运行状态和输出同步到好了么 App；安装依赖、快速预测试等普通命令不会同步。 [查看安装方式](#agent-skill)
+
 <p align="center">
   <a href="https://haolemeapp.github.io/">官网</a>
   ·
@@ -90,6 +95,8 @@ hao echo hello
 ```
 
 命令运行后，App 会自动显示状态和控制台输出。
+
+<a id="agent-skill"></a>
 
 ### 5. 让 Codex / Claude Code 自动监控重要任务
 
