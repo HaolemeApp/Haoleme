@@ -1,0 +1,4 @@
+interface:
+  display_name: "Monitor with Haoleme"
+  short_description: "Sync important long-running commands to Haoleme"
+  default_prompt: "Use $monitor-with-haoleme to monitor important long-running commands in this task."

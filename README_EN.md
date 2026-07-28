@@ -87,6 +87,16 @@ hao echo hello
 
 The app will show status and console output automatically.
 
+### 5. Let Codex / Claude Code Monitor Important Tasks
+
+Install the skill globally for both Codex and Claude Code:
+
+```bash
+npx skills add HaolemeApp/Haoleme --skill monitor-with-haoleme -g -a codex -a claude-code -y
+```
+
+The skill adds `hao` to training, full evaluations, long batch jobs, and other important work. It leaves dependency installs, quick pretests, formatting, and routine Git commands local.
+
 ## Features
 
 - running / succeeded / failed status

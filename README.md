@@ -91,6 +91,16 @@ hao echo hello
 
 命令运行后，App 会自动显示状态和控制台输出。
 
+### 5. 让 Codex / Claude Code 自动监控重要任务
+
+一条命令同时安装到 Codex 和 Claude Code：
+
+```bash
+npx skills add HaolemeApp/Haoleme --skill monitor-with-haoleme -g -a codex -a claude-code -y
+```
+
+Skill 会自动为训练、完整评测、长批处理等重要任务添加 `hao`；安装依赖、快速预测试、格式化和普通 Git 命令不会同步。
+
 ## 功能
 
 - 运行状态：running / succeeded / failed
