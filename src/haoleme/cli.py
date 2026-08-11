@@ -844,8 +844,15 @@ def pairing_login_command(argv: Sequence[str]) -> int:
         started = client.start(ns.device, existing_device_id, public_key, machine_id)
     except Exception as exc:
         print(f"hao: could not start login: {exc}", file=sys.stderr)
-        print("For a private relay, use: hao login https://hao.example.com", file=sys.stderr)
-        print("For a trusted LAN relay, use: hao login 192.168.1.20:8000", file=sys.stderr)
+        parsed_login_url = urllib.parse.urlsplit(api_url)
+        if parsed_login_url.scheme == "http" and is_local_relay_host(parsed_login_url.hostname or ""):
+            print("Start the LAN relay first in another terminal:", file=sys.stderr)
+            print("  haoleme-relay --lan --port 8000", file=sys.stderr)
+            if is_loopback_relay_host(parsed_login_url.hostname or ""):
+                print("127.0.0.1 points to the phone itself after scanning.", file=sys.stderr)
+                print("Use the LAN IP printed by haoleme-relay, for example 192.168.1.20:8000.", file=sys.stderr)
+        else:
+            print("For a private relay, use: hao login https://hao.example.com", file=sys.stderr)
         return 1
 
     code = str(started.get("code", ""))
@@ -1722,6 +1729,10 @@ def normalize_relay_login_url(raw: str) -> str:
         candidate = urllib.parse.urlsplit("//" + value)
         if not candidate.hostname:
             raise ValueError("invalid relay address")
+        if not is_local_relay_host(candidate.hostname) and "." not in candidate.hostname:
+            raise ValueError(
+                "enter a full HTTPS hostname or a private LAN IP:port; 'LAN' is not an address"
+            )
         scheme = "http" if is_local_relay_host(candidate.hostname) else "https"
         value = f"{scheme}://{value}"
 
@@ -1772,6 +1783,8 @@ def prompt_login_relay_url() -> str:
         if choice not in {"2", "private", "relay", "self-hosted", "selfhosted"}:
             print("Please enter 1 or 2.")
             continue
+        print("Start a LAN relay first with: haoleme-relay --lan --port 8000")
+        print("Or enter the HTTPS address of an already deployed private Relay.")
         while True:
             try:
                 value = input("Private Relay address (HTTPS or LAN IP:port): ").strip()
@@ -1800,6 +1813,16 @@ def is_local_relay_host(host: str) -> bool:
             ipaddress.ip_network("192.168.0.0/16"),
         ))
     return address in ipaddress.ip_network("fc00::/7")
+
+
+def is_loopback_relay_host(host: str) -> bool:
+    normalized = str(host or "").strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
 
 
 def print_qr(text: str) -> None:

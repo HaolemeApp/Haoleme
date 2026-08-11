@@ -299,6 +299,8 @@ class CliPairingTest(unittest.TestCase):
             normalize_relay_login_url("http://relay.example.com:8000")
         with self.assertRaises(ValueError):
             normalize_relay_login_url("https://relay.example.com/unexpected")
+        with self.assertRaisesRegex(ValueError, "LAN.*not an address"):
+            normalize_relay_login_url("LAN")
 
     def test_login_server_label_hides_official_endpoint(self):
         self.assertEqual(login_server_label(DEFAULT_CLOUD_URL), "Haoleme Cloud")
