@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 178,
-    "versionName": "0.9.43",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/Haoleme-0.9.43.apk",
+    "versionCode": 179,
+    "versionName": "0.9.44",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.44/Haoleme-0.9.44.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.43/Haoleme-0.9.43.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.43.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.44/Haoleme-0.9.44.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.44.apk"
     ],
-    "sha256": "9e65512f535d36c9a7f26f9c27105053ff174f73d78c18a792f428a75a605c44",
+    "sha256": "1e2572cfefaade0b73c203355aba6f783be85cb7a46d7d9b92b9662a46aa3856",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "修复长时间训练日志停止更新的问题，控制台历史默认提升至 100MB，并改为手机本地按需加载。"
+    "notes": "修复手机终端短命令完成后不显示输出的问题，并自动补回此前遗漏的本地终端输出。"
   },
   "python": {
     "version": "0.5.0",
