@@ -117,6 +117,9 @@ haoleme-relay --lan --port 8000
 hao login 192.168.1.20:8000
 ```
 
+第一条命令会自动显示当前电脑的 6 位配对码和二维码；其他电脑使用第二条命令。
+如果只想启动 Relay、不配对 Relay 所在电脑，可增加 `--no-pair`。
+
 局域网 HTTP 只允许私有 IP，请勿将该端口映射到公网。公网或不可信网络仍应使用
 HTTPS。完整说明见 [`deploy/RELAY.md`](deploy/RELAY.md)。
 

@@ -4,6 +4,9 @@ import os
 import ipaddress
 import socket
 import sys
+import threading
+import time
+import urllib.request
 from pathlib import Path
 
 from . import cloud_server
@@ -36,6 +39,9 @@ def configure_relay_environment() -> None:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     lan_mode = "--lan" in args
+    no_pair = "--no-pair" in args
+    if no_pair:
+        args.remove("--no-pair")
     if lan_mode:
         args.remove("--lan")
         if "--host" not in args:
@@ -43,10 +49,13 @@ def main(argv: list[str] | None = None) -> int:
     configure_relay_environment()
     if lan_mode:
         port = relay_port_from_args(args)
+        addresses = local_lan_addresses()
         print("Haoleme Relay LAN mode (trusted networks only)")
-        for address in local_lan_addresses():
+        for address in addresses:
             print(f"Pair with: hao login http://{address}:{port}")
         print("Run contents remain E2EE, but HTTP does not protect credentials or metadata.")
+        if not no_pair and addresses and addresses[0] != "YOUR_LAN_IP":
+            start_lan_pairing_thread(addresses[0], port)
     try:
         return cloud_server.main(args)
     except KeyboardInterrupt:
@@ -72,6 +81,40 @@ def local_lan_addresses() -> list[str]:
     except OSError:
         pass
     return sorted(addresses) or ["YOUR_LAN_IP"]
+
+
+def start_lan_pairing_thread(address: str, port: int) -> threading.Thread:
+    thread = threading.Thread(
+        target=run_lan_pairing,
+        args=(address, port),
+        name="haoleme-lan-pairing",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def run_lan_pairing(address: str, port: int) -> int:
+    if not wait_for_relay_health(port):
+        print("\nCould not start pairing: the local Relay did not become ready.", file=sys.stderr)
+        return 1
+    from .cli import pairing_login_command
+
+    print("\nRelay is ready. Pairing this computer with the mobile app...\n")
+    return pairing_login_command([f"http://{address}:{port}", "--yes"])
+
+
+def wait_for_relay_health(port: int, timeout: float = 10.0) -> bool:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with opener.open(f"http://127.0.0.1:{port}/health", timeout=0.5) as response:
+                if response.status == 200:
+                    return True
+        except Exception:
+            time.sleep(0.1)
+    return False
 
 
 if __name__ == "__main__":
