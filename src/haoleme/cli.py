@@ -817,21 +817,23 @@ def pairing_login_command(argv: Sequence[str]) -> int:
     if len(set(supplied_urls)) > 1:
         parser.error("provide the relay URL only once")
     existing_config = CloudConfig.load()
-    if existing_config is not None and not ns.yes and not confirm_relogin(existing_config):
-        return 0
 
     configured_url = (
         os.environ.get("HAOLEME_RELAY_URL", "").strip().rstrip("/")
         or os.environ.get("HAOLEME_CLOUD_URL", "").strip().rstrip("/")
     )
-    if supplied_urls:
-        raw_api_url = supplied_urls[0]
-    elif configured_url:
-        raw_api_url = configured_url
-    elif not ns.yes and stdin_is_interactive():
-        raw_api_url = prompt_login_relay_url()
-    else:
-        raw_api_url = DEFAULT_CLOUD_URL
+    try:
+        if supplied_urls:
+            raw_api_url = supplied_urls[0]
+        elif configured_url:
+            raw_api_url = configured_url
+        elif not ns.yes and stdin_is_interactive():
+            raw_api_url = prompt_login_relay_url()
+        else:
+            raw_api_url = DEFAULT_CLOUD_URL
+    except KeyboardInterrupt:
+        print("\nhao: login cancelled.", file=sys.stderr)
+        return 130
     try:
         api_url = normalize_relay_login_url(raw_api_url)
     except ValueError as exc:
@@ -965,28 +967,6 @@ def reusable_login_device_id(
     if existing_config.machine_id and existing_config.machine_id == machine_id:
         return existing_config.device_id
     return ""
-
-
-def confirm_relogin(existing_config: CloudConfig) -> bool:
-    print("好了么 is already logged in.")
-    server_label = login_server_label(existing_config.api_url)
-    print(f"Server: {server_label}")
-    if server_label == "Private Relay":
-        print(f"Address: {existing_config.api_url}")
-    print(f"Account: {existing_config.account or 'default'}")
-    if existing_config.device_name or existing_config.device_id:
-        print(f"Device: {existing_config.device_name or existing_config.device_id}")
-    try:
-        answer = input("Press Enter to re-login, or type n to cancel: ")
-    except EOFError:
-        print("hao: login cancelled. Use hao login --yes to re-login without a prompt.", file=sys.stderr)
-        return False
-    return should_continue_relogin(answer)
-
-
-def should_continue_relogin(answer: str) -> bool:
-    value = answer.strip().lower()
-    return value not in {"n", "no", "q", "quit", "cancel"}
 
 
 def heartbeat_command(argv: Sequence[str]) -> int:
