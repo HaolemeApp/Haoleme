@@ -150,7 +150,9 @@ hao login 192.168.1.20:8000
 ```
 
 The first command automatically prints a pair code and QR for the Relay host.
-Other computers use the second command. Add `--no-pair` for Relay-only mode.
+After pairing it returns to the shell and leaves the Relay in the background.
+Other computers use the second command. Add `--no-pair` for foreground
+Relay-only mode.
 
 Local HTTP is restricted to private IP addresses. Keep it inside the LAN; use
 HTTPS for any Internet-facing relay. See [`deploy/RELAY.md`](deploy/RELAY.md).
