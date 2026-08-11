@@ -16,6 +16,7 @@ license-files = ["LICENSE"]
 [project.scripts]
 hao = "haoleme.cli:main"
 haoleme-cloud = "haoleme.cloud_server:main"
+haoleme-relay = "haoleme.relay:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

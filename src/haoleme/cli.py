@@ -797,7 +797,14 @@ def cloud_login_command(argv: Sequence[str]) -> int:
 
 def pairing_login_command(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="hao login")
-    parser.add_argument("--api-url", default=os.environ.get("HAOLEME_CLOUD_URL", DEFAULT_CLOUD_URL))
+    parser.add_argument(
+        "relay_url",
+        nargs="?",
+        default="",
+        help="Private relay URL, for example https://hao.example.com",
+    )
+    parser.add_argument("--api-url", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--relay", default="", help="Private relay URL (alias for the positional URL).")
     parser.add_argument("--device", default=os.environ.get("HAOLEME_DEVICE_NAME", gethostname() or "好了么 CLI"))
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--new-device", action="store_true", help="Ignore the saved device id and pair this machine as a new device.")
@@ -805,7 +812,18 @@ def pairing_login_command(argv: Sequence[str]) -> int:
     parser.add_argument("--yes", "-y", action="store_true", help="Re-login without prompting when 好了么 is already logged in.")
     ns = parser.parse_args(argv)
 
-    api_url = ns.api_url.strip().rstrip("/")
+    supplied_urls = [value.strip().rstrip("/") for value in (ns.relay_url, ns.relay, ns.api_url) if value.strip()]
+    if len(set(supplied_urls)) > 1:
+        parser.error("provide the relay URL only once")
+    api_url = (
+        supplied_urls[0]
+        if supplied_urls
+        else os.environ.get("HAOLEME_RELAY_URL", "").strip().rstrip("/")
+        or os.environ.get("HAOLEME_CLOUD_URL", DEFAULT_CLOUD_URL).strip().rstrip("/")
+    )
+    parsed_api_url = urllib.parse.urlsplit(api_url)
+    if parsed_api_url.scheme.lower() != "https" or not parsed_api_url.hostname:
+        parser.error("relay URL must use HTTPS, for example https://hao.example.com")
     client = PairingClient(api_url)
     machine_id = get_or_create_machine_id()
     existing_config = CloudConfig.load()
@@ -817,7 +835,7 @@ def pairing_login_command(argv: Sequence[str]) -> int:
         started = client.start(ns.device, existing_device_id, public_key, machine_id)
     except Exception as exc:
         print(f"hao: could not start login: {exc}", file=sys.stderr)
-        print("If your 好了么 Cloud URL is different, use: hao login --api-url https://your-server.example.com", file=sys.stderr)
+        print("For a private relay, use: hao login https://hao.example.com", file=sys.stderr)
         return 1
 
     code = str(started.get("code", ""))
@@ -829,6 +847,10 @@ def pairing_login_command(argv: Sequence[str]) -> int:
     print("好了么 login")
     print()
     pair_url = build_pair_url(api_url, code)
+
+    if api_url.rstrip("/") != DEFAULT_CLOUD_URL.rstrip("/"):
+        print("Private relay: " + api_url)
+        print()
 
     print("Open the 好了么 Android app and enter this pair code:")
     print()
@@ -1666,7 +1688,12 @@ def datetime_from_iso(value: str):
 
 
 def build_pair_url(api_url: str, code: str) -> str:
-    query = urllib.parse.urlencode({"server": api_url.rstrip("/"), "code": code})
+    query = urllib.parse.urlencode({
+        "server": api_url.rstrip("/"),
+        "code": code,
+        "mode": "relay",
+        "v": "1",
+    })
     return f"haoleme://pair?{query}"
 
 

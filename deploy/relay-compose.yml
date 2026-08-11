@@ -1,0 +1,44 @@
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: Dockerfile.cloud
+    restart: unless-stopped
+    command: ["python", "-m", "haoleme.relay", "serve"]
+    environment:
+      HAOLEME_RELAY_HOST: 0.0.0.0
+      HAOLEME_RELAY_PORT: 8000
+      HAOLEME_RELAY_DATA_DIR: /data
+      HAOLEME_REQUIRE_E2EE: "1"
+      HAOLEME_ALLOW_LEGACY_ADMIN_TOKENS: "0"
+      MIN_ANDROID_VERSION_CODE: "66"
+    volumes:
+      - relay_data:/data
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-m", "haoleme.relay", "health", "--db", "/data/relay.db"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+    environment:
+      HAOLEME_RELAY_DOMAIN: ${HAOLEME_RELAY_DOMAIN:?Set HAOLEME_RELAY_DOMAIN to your relay domain}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.relay:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  relay_data:
+  caddy_data:
+  caddy_config:

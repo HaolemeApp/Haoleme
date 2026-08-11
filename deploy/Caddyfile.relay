@@ -1,0 +1,11 @@
+{
+    key_type rsa2048
+    servers {
+        protocols h1 h2
+    }
+}
+
+{$HAOLEME_RELAY_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy relay:8000
+}

@@ -92,6 +92,20 @@ The public source tree does not include official signing keys, private productio
 
 The app and CLI connect to the official service by default. You can also self-host from source. Do not commit your own keys, tokens, databases, signing files, or server passwords to a public repository.
 
+## Private Relay
+
+The normal Haoleme app also works with a self-hosted relay; no custom APK is
+required. Deploy the Docker/Caddy stack in [`deploy/RELAY.md`](deploy/RELAY.md),
+then pair a computer with one command:
+
+```bash
+hao login https://hao.example.com
+```
+
+Scanning that QR switches the app to the named relay. App credentials and E2EE
+keys are isolated per relay, and private-relay QR codes never fall back to the
+public Haoleme service.
+
 ## License
 
 Haoleme is licensed under [AGPL-3.0-or-later](LICENSE).

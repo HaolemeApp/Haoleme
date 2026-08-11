@@ -1,5 +1,9 @@
 # Haoleme Cloud Deployment
 
+For a new private/self-hosted installation, use the shorter Docker + Caddy flow
+in [`RELAY.md`](RELAY.md). It keeps the same App and CLI and switches endpoints
+through the pairing QR code.
+
 This folder contains production-oriented templates for a small VPS.
 
 ## HTTPS
