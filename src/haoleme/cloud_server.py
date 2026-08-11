@@ -445,9 +445,6 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         if error_code == "run_not_found":
             self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
             return
-        if error_code == "run_active":
-            self.send_json({"error": "run is still active", "code": "run_active"}, status=HTTPStatus.CONFLICT)
-            return
         if error_code == "device_not_found":
             self.send_json({"error": "run has no linked device", "code": "device_not_found"}, status=HTTPStatus.CONFLICT)
             return
@@ -2701,8 +2698,6 @@ def request_run_rerun(
         ).fetchone()
         if row is None:
             return None, "run_not_found"
-        if str(row["status"] or "") not in {"succeeded", "failed", "cancelled"}:
-            return None, "run_active"
         device_id = str(row["device_id"] or "").strip()
         if not device_id:
             return None, "device_not_found"

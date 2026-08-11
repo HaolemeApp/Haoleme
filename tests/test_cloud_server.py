@@ -171,7 +171,7 @@ class CloudServerDeviceTest(unittest.TestCase):
                 [],
             )
 
-    def test_rerun_rejects_active_and_cross_account_runs(self):
+    def test_rerun_accepts_active_run_as_a_distinct_task_and_rejects_cross_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
             init_db(db_path)
@@ -180,8 +180,9 @@ class CloudServerDeviceTest(unittest.TestCase):
             result, error = request_run_rerun(db_path, "account-a", "run-active")
             missing, missing_error = request_run_rerun(db_path, "account-b", "run-active")
 
-            self.assertIsNone(result)
-            self.assertEqual(error, "run_active")
+            self.assertIsNone(error)
+            self.assertEqual(result["runId"], "run-active")
+            self.assertNotEqual(result["targetRunId"], "run-active")
             self.assertIsNone(missing)
             self.assertEqual(missing_error, "run_not_found")
 

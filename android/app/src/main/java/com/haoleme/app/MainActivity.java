@@ -5955,12 +5955,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
     }
 
-    private void updateConsoleInterruptButton(boolean visible) {
+    private void updateConsoleInterruptButton(boolean active) {
         if (consoleInterruptButton == null) {
             return;
         }
-        consoleInterruptButton.setVisibility(visible ? View.VISIBLE : View.GONE);
-        consoleInterruptButton.setEnabled(visible);
+        boolean hasDevice = currentRunDeviceId != null && !currentRunDeviceId.isEmpty();
+        consoleInterruptButton.setVisibility(hasDevice ? View.VISIBLE : View.GONE);
+        consoleInterruptButton.setEnabled(hasDevice && active);
+        consoleInterruptButton.setAlpha(active ? 1f : 0.46f);
     }
 
     private void updateConsoleRerunButton(boolean visible) {
@@ -5968,22 +5970,27 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         boolean pending = selectedRunId != null && selectedRunId.equals(pendingRerunRunId);
-        consoleRerunButton.setVisibility(visible ? View.VISIBLE : View.GONE);
-        consoleRerunButton.setEnabled(visible && !pending);
+        boolean hasDevice = currentRunDeviceId != null && !currentRunDeviceId.isEmpty();
+        consoleRerunButton.setVisibility(hasDevice && visible ? View.VISIBLE : View.GONE);
+        consoleRerunButton.setEnabled(hasDevice && visible && !pending);
+        consoleRerunButton.setAlpha(pending ? 0.62f : 1f);
         consoleRerunButton.setText(actionLabel("↻", pending
                 ? (isEnglish() ? "Queued" : "已排队")
                 : t("rerun"), 1.18f));
     }
 
     private void updateConsoleDeviceActions(boolean active) {
+        boolean hasDevice = currentRunDeviceId != null && !currentRunDeviceId.isEmpty();
         if (consoleShutdownButton != null) {
             boolean scheduled = selectedRunId != null && selectedRunId.equals(pendingShutdownRunId);
-            consoleShutdownButton.setVisibility(active ? View.VISIBLE : View.GONE);
+            consoleShutdownButton.setVisibility(hasDevice ? View.VISIBLE : View.GONE);
+            consoleShutdownButton.setEnabled(hasDevice && (active || scheduled));
+            consoleShutdownButton.setAlpha(active || scheduled ? 1f : 0.46f);
             consoleShutdownButton.setText(actionLabel("⏻", scheduled ? t("cancel_shutdown") : t("shutdown_after_run"), 1.12f));
         }
         if (consoleTerminalButton != null) {
-            consoleTerminalButton.setVisibility(currentRunDeviceId == null || currentRunDeviceId.isEmpty()
-                    ? View.GONE : View.VISIBLE);
+            consoleTerminalButton.setVisibility(hasDevice ? View.VISIBLE : View.GONE);
+            consoleTerminalButton.setEnabled(hasDevice);
         }
     }
 
@@ -6085,7 +6092,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     if (id.equals(pendingRerunRunId)) {
                         pendingRerunRunId = "";
                         if (id.equals(selectedRunId)) {
-                            updateConsoleRerunButton(isTerminalRunStatus(selectedRunStatus));
+                            updateConsoleRerunButton(true);
                         }
                     }
                 }, 60_000L);
@@ -6237,10 +6244,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     : feature + "失败：Relay 或 CLI 版本过旧。";
         }
         return feature + (isEnglish() ? " failed: " : "失败：") + error.getMessage();
-    }
-
-    private boolean isTerminalRunStatus(String status) {
-        return "succeeded".equals(status) || "failed".equals(status) || "cancelled".equals(status);
     }
 
     private void refreshRunDetail(String id, boolean showLoading) {
@@ -6473,7 +6476,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             pendingShutdownRunId = run.optBoolean("shutdownAfterRun", false) ? run.optString("id", "") : "";
         }
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
-        updateConsoleRerunButton(isTerminalRunStatus(status));
+        updateConsoleRerunButton(true);
         updateConsoleDeviceActions("running".equals(status) || "created".equals(status));
 
         String runId = run.optString("id", "");
@@ -6589,7 +6592,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             pendingShutdownRunId = run.optBoolean("shutdownAfterRun", false) ? run.optString("id", "") : "";
         }
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
-        updateConsoleRerunButton(isTerminalRunStatus(status));
+        updateConsoleRerunButton(true);
         updateConsoleDeviceActions("running".equals(status) || "created".equals(status));
         String runId = run.optString("id", "");
         String diskOutput = readConsoleCacheTail(runId, consoleRenderLimit);
