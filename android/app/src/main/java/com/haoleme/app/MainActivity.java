@@ -152,6 +152,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final int RERUN_START_CHECK_TIMEOUT_MS = 2500;
     private static final int RERUN_START_MAX_CHECKS = 8;
     private static final long RERUN_START_CHECK_DELAY_MS = 500L;
+    private static final int REMOTE_TERMINAL_OUTPUT_MAX_POLLS = 24;
+    private static final int REMOTE_TERMINAL_EMPTY_GRACE_POLLS = 4;
+    private static final long REMOTE_TERMINAL_OUTPUT_POLL_MS = 500L;
     private static final long TRANSIENT_GET_RETRY_DELAY_MS = 250L;
     private static final long READ_RATE_LIMIT_BACKOFF_MS = 30000L;
     private static final int MAX_BACKGROUND_OUTPUT_SYNC = 1;
@@ -275,6 +278,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private String remoteTerminalLastOutput = "";
     private boolean remoteTerminalPendingCd = false;
     private int remoteTerminalPollAttempt = 0;
+    private int remoteTerminalCompletionPollAttempt = 0;
     private final StringBuilder remoteTerminalTranscript = new StringBuilder();
     private String selectedDeviceId = "all";
     private String selectedProjectFilter = "all";
@@ -6466,6 +6470,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         remoteTerminalActiveRunId = runId;
         remoteTerminalLastOutput = "";
         remoteTerminalPollAttempt = 0;
+        remoteTerminalCompletionPollAttempt = 0;
         setRemoteTerminalBusy(true, isEnglish() ? "Starting shell command..." : "正在启动 shell 命令...");
         submitBackground(() -> {
             try {
@@ -6517,7 +6522,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 String output = consoleOutput(run);
                 String status = run.optString("status", "created");
                 int exitCode = run.optInt("exitCode", 0);
-                handler.post(() -> applyRemoteTerminalRun(runId, output, status, exitCode));
+                int outputLength = Math.max(0, run.optInt("outputLength", 0));
+                int outputChunkCount = Math.max(0, run.optInt("outputChunkCount", 0));
+                handler.post(() -> applyRemoteTerminalRun(
+                        runId,
+                        output,
+                        status,
+                        exitCode,
+                        outputLength,
+                        outputChunkCount
+                ));
             } catch (Exception e) {
                 handler.post(() -> {
                     if (!remoteTerminalVisible || !runId.equals(remoteTerminalActiveRunId)) {
@@ -6533,7 +6547,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         });
     }
 
-    private void applyRemoteTerminalRun(String runId, String output, String status, int exitCode) {
+    private void applyRemoteTerminalRun(
+            String runId,
+            String output,
+            String status,
+            int exitCode,
+            int outputLength,
+            int outputChunkCount
+    ) {
         if (!remoteTerminalVisible || !runId.equals(remoteTerminalActiveRunId)) {
             return;
         }
@@ -6553,6 +6574,21 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 remoteTerminalStatusView.setText(isEnglish() ? "Running" : "运行中");
             }
             handler.postDelayed(remoteTerminalPollRunnable, 900L);
+            return;
+        }
+        int outputBytes = cleanOutput.getBytes(StandardCharsets.UTF_8).length;
+        boolean knownOutputIncomplete = outputLength > outputBytes
+                || (outputChunkCount > 0 && cleanOutput.isEmpty());
+        boolean emptyOutputGrace = cleanOutput.isEmpty()
+                && remoteTerminalCompletionPollAttempt < REMOTE_TERMINAL_EMPTY_GRACE_POLLS;
+        if ((knownOutputIncomplete
+                && remoteTerminalCompletionPollAttempt < REMOTE_TERMINAL_OUTPUT_MAX_POLLS)
+                || emptyOutputGrace) {
+            remoteTerminalCompletionPollAttempt++;
+            if (remoteTerminalStatusView != null) {
+                remoteTerminalStatusView.setText(isEnglish() ? "Syncing output..." : "正在同步输出...");
+            }
+            handler.postDelayed(remoteTerminalPollRunnable, REMOTE_TERMINAL_OUTPUT_POLL_MS);
             return;
         }
         if (remoteTerminalPendingCd && "succeeded".equals(status)) {
@@ -6807,12 +6843,35 @@ public class MainActivity extends Activity implements LifecycleOwner {
         int synced = 0;
         for (int i = 0; i < runs.length() && synced < MAX_BACKGROUND_OUTPUT_SYNC; i++) {
             JSONObject run = runs.optJSONObject(i);
-            if (run == null || !needsLocalOutputSync(run)) {
+            if (run == null || !isCompletedRunMissingLocalOutput(run) || !needsLocalOutputSync(run)) {
                 continue;
             }
             syncRunOutputForCache(run);
             synced++;
         }
+        for (int i = 0; i < runs.length() && synced < MAX_BACKGROUND_OUTPUT_SYNC; i++) {
+            JSONObject run = runs.optJSONObject(i);
+            if (run == null || isCompletedRunMissingLocalOutput(run) || !needsLocalOutputSync(run)) {
+                continue;
+            }
+            syncRunOutputForCache(run);
+            synced++;
+        }
+    }
+
+    private boolean isCompletedRunMissingLocalOutput(JSONObject run) {
+        if (run == null || run.optInt("outputLength", 0) <= 0) {
+            return false;
+        }
+        String status = run.optString("status", "");
+        if ("created".equals(status) || "running".equals(status)) {
+            return false;
+        }
+        String id = run.optString("id", "").trim();
+        JSONObject cached = id.isEmpty() ? null : loadCachedRunDetailJson(id);
+        return cached == null
+                || cachedConsoleOutput(cached).isEmpty()
+                || isNoOutputPlaceholder(cachedConsoleOutput(cached));
     }
 
     private boolean needsLocalOutputSync(JSONObject run) {
@@ -6829,6 +6888,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         int localLength = cachedOutputLength(cached);
         boolean hasLocalOutput = cached != null && !cachedConsoleOutput(cached).isEmpty() && !isNoOutputPlaceholder(cachedConsoleOutput(cached));
 
+        if (remoteLength > 0 && !hasLocalOutput) {
+            return active || remoteChunks < 0 || remoteChunks <= 20;
+        }
         if (remoteChunks > localChunks) {
             return active || hasLocalOutput || localChunks > 0 || remoteChunks <= 20;
         }
@@ -6847,6 +6909,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
             JSONObject cached = loadCachedRunDetailJson(id);
             int localChunks = cachedLocalOutputChunkCount(cached);
             int localLength = cachedOutputLength(cached);
+            boolean hasLocalOutput = cached != null
+                    && !cachedConsoleOutput(cached).isEmpty()
+                    && !isNoOutputPlaceholder(cachedConsoleOutput(cached));
+            if (!hasLocalOutput) {
+                localChunks = 0;
+                localLength = 0;
+            }
             StringBuilder url = new StringBuilder(normalizedServerUrl()).append("/api/runs/").append(id);
             if (localChunks > 0) {
                 url.append("?outputSince=").append(localChunks);
@@ -6863,10 +6932,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 boolean chunkMode = chunks != null || remoteChunks >= 0 || localChunks > 0;
                 if (chunkMode) {
                     if (chunks != null && chunks.length() > 0 && (remoteChunks < 0 || remoteChunks > localChunks)) {
-                        appendConsoleCache(id, decryptOutputChunks(id, chunks));
-                        localChunks = remoteChunks >= 0 ? Math.max(localChunks, remoteChunks) : localChunks + chunks.length();
+                        String decrypted = decryptOutputChunks(id, chunks);
+                        if (!decrypted.isEmpty()) {
+                            appendConsoleCache(id, decrypted);
+                            localChunks = remoteChunks >= 0 ? Math.max(localChunks, remoteChunks) : localChunks + chunks.length();
+                        }
                     } else if (remoteChunks >= 0) {
-                        localChunks = Math.max(localChunks, remoteChunks);
+                        localChunks = hasLocalOutput ? Math.max(localChunks, remoteChunks) : localChunks;
                     }
                 } else {
                     String append = payload.optString("outputAppend", "");
@@ -9356,9 +9428,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 combined.append(stderr);
             }
             return combined.toString();
-        } catch (Exception ignored) {
+        } catch (Exception error) {
+            Log.w(TAG, "cannot decrypt output chunk for run " + shortRunId(runId), error);
             return "";
         }
+    }
+
+    private String shortRunId(String runId) {
+        String value = runId == null ? "" : runId.trim();
+        return value.length() <= 8 ? value : value.substring(0, 8);
     }
 
     private String encryptAccountKeyForPair(String publicKeyPem, String serverUrl) throws Exception {
