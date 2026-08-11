@@ -13,9 +13,9 @@
     "notes": "修复手机终端短命令完成后不显示输出的问题，并自动补回此前遗漏的本地终端输出。"
   },
   "python": {
-    "version": "0.5.0",
+    "version": "0.5.1",
     "packageUrl": "haoleme",
-    "wheelUrl": "",
-    "notes": "Adds instant remote actions for Private Relay, a dedicated mobile terminal rooted at the current run directory, and reliable rerun state tracking. / 新增 Private Relay 即时远程操作、默认进入当前任务目录的手机终端，以及可靠的重新运行状态跟踪。"
+    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/cli-v0.5.1/haoleme-0.5.1-py3-none-any.whl",
+    "notes": "Delivers stop, rerun, shutdown, and terminal actions through one immediate device connection while preserving console synchronization behavior. / 停止、重新运行、完成后关机和终端操作共用一条即时设备连接，同时保持原有控制台同步逻辑。"
   }
 }
