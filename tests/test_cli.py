@@ -30,6 +30,7 @@ from haoleme.cli import (
     main,
     mark_stale_active_runs_pending,
     latest_python_release,
+    login_server_label,
     normalize_relay_login_url,
     pairing_login_command,
     prompt_login_relay_url,
@@ -296,6 +297,10 @@ class CliPairingTest(unittest.TestCase):
             normalize_relay_login_url("http://relay.example.com:8000")
         with self.assertRaises(ValueError):
             normalize_relay_login_url("https://relay.example.com/unexpected")
+
+    def test_login_server_label_hides_official_endpoint(self):
+        self.assertEqual(login_server_label(DEFAULT_CLOUD_URL), "Haoleme Cloud")
+        self.assertEqual(login_server_label("https://relay.example.com"), "Private Relay")
 
     def test_private_pair_qr_identifies_relay_protocol(self):
         pair_url = build_pair_url("https://hao.example.com/", "123456")

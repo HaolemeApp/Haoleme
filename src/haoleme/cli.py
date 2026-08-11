@@ -858,9 +858,11 @@ def pairing_login_command(argv: Sequence[str]) -> int:
     print()
     pair_url = build_pair_url(api_url, code)
 
-    if api_url.rstrip("/") != DEFAULT_CLOUD_URL.rstrip("/"):
-        print("Private relay: " + api_url)
-        print()
+    server_label = login_server_label(api_url)
+    print("Server: " + server_label)
+    if server_label == "Private Relay":
+        print("Address: " + api_url)
+    print()
 
     print("Open the 好了么 Android app and enter this pair code:")
     print()
@@ -919,6 +921,7 @@ def pairing_login_command(argv: Sequence[str]) -> int:
             print()
             print("Login success.")
             print(f"Config: {default_config_path()}")
+            print(f"Server: {server_label}")
             print(f"Device: {device_name}")
             print("Encryption: enabled" if encryption_key else "Encryption: not enabled for this pairing")
             print("Future hao commands will sync to 好了么 Cloud automatically.")
@@ -1740,6 +1743,12 @@ def normalize_relay_login_url(raw: str) -> str:
     raise ValueError(
         "relay must use HTTPS; plain HTTP is allowed only for localhost or a private LAN IP"
     )
+
+
+def login_server_label(api_url: str) -> str:
+    if str(api_url or "").rstrip("/") == DEFAULT_CLOUD_URL.rstrip("/"):
+        return "Haoleme Cloud"
+    return "Private Relay"
 
 
 def stdin_is_interactive() -> bool:
