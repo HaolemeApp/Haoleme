@@ -13,11 +13,6 @@
   Monitor commands on your computer or server from your phone.
 </p>
 
-> [!TIP]
-> **Codex / Claude Code Skills are now supported**
->
-> Codex and Claude Code can automatically identify important training, full evaluations, and long-running tasks, then use `hao` to sync status and output to the Haoleme app. Dependency installs, quick pretests, and other routine commands stay local. [See installation](#agent-skill)
-
 <p align="center">
   <a href="https://haolemeapp.github.io/">Website</a>
   ·
@@ -38,6 +33,11 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/85658?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85658" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85658/daily?language=Java" alt="HaolemeApp/Haoleme | Trendshift" width="250" height="55"></a>
 </p>
+
+> [!TIP]
+> **Codex / Claude Code Skills are now supported**
+>
+> Codex and Claude Code can automatically identify important training, full evaluations, and long-running tasks, then use `hao` to sync status and output to the Haoleme app. Dependency installs, quick pretests, and other routine commands stay local. [See installation](#agent-skill)
 
 ## Official Links
 

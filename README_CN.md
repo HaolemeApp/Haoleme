@@ -13,11 +13,6 @@
   在手机上查看电脑和服务器里的命令运行状态。
 </p>
 
-> [!TIP]
-> **现已支持 Codex / Claude Code Skills**
->
-> Codex 和 Claude Code 可以自动识别重要的训练、完整评测与长时间任务，使用 `hao` 将运行状态和输出同步到好了么 App；安装依赖、快速预测试等普通命令不会同步。 [查看安装方式](#agent-skill)
-
 <p align="center">
   <a href="https://haolemeapp.github.io/">官网</a>
   ·
@@ -38,6 +33,11 @@
 <p align="center">
   <a href="https://trendshift.io/repositories/85658?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85658" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85658/daily?language=Java" alt="HaolemeApp/Haoleme | Trendshift" width="250" height="55"></a>
 </p>
+
+> [!TIP]
+> **现已支持 Codex / Claude Code Skills**
+>
+> Codex 和 Claude Code 可以自动识别重要的训练、完整评测与长时间任务，使用 `hao` 将运行状态和输出同步到好了么 App；安装依赖、快速预测试等普通命令不会同步。 [查看安装方式](#agent-skill)
 
 ## 官方地址
 
