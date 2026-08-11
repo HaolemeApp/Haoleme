@@ -14,6 +14,8 @@ from haoleme.cloud_server import (
     append_run_update,
     authenticate_device_token,
     build_run_fetch_payload,
+    claim_pending_run_actions,
+    complete_run_action,
     account_has_cloud_data,
     backup_database,
     cancel_pair,
@@ -51,6 +53,7 @@ from haoleme.cloud_server import (
     sanitize_cpu,
     sanitize_gpus,
     request_run_interrupt,
+    request_run_rerun,
     revoke_device,
     store_device_token,
     store_app_token,
@@ -114,6 +117,68 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertIsNotNone(device)
             self.assertEqual(device["name"], "Server A")
             self.assertEqual(device["lastSeenAt"], "2026-06-18T01:05:00Z")
+
+    def test_rerun_action_is_deduplicated_leased_and_completed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_123"
+            init_db(db_path)
+            upsert_run(db_path, account_key, self.sample_run("run-rerun", device_id, "Server A", "succeeded"))
+
+            first, error = request_run_rerun(db_path, account_key, "run-rerun")
+            duplicate, duplicate_error = request_run_rerun(db_path, account_key, "run-rerun")
+
+            self.assertIsNone(error)
+            self.assertIsNone(duplicate_error)
+            self.assertEqual(first["id"], duplicate["id"])
+            self.assertFalse(first["duplicate"])
+            self.assertTrue(duplicate["duplicate"])
+
+            claimed = claim_pending_run_actions(
+                db_path, account_key, device_id, now="2026-08-11T00:00:00Z"
+            )
+            self.assertEqual(claimed[0]["runId"], "run-rerun")
+            self.assertEqual(
+                claim_pending_run_actions(
+                    db_path, account_key, device_id, now="2026-08-11T00:01:00Z"
+                ),
+                [],
+            )
+            reclaimed = claim_pending_run_actions(
+                db_path, account_key, device_id, now="2026-08-11T00:02:01Z"
+            )
+            self.assertEqual(reclaimed[0]["id"], first["id"])
+            self.assertFalse(
+                complete_run_action(
+                    db_path, account_key, "dev_other", first["id"], "started", launcher_pid=99
+                )
+            )
+            self.assertTrue(
+                complete_run_action(
+                    db_path, account_key, device_id, first["id"], "started", launcher_pid=99
+                )
+            )
+            self.assertEqual(
+                claim_pending_run_actions(
+                    db_path, account_key, device_id, now="2026-08-11T00:05:00Z"
+                ),
+                [],
+            )
+
+    def test_rerun_rejects_active_and_cross_account_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            init_db(db_path)
+            upsert_run(db_path, "account-a", self.sample_run("run-active", "dev_a", "A", "running"))
+
+            result, error = request_run_rerun(db_path, "account-a", "run-active")
+            missing, missing_error = request_run_rerun(db_path, "account-b", "run-active")
+
+            self.assertIsNone(result)
+            self.assertEqual(error, "run_active")
+            self.assertIsNone(missing)
+            self.assertEqual(missing_error, "run_not_found")
 
     def test_old_backlog_sync_cannot_move_device_last_seen_backwards(self):
         with tempfile.TemporaryDirectory() as tmp:

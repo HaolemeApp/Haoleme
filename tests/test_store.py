@@ -22,6 +22,19 @@ def append_output_worker(db_path, run_id, marker, count, start_event, result_que
 
 
 class RunStoreTest(unittest.TestCase):
+    def test_remote_action_reservation_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+
+            self.assertTrue(store.reserve_remote_action("action-1", "run-1"))
+            self.assertFalse(store.reserve_remote_action("action-1", "run-1"))
+            store.finish_remote_action("action-1", "started", "launched", 321)
+
+            action = store.get_remote_action("action-1")
+            self.assertEqual(action["source_run_id"], "run-1")
+            self.assertEqual(action["status"], "started")
+            self.assertEqual(action["launcher_pid"], 321)
+
     def test_run_lifecycle(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(Path(tmp) / "runs.db")

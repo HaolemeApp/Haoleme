@@ -17,6 +17,7 @@ from haoleme.cli import (
     HEARTBEAT_INTERVAL_SECONDS,
     ORPHANED_RUN_GRACE_SECONDS,
     acquire_process_file_lock,
+    apply_remote_actions,
     build_pair_url,
     command_needs_shell,
     compare_versions,
@@ -31,6 +32,7 @@ from haoleme.cli import (
     main,
     mark_stale_active_runs_pending,
     latest_python_release,
+    launch_remote_rerun,
     login_server_label,
     normalize_relay_login_url,
     pairing_login_command,
@@ -84,6 +86,53 @@ class BrokenTarget:
 
 
 class CliPairingTest(unittest.TestCase):
+    def test_remote_rerun_launch_is_idempotent_and_keeps_context(self):
+        class ActionClient:
+            def __init__(self):
+                self.completed = []
+
+            def complete_remote_action(self, action_id, status, detail="", launcher_pid=None):
+                self.completed.append((action_id, status, detail, launcher_pid))
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run(
+                "run-original",
+                ["MODE=1", sys.executable, "-c", "print('ok')"],
+                tmp,
+                project="Experiment",
+            )
+            store.finish_run("run-original", 0)
+            client = ActionClient()
+            action = {"id": "action-1", "runId": "run-original", "action": "rerun"}
+
+            with patch("haoleme.cli.launch_remote_rerun", return_value=4321) as launcher:
+                first = apply_remote_actions(store, client, [action])
+                second = apply_remote_actions(store, client, [action])
+
+            launcher.assert_called_once()
+            self.assertIn("Remote rerun started", first[0])
+            self.assertEqual(second, [])
+            self.assertEqual(client.completed[-1][1], "started")
+            self.assertEqual(client.completed[-1][3], 4321)
+
+    def test_launch_remote_rerun_uses_saved_command_directory_and_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-launch", ["FOO=1", "python", "app.py"], tmp, project="Project A")
+            store.finish_run("run-launch", 0)
+            process = type("Process", (), {"pid": 9876})()
+
+            with patch("haoleme.cli.subprocess.Popen", return_value=process) as popen:
+                pid = launch_remote_rerun(store.get_run("run-launch"))
+
+            self.assertEqual(pid, 9876)
+            command = popen.call_args.args[0]
+            self.assertEqual(command[:5], [sys.executable, "-m", "haoleme", "--project", "Project A"])
+            self.assertEqual(command[5:], ["FOO=1", "python", "app.py"])
+            self.assertEqual(popen.call_args.kwargs["cwd"], tmp)
+
     def test_compare_versions_orders_semver_like_values(self):
         self.assertEqual(compare_versions("0.3.9", "0.3.10"), -1)
         self.assertEqual(compare_versions("0.3.19", "0.3.19"), 0)

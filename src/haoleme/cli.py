@@ -1467,6 +1467,92 @@ def collect_cpu_stats() -> dict:
     return cpu
 
 
+def launch_remote_rerun(run: RunRecord) -> int:
+    if not run.command:
+        raise RuntimeError("saved command is empty")
+    cwd = Path(run.cwd).expanduser()
+    if not cwd.is_dir():
+        raise RuntimeError("saved working directory no longer exists")
+
+    command = [sys.executable, "-m", "haoleme"]
+    if run.project:
+        command.extend(["--project", run.project])
+    command.extend(run.command)
+    launch_kwargs: dict[str, object] = {
+        "cwd": str(cwd),
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if os.name == "posix":
+        launch_kwargs["start_new_session"] = True
+    elif os.name == "nt":
+        launch_kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+    process = subprocess.Popen(command, **launch_kwargs)
+    return int(process.pid)
+
+
+def apply_remote_actions(
+    store: RunStore,
+    client: CloudClient,
+    actions: object,
+) -> list[str]:
+    if not isinstance(actions, list):
+        return []
+    messages: list[str] = []
+    for item in actions:
+        if not isinstance(item, dict) or item.get("action") != "rerun":
+            continue
+        action_id = str(item.get("id") or "").strip()
+        source_run_id = str(item.get("runId") or "").strip()
+        if not action_id or not source_run_id:
+            continue
+
+        existing = store.get_remote_action(action_id)
+        if existing is not None:
+            status = str(existing.get("status") or "failed")
+            detail = str(existing.get("detail") or "")
+            launcher_pid = existing.get("launcher_pid")
+            if status == "accepted":
+                status = "failed"
+                detail = "previous launcher stopped before confirming the rerun"
+                store.finish_remote_action(action_id, status, detail)
+                launcher_pid = None
+            try:
+                client.complete_remote_action(action_id, status, detail, launcher_pid)
+            except Exception as exc:
+                messages.append(f"Remote rerun acknowledgement pending: {describe_cloud_error(exc)}")
+            continue
+
+        store.reserve_remote_action(action_id, source_run_id)
+        run = store.get_run(source_run_id)
+        if run is None:
+            status = "failed"
+            detail = "original run is not available in this device's local history"
+            launcher_pid = None
+        else:
+            try:
+                launcher_pid = launch_remote_rerun(run)
+                status = "started"
+                detail = "rerun launcher started"
+                messages.append(f"Remote rerun started for {source_run_id[:8]} (pid {launcher_pid}).")
+            except Exception as exc:
+                launcher_pid = None
+                status = "failed"
+                detail = str(exc)[:500]
+                messages.append(f"Remote rerun failed for {source_run_id[:8]}: {detail}")
+        store.finish_remote_action(action_id, status, detail, launcher_pid)
+        try:
+            client.complete_remote_action(action_id, status, detail, launcher_pid)
+        except Exception as exc:
+            messages.append(f"Remote rerun acknowledgement pending: {describe_cloud_error(exc)}")
+    return messages
+
+
 def heartbeat_run_foreground() -> int:
     config = CloudConfig.load()
     if config is None:
@@ -1505,7 +1591,9 @@ def heartbeat_run_foreground() -> int:
                     # Presence must never wait behind a large pending-output
                     # backlog. Send it first, then spend a bounded amount of
                     # time on maintenance below.
-                    client.heartbeat(gpus=collect_gpu_stats(), cpu=collect_cpu_stats())
+                    heartbeat_payload = client.heartbeat(gpus=collect_gpu_stats(), cpu=collect_cpu_stats())
+                    for action_message in apply_remote_actions(store, client, heartbeat_payload.get("actions")):
+                        print(action_message, flush=True)
                     now_text = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     write_heartbeat_state(
                         haolemeVersion=__version__,

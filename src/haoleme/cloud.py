@@ -386,6 +386,22 @@ class CloudClient:
         except Exception as exc:
             raise RuntimeError(f"interrupt request failed: {exc}") from exc
 
+    def complete_remote_action(
+        self,
+        action_id: str,
+        status: str,
+        detail: str = "",
+        launcher_pid: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "status": status,
+            "detail": detail,
+        }
+        if launcher_pid is not None:
+            payload["launcherPid"] = launcher_pid
+        encoded_id = urllib.parse.quote(action_id, safe="")
+        return self.request("POST", f"/api/devices/actions/{encoded_id}/complete", payload)
+
     def clear_all_runs(self) -> int:
         """Delete all runs on the cloud for this account. Returns deleted count if available."""
         try:

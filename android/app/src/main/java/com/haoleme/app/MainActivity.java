@@ -236,6 +236,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private JSONObject currentRunDetail;
     private TextView consoleAutoScrollButton;
     private TextView consoleInterruptButton;
+    private TextView consoleRerunButton;
     private TextView consoleTopMoreButton;
     private EditText consoleSearchInput;
     private ScrollView consoleVerticalScroll;
@@ -248,6 +249,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean decodingFrame = false;
     private String selectedRunId = null;
     private String selectedRunStatus = "";
+    private String pendingRerunRunId = "";
     private String selectedDeviceId = "all";
     private String selectedProjectFilter = "all";
     private String latestDownloadUrl = "";
@@ -2070,6 +2072,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
             case "auto_off": return en ? "Auto Off" : "自动滚动关";
             case "interrupt": return en ? "Interrupt" : "中断";
             case "interrupt_confirm": return en ? "Stop this running command on the linked computer?" : "确定要在电脑上停止这条正在运行的命令吗？";
+            case "rerun": return en ? "Rerun" : "重新运行";
+            case "rerun_confirm": return en
+                    ? "Run this command again on the linked computer? The saved command and working directory on that device will be used."
+                    : "确定要在关联电脑上重新运行这条命令吗？将使用该设备本地保存的命令和工作目录。";
             default: return key;
         }
     }
@@ -5722,6 +5728,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         interruptParams.setMargins(0, dp(10), 0, 0);
         consoleInterruptButton.setVisibility(View.GONE);
         commandCard.addView(consoleInterruptButton, interruptParams);
+
+        consoleRerunButton = actionButton(actionLabel("↻", t("rerun"), 1.18f));
+        consoleRerunButton.setTextColor(isDarkTheme() ? color("#93C5FD") : color("#2563EB"));
+        consoleRerunButton.setOnClickListener(v -> confirmRerunRun());
+        LinearLayout.LayoutParams rerunParams = matchWrap();
+        rerunParams.setMargins(0, dp(10), 0, 0);
+        consoleRerunButton.setVisibility(View.GONE);
+        commandCard.addView(consoleRerunButton, rerunParams);
         root.addView(commandCard, commandCardParams);
 
         consoleSearchInput = new EditText(this);
@@ -5906,6 +5920,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
         consoleInterruptButton.setEnabled(visible);
     }
 
+    private void updateConsoleRerunButton(boolean visible) {
+        if (consoleRerunButton == null) {
+            return;
+        }
+        boolean pending = selectedRunId != null && selectedRunId.equals(pendingRerunRunId);
+        consoleRerunButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+        consoleRerunButton.setEnabled(visible && !pending);
+        consoleRerunButton.setText(actionLabel("↻", pending
+                ? (isEnglish() ? "Queued" : "已排队")
+                : t("rerun"), 1.18f));
+    }
+
     private void confirmInterruptRun() {
         if (selectedRunId == null || selectedRunId.isEmpty()) {
             return;
@@ -5954,6 +5980,72 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 });
             }
         });
+    }
+
+    private void confirmRerunRun() {
+        if (selectedRunId == null || selectedRunId.isEmpty()) {
+            return;
+        }
+        AlertDialog d = dialogBuilder()
+                .setTitle(t("rerun"))
+                .setMessage(t("rerun_confirm"))
+                .setNegativeButton(t("cancel"), null)
+                .setPositiveButton(t("rerun"), (dialog, which) -> rerunRun(selectedRunId))
+                .create();
+        applyDialogStyle(d);
+        d.show();
+    }
+
+    private void rerunRun(String id) {
+        if (id == null || id.isEmpty()) {
+            return;
+        }
+        pendingRerunRunId = id;
+        updateConsoleRerunButton(true);
+        if (statusText != null) {
+            statusText.setText(isEnglish() ? "Queuing rerun..." : "正在提交重新运行请求...");
+        }
+        submitBackground(() -> {
+            try {
+                httpPostJson(normalizedServerUrl() + "/api/runs/" + Uri.encode(id) + "/rerun", "{}");
+                handler.post(() -> {
+                    if (!id.equals(selectedRunId)) {
+                        return;
+                    }
+                    if (statusText != null) {
+                        statusText.setText(isEnglish()
+                                ? "Rerun queued. The linked device will start it on its next heartbeat."
+                                : "重新运行已排队，关联设备会在下一次心跳时启动。");
+                    }
+                    updateConsoleRerunButton(true);
+                });
+                handler.postDelayed(() -> {
+                    if (id.equals(pendingRerunRunId)) {
+                        pendingRerunRunId = "";
+                        if (id.equals(selectedRunId)) {
+                            updateConsoleRerunButton(isTerminalRunStatus(selectedRunStatus));
+                        }
+                    }
+                }, 60_000L);
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (id.equals(pendingRerunRunId)) {
+                        pendingRerunRunId = "";
+                    }
+                    if (!id.equals(selectedRunId)) {
+                        return;
+                    }
+                    updateConsoleRerunButton(true);
+                    if (statusText != null) {
+                        statusText.setText((isEnglish() ? "Rerun failed: " : "重新运行失败：") + e.getMessage());
+                    }
+                });
+            }
+        });
+    }
+
+    private boolean isTerminalRunStatus(String status) {
+        return "succeeded".equals(status) || "failed".equals(status) || "cancelled".equals(status);
     }
 
     private void refreshRunDetail(String id, boolean showLoading) {
@@ -6182,6 +6274,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setTextColor(statusColor(status));
         detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
+        updateConsoleRerunButton(isTerminalRunStatus(status));
 
         String runId = run.optString("id", "");
         int remoteLength = payload.optInt("outputLength", run.optInt("outputLength", consoleOutputSyncedLength));
@@ -6292,6 +6385,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setTextColor(statusColor(status));
         detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
+        updateConsoleRerunButton(isTerminalRunStatus(status));
         String runId = run.optString("id", "");
         String diskOutput = readConsoleCacheTail(runId, consoleRenderLimit);
         currentConsoleOutput = diskOutput.isEmpty() ? consoleOutput(run) : diskOutput;

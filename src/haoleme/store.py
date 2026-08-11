@@ -197,6 +197,18 @@ class RunStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runs_project_updated ON runs(project, updated_at DESC)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS remote_actions (
+                    id TEXT PRIMARY KEY,
+                    source_run_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '',
+                    launcher_pid INTEGER,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
 
         self._write(initialize)
 
@@ -420,6 +432,55 @@ class RunStore:
         with self.connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS count FROM runs WHERE cloud_synced_at = ''").fetchone()
         return int(row["count"]) if row is not None else 0
+
+    def reserve_remote_action(self, action_id: str, source_run_id: str) -> bool:
+        now = utc_now()
+
+        def reserve(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO remote_actions (
+                    id, source_run_id, status, detail, launcher_pid, updated_at
+                ) VALUES (?, ?, 'accepted', '', NULL, ?)
+                """,
+                (action_id, source_run_id, now),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._write(reserve))
+
+    def finish_remote_action(
+        self,
+        action_id: str,
+        status: str,
+        detail: str = "",
+        launcher_pid: int | None = None,
+    ) -> None:
+        clean_status = status if status in {"started", "failed"} else "failed"
+
+        def finish(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                UPDATE remote_actions
+                SET status = ?, detail = ?, launcher_pid = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (clean_status, detail[:500], launcher_pid, utc_now(), action_id),
+            )
+
+        self._write(finish)
+
+    def get_remote_action(self, action_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, source_run_id, status, detail, launcher_pid, updated_at
+                FROM remote_actions
+                WHERE id = ?
+                """,
+                (action_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def _update(self, run_id: str, fields: dict[str, Any]) -> None:
         if not fields:
