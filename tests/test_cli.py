@@ -23,7 +23,6 @@ from haoleme.cli import (
     collect_cpu_stats,
     collect_gpu_stats,
     check_cli_update,
-    confirm_relogin,
     doctor_command,
     heartbeat_initial_delay,
     heartbeat_state_path,
@@ -48,7 +47,6 @@ from haoleme.cli import (
     run_command_with_pipes,
     subprocess_session_kwargs,
     terminate_process_on_interrupt,
-    should_continue_relogin,
     split_leading_env_assignments,
     start_local_relay_for_login,
     stream_output,
@@ -253,6 +251,44 @@ class CliPairingTest(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         client_cls.assert_called_once_with(DEFAULT_CLOUD_URL)
 
+    def test_existing_login_goes_directly_to_server_selection(self):
+        existing = CloudConfig(
+            api_url=DEFAULT_CLOUD_URL,
+            account="default",
+            token="x" * 32,
+            device_id="dev_mac",
+            device_name="Mac",
+            machine_id="machine_mac",
+        )
+        relay = "https://relay.example.com"
+        with patch("haoleme.cli.PairingClient") as client_cls, patch(
+            "haoleme.cli.CloudConfig.load", return_value=existing
+        ), patch("haoleme.cli.stdin_is_interactive", return_value=True), patch(
+            "haoleme.cli.prompt_login_relay_url", return_value=relay
+        ) as choose_server, patch(
+            "haoleme.cli.get_or_create_machine_id", return_value="machine_mac"
+        ), patch(
+            "haoleme.cli.generate_pair_keypair", return_value=("public", "private")
+        ):
+            client_cls.return_value.start.side_effect = RuntimeError("stop")
+
+            exit_code = pairing_login_command([])
+
+        self.assertEqual(exit_code, 1)
+        choose_server.assert_called_once_with()
+        client_cls.assert_called_once_with(relay)
+
+    def test_login_can_be_cancelled_during_server_selection(self):
+        with patch("haoleme.cli.CloudConfig.load", return_value=None), patch(
+            "haoleme.cli.stdin_is_interactive", return_value=True
+        ), patch("haoleme.cli.prompt_login_relay_url", side_effect=KeyboardInterrupt), patch(
+            "haoleme.cli.PairingClient"
+        ) as client_cls:
+            exit_code = pairing_login_command([])
+
+        self.assertEqual(exit_code, 130)
+        client_cls.assert_not_called()
+
     def test_interactive_login_can_choose_official_cloud(self):
         with patch("builtins.input", return_value=""):
             self.assertEqual(prompt_login_relay_url(), DEFAULT_CLOUD_URL)
@@ -416,31 +452,6 @@ class CliPairingTest(unittest.TestCase):
         )
 
         self.assertEqual(reusable_login_device_id(config, "http://cloud.example", "machine_mac", force_new=True), "")
-
-    def test_relogin_prompt_enter_confirms_and_n_cancels(self):
-        self.assertTrue(should_continue_relogin(""))
-        self.assertTrue(should_continue_relogin("yes"))
-        self.assertFalse(should_continue_relogin("n"))
-        self.assertFalse(should_continue_relogin(" cancel "))
-
-    def test_relogin_prompt_labels_official_cloud_without_showing_url(self):
-        config = CloudConfig(api_url=DEFAULT_CLOUD_URL, account="default", token="x" * 32)
-        output = io.StringIO()
-        with patch("builtins.input", return_value="n"), redirect_stdout(output):
-            self.assertFalse(confirm_relogin(config))
-
-        self.assertIn("Server: Haoleme Cloud", output.getvalue())
-        self.assertNotIn(DEFAULT_CLOUD_URL, output.getvalue())
-
-    def test_relogin_prompt_labels_private_relay_and_shows_address(self):
-        relay = "https://relay.example.com"
-        config = CloudConfig(api_url=relay, account="default", token="x" * 32)
-        output = io.StringIO()
-        with patch("builtins.input", return_value="n"), redirect_stdout(output):
-            self.assertFalse(confirm_relogin(config))
-
-        self.assertIn("Server: Private Relay", output.getvalue())
-        self.assertIn("Address: " + relay, output.getvalue())
 
     def test_heartbeat_initial_delay_is_staggered_within_interval(self):
         first = CloudConfig(
