@@ -931,7 +931,7 @@ def pairing_login_command(argv: Sequence[str]) -> int:
             print(f"Server: {server_label}")
             print(f"Device: {device_name}")
             print("Encryption: enabled" if encryption_key else "Encryption: not enabled for this pairing")
-            print("Future hao commands will sync to 好了么 Cloud automatically.")
+            print("Future hao commands will sync to this server automatically.")
             _started, message = start_heartbeat_daemon()
             print(f"Heartbeat: {message}")
             return 0
