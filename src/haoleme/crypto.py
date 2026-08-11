@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 E2EE_VERSION = 1
 RUN_E2EE_ALGORITHM = "AES-256-GCM"
+ACTION_E2EE_ALGORITHM = "AES-256-GCM"
 KEY_WRAP_ALGORITHM = "RSA-OAEP-SHA256"
 ENCRYPTED_FIELDS = ("command", "commandText", "cwd", "stdoutTail", "stderrTail", "outputTail", "cliVersion", "os", "hostname")
 METADATA_ENCRYPTED_FIELDS = ("command", "commandText", "cwd", "cliVersion", "os", "hostname")
@@ -165,3 +166,33 @@ def decrypt_run_payload(run: dict[str, Any], account_key: str) -> dict[str, Any]
             elif value:
                 decrypted[field] = str(decrypted.get(field) or "") + value
     return decrypted
+
+
+def encrypt_action_payload(action_id: str, payload: dict[str, Any], account_key: str) -> dict[str, Any]:
+    key = b64url_decode(account_key)
+    if len(key) != 32:
+        raise ValueError("好了么 encryption key must be 32 bytes")
+    cleartext = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(key).encrypt(nonce, cleartext, action_id.encode("utf-8"))
+    return {
+        "v": E2EE_VERSION,
+        "alg": ACTION_E2EE_ALGORITHM,
+        "nonce": b64url_encode(nonce),
+        "ciphertext": b64url_encode(ciphertext),
+    }
+
+
+def decrypt_action_payload(action_id: str, payload: dict[str, Any], account_key: str) -> dict[str, Any]:
+    if int(payload.get("v") or 0) != E2EE_VERSION:
+        raise ValueError("unsupported remote action encryption version")
+    key = b64url_decode(account_key)
+    if len(key) != 32:
+        raise ValueError("好了么 encryption key must be 32 bytes")
+    nonce = b64url_decode(str(payload.get("nonce") or ""))
+    ciphertext = b64url_decode(str(payload.get("ciphertext") or ""))
+    cleartext = AESGCM(key).decrypt(nonce, ciphertext, action_id.encode("utf-8"))
+    decoded = json.loads(cleartext.decode("utf-8"))
+    if not isinstance(decoded, dict):
+        raise ValueError("invalid remote action payload")
+    return decoded

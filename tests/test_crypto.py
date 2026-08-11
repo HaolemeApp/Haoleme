@@ -7,9 +7,11 @@ from haoleme.crypto import (
     b64url_decode,
     b64url_encode,
     decrypt_account_key,
+    decrypt_action_payload,
     decrypt_output_chunk,
     decrypt_run_payload,
     encrypt_output_chunk,
+    encrypt_action_payload,
     encrypt_run_payload,
     generate_account_key,
     generate_pair_keypair,
@@ -18,6 +20,22 @@ from haoleme.crypto import (
 
 
 class CryptoTest(unittest.TestCase):
+    def test_remote_action_payload_roundtrip_uses_action_as_aad(self):
+        account_key = generate_account_key()
+        encrypted = encrypt_action_payload(
+            "action-1",
+            {"command": "python train.py", "project": "Experiment"},
+            account_key,
+        )
+
+        self.assertNotIn("python train.py", str(encrypted))
+        self.assertEqual(
+            decrypt_action_payload("action-1", encrypted, account_key)["command"],
+            "python train.py",
+        )
+        with self.assertRaises(Exception):
+            decrypt_action_payload("action-other", encrypted, account_key)
+
     def test_pair_key_wrap_roundtrip(self):
         public_pem, private_pem = generate_pair_keypair()
         account_key = generate_account_key()

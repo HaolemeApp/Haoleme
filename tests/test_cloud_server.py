@@ -54,6 +54,8 @@ from haoleme.cloud_server import (
     sanitize_gpus,
     request_run_interrupt,
     request_run_rerun,
+    request_shutdown_after_run,
+    request_terminal_run,
     revoke_device,
     store_device_token,
     store_app_token,
@@ -132,6 +134,8 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertIsNone(error)
             self.assertIsNone(duplicate_error)
             self.assertEqual(first["id"], duplicate["id"])
+            self.assertNotEqual(first["targetRunId"], "run-rerun")
+            self.assertEqual(first["targetRunId"], duplicate["targetRunId"])
             self.assertFalse(first["duplicate"])
             self.assertTrue(duplicate["duplicate"])
 
@@ -139,6 +143,7 @@ class CloudServerDeviceTest(unittest.TestCase):
                 db_path, account_key, device_id, now="2026-08-11T00:00:00Z"
             )
             self.assertEqual(claimed[0]["runId"], "run-rerun")
+            self.assertEqual(claimed[0]["targetRunId"], first["targetRunId"])
             self.assertEqual(
                 claim_pending_run_actions(
                     db_path, account_key, device_id, now="2026-08-11T00:01:00Z"
@@ -179,6 +184,77 @@ class CloudServerDeviceTest(unittest.TestCase):
             self.assertEqual(error, "run_active")
             self.assertIsNone(missing)
             self.assertEqual(missing_error, "run_not_found")
+
+    def test_shutdown_action_can_be_scheduled_and_cancelled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            device_id = "dev_123"
+            init_db(db_path)
+            upsert_run(db_path, account_key, self.sample_run("run-active", device_id, "Server A", "running"))
+
+            action, error = request_shutdown_after_run(
+                db_path, account_key, "run-active", enabled=True
+            )
+            self.assertIsNone(error)
+            claimed = claim_pending_run_actions(db_path, account_key, device_id)
+            self.assertEqual(claimed[0]["action"], "shutdown_after_run")
+            self.assertTrue(
+                complete_run_action(
+                    db_path, account_key, device_id, action["id"], "scheduled"
+                )
+            )
+
+            cancelled, cancel_error = request_shutdown_after_run(
+                db_path, account_key, "run-active", enabled=False
+            )
+            self.assertIsNone(cancel_error)
+            self.assertEqual(cancelled["id"], action["id"])
+            cancellation = claim_pending_run_actions(db_path, account_key, device_id)
+            self.assertTrue(cancellation[0]["cancel"])
+
+    def test_terminal_action_stores_only_e2ee_payload_for_owned_device(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            account_key = "account-key"
+            init_db(db_path)
+            upsert_device(db_path, account_key, "dev_123", "Server A", iso_now())
+            encrypted = {
+                "v": 1,
+                "alg": "AES-256-GCM",
+                "nonce": "nonce-value",
+                "ciphertext": "ciphertext-value",
+            }
+
+            action, error = request_terminal_run(
+                db_path,
+                account_key,
+                "dev_123",
+                "action_terminal_1",
+                "3e6f5e76-994f-4f45-975b-c24c3fdf48f2",
+                encrypted,
+            )
+            missing, missing_error = request_terminal_run(
+                db_path,
+                account_key,
+                "dev_other",
+                "action_terminal_2",
+                "9ae444c6-9e41-4f13-8d12-edeb3f588db3",
+                encrypted,
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(action["action"], "terminal")
+            self.assertIsNone(missing)
+            self.assertEqual(missing_error, "device_not_found")
+            claimed = claim_pending_run_actions(db_path, account_key, "dev_123")
+            self.assertEqual(claimed[0]["payload"], encrypted)
+            with connect(db_path) as db:
+                stored = db.execute(
+                    "SELECT payload FROM run_actions WHERE account_key = ? AND id = ?",
+                    (account_key, action["id"]),
+                ).fetchone()["payload"]
+            self.assertNotIn("command", stored)
 
     def test_old_backlog_sync_cannot_move_device_last_seen_backwards(self):
         with tempfile.TemporaryDirectory() as tmp:

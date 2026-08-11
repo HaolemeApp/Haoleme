@@ -202,6 +202,8 @@ class RunStore:
                 CREATE TABLE IF NOT EXISTS remote_actions (
                     id TEXT PRIMARY KEY,
                     source_run_id TEXT NOT NULL,
+                    action TEXT NOT NULL DEFAULT 'rerun',
+                    target_run_id TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
                     detail TEXT NOT NULL DEFAULT '',
                     launcher_pid INTEGER,
@@ -209,6 +211,11 @@ class RunStore:
                 )
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(remote_actions)").fetchall()}
+            if "action" not in columns:
+                conn.execute("ALTER TABLE remote_actions ADD COLUMN action TEXT NOT NULL DEFAULT 'rerun'")
+            if "target_run_id" not in columns:
+                conn.execute("ALTER TABLE remote_actions ADD COLUMN target_run_id TEXT NOT NULL DEFAULT ''")
 
         self._write(initialize)
 
@@ -433,17 +440,24 @@ class RunStore:
             row = conn.execute("SELECT COUNT(*) AS count FROM runs WHERE cloud_synced_at = ''").fetchone()
         return int(row["count"]) if row is not None else 0
 
-    def reserve_remote_action(self, action_id: str, source_run_id: str) -> bool:
+    def reserve_remote_action(
+        self,
+        action_id: str,
+        source_run_id: str,
+        action: str = "rerun",
+        target_run_id: str = "",
+    ) -> bool:
         now = utc_now()
 
         def reserve(conn: sqlite3.Connection) -> bool:
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO remote_actions (
-                    id, source_run_id, status, detail, launcher_pid, updated_at
-                ) VALUES (?, ?, 'accepted', '', NULL, ?)
+                    id, source_run_id, action, target_run_id,
+                    status, detail, launcher_pid, updated_at
+                ) VALUES (?, ?, ?, ?, 'accepted', '', NULL, ?)
                 """,
-                (action_id, source_run_id, now),
+                (action_id, source_run_id, action, target_run_id, now),
             )
             return cursor.rowcount > 0
 
@@ -456,7 +470,7 @@ class RunStore:
         detail: str = "",
         launcher_pid: int | None = None,
     ) -> None:
-        clean_status = status if status in {"started", "failed"} else "failed"
+        clean_status = status if status in {"started", "scheduled", "completed", "cancelled", "failed"} else "failed"
 
         def finish(conn: sqlite3.Connection) -> None:
             conn.execute(
@@ -474,13 +488,50 @@ class RunStore:
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, source_run_id, status, detail, launcher_pid, updated_at
+                SELECT id, source_run_id, action, target_run_id,
+                       status, detail, launcher_pid, updated_at
                 FROM remote_actions
                 WHERE id = ?
                 """,
                 (action_id,),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def list_remote_actions(self, action: str = "", status: str = "") -> list[dict[str, Any]]:
+        conditions: list[str] = []
+        values: list[str] = []
+        if action:
+            conditions.append("action = ?")
+            values.append(action)
+        if status:
+            conditions.append("status = ?")
+            values.append(status)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, source_run_id, action, target_run_id,
+                       status, detail, launcher_pid, updated_at
+                FROM remote_actions
+                """ + where + " ORDER BY updated_at",
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def cancel_shutdown_actions(self, source_run_id: str) -> int:
+        def cancel(conn: sqlite3.Connection) -> int:
+            cursor = conn.execute(
+                """
+                UPDATE remote_actions
+                SET status = 'cancelled', detail = 'shutdown cancelled from mobile app', updated_at = ?
+                WHERE source_run_id = ? AND action = 'shutdown_after_run'
+                  AND status IN ('accepted', 'scheduled')
+                """,
+                (utc_now(), source_run_id),
+            )
+            return cursor.rowcount
+
+        return int(self._write(cancel))
 
     def _update(self, run_id: str, fields: dict[str, Any]) -> None:
         if not fields:

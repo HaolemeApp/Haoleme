@@ -25,7 +25,7 @@ from socket import gethostname
 from . import __version__
 from ._compat import remove_prefix, shlex_join, unlink_missing
 from .cloud import DEFAULT_CLOUD_URL, CloudClient, CloudConfig, CloudSyncer, InterruptWatcher, PairingClient, default_config_path, describe_cloud_error, generate_account_token, generate_device_id, get_or_create_machine_id, next_output_chunk
-from .crypto import decrypt_account_key, generate_pair_keypair
+from .crypto import decrypt_account_key, decrypt_action_payload, generate_pair_keypair
 from .server import serve
 from .store import RunRecord, RunStore, default_db_path
 
@@ -1467,19 +1467,28 @@ def collect_cpu_stats() -> dict:
     return cpu
 
 
-def launch_remote_rerun(run: RunRecord) -> int:
-    if not run.command:
+def launch_remote_command(
+    command_args: Sequence[str],
+    cwd_value: str,
+    project: str,
+    target_run_id: str,
+) -> int:
+    if not command_args:
         raise RuntimeError("saved command is empty")
-    cwd = Path(run.cwd).expanduser()
+    cwd = Path(cwd_value).expanduser()
     if not cwd.is_dir():
         raise RuntimeError("saved working directory no longer exists")
 
     command = [sys.executable, "-m", "haoleme"]
-    if run.project:
-        command.extend(["--project", run.project])
-    command.extend(run.command)
+    if project:
+        command.extend(["--project", project])
+    command.extend(command_args)
+    child_env = os.environ.copy()
+    if target_run_id:
+        child_env["HAOLEME_REMOTE_RUN_ID"] = target_run_id
     launch_kwargs: dict[str, object] = {
         "cwd": str(cwd),
+        "env": child_env,
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
@@ -1496,6 +1505,38 @@ def launch_remote_rerun(run: RunRecord) -> int:
     return int(process.pid)
 
 
+def launch_remote_rerun(run: RunRecord, target_run_id: str = "") -> int:
+    return launch_remote_command(run.command, run.cwd, run.project, target_run_id)
+
+
+def request_system_shutdown() -> None:
+    if os.name == "nt":
+        candidates = [["shutdown", "/s", "/t", "0"]]
+    elif sys.platform == "darwin":
+        candidates = [["osascript", "-e", 'tell application "System Events" to shut down']]
+    else:
+        candidates = [["systemctl", "poweroff"], ["shutdown", "-h", "now"]]
+    errors: list[str] = []
+    for command in candidates:
+        try:
+            completed = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(str(exc))
+            continue
+        if completed.returncode == 0:
+            return
+        errors.append((completed.stderr or f"exit {completed.returncode}").strip())
+    raise RuntimeError("; ".join(item for item in errors if item) or "system shutdown was rejected")
+
+
 def apply_remote_actions(
     store: RunStore,
     client: CloudClient,
@@ -1505,11 +1546,25 @@ def apply_remote_actions(
         return []
     messages: list[str] = []
     for item in actions:
-        if not isinstance(item, dict) or item.get("action") != "rerun":
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action") or "").strip()
+        if action not in {"rerun", "terminal", "shutdown_after_run"}:
             continue
         action_id = str(item.get("id") or "").strip()
         source_run_id = str(item.get("runId") or "").strip()
-        if not action_id or not source_run_id:
+        target_run_id = str(item.get("targetRunId") or "").strip()
+        cancelling = bool(item.get("cancel"))
+        if not action_id or (action != "terminal" and not source_run_id):
+            continue
+
+        if action == "shutdown_after_run" and cancelling:
+            store.cancel_shutdown_actions(source_run_id)
+            store.finish_remote_action(action_id, "cancelled", "shutdown cancelled from mobile app")
+            try:
+                client.complete_remote_action(action_id, "cancelled", "shutdown cancelled from mobile app")
+            except Exception as exc:
+                messages.append(f"Remote shutdown cancellation acknowledgement pending: {describe_cloud_error(exc)}")
             continue
 
         existing = store.get_remote_action(action_id)
@@ -1528,28 +1583,82 @@ def apply_remote_actions(
                 messages.append(f"Remote rerun acknowledgement pending: {describe_cloud_error(exc)}")
             continue
 
-        store.reserve_remote_action(action_id, source_run_id)
-        run = store.get_run(source_run_id)
-        if run is None:
-            status = "failed"
-            detail = "original run is not available in this device's local history"
-            launcher_pid = None
-        else:
+        store.reserve_remote_action(action_id, source_run_id, action, target_run_id)
+        launcher_pid = None
+        if action == "shutdown_after_run":
+            run = store.get_run(source_run_id)
+            if run is None:
+                status = "failed"
+                detail = "run is not available in this device's local history"
+            else:
+                status = "scheduled"
+                detail = "shutdown scheduled after run finishes"
+                messages.append(f"Shutdown scheduled after {source_run_id[:8]} finishes.")
+        elif action == "terminal":
             try:
-                launcher_pid = launch_remote_rerun(run)
+                encrypted = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+                terminal = decrypt_action_payload(action_id, encrypted, client.config.encryption_key)
+                command_text = str(terminal.get("command") or "").strip()
+                if not command_text or len(command_text) > 16_384:
+                    raise RuntimeError("remote terminal command is empty or too long")
+                cwd = str(terminal.get("cwd") or Path.home())
+                project = str(terminal.get("project") or "Remote terminal")[:80]
+                launcher_pid = launch_remote_command([command_text], cwd, project, target_run_id)
                 status = "started"
-                detail = "rerun launcher started"
-                messages.append(f"Remote rerun started for {source_run_id[:8]} (pid {launcher_pid}).")
+                detail = "terminal run launcher started"
+                messages.append(f"Remote terminal run started (pid {launcher_pid}).")
             except Exception as exc:
-                launcher_pid = None
                 status = "failed"
                 detail = str(exc)[:500]
-                messages.append(f"Remote rerun failed for {source_run_id[:8]}: {detail}")
+                messages.append(f"Remote terminal run failed: {detail}")
+        else:
+            run = store.get_run(source_run_id)
+            if run is None:
+                status = "failed"
+                detail = "original run is not available in this device's local history"
+            else:
+                try:
+                    launcher_pid = launch_remote_rerun(run, target_run_id)
+                    status = "started"
+                    detail = "rerun launcher started"
+                    messages.append(f"Remote rerun started for {source_run_id[:8]} (pid {launcher_pid}).")
+                except Exception as exc:
+                    status = "failed"
+                    detail = str(exc)[:500]
+                    messages.append(f"Remote rerun failed for {source_run_id[:8]}: {detail}")
         store.finish_remote_action(action_id, status, detail, launcher_pid)
         try:
             client.complete_remote_action(action_id, status, detail, launcher_pid)
         except Exception as exc:
             messages.append(f"Remote rerun acknowledgement pending: {describe_cloud_error(exc)}")
+    return messages
+
+
+def apply_scheduled_shutdowns(store: RunStore, client: CloudClient) -> list[str]:
+    messages: list[str] = []
+    for action in store.list_remote_actions("shutdown_after_run", "scheduled"):
+        source_run_id = str(action.get("source_run_id") or "")
+        run = store.get_run(source_run_id)
+        if run is None:
+            status = "failed"
+            detail = "run disappeared before scheduled shutdown"
+        elif run.status not in {"succeeded", "failed", "cancelled"}:
+            continue
+        else:
+            try:
+                request_system_shutdown()
+                status = "completed"
+                detail = "system shutdown requested"
+            except Exception as exc:
+                status = "failed"
+                detail = str(exc)[:500]
+        store.finish_remote_action(str(action["id"]), status, detail)
+        try:
+            client.complete_remote_action(str(action["id"]), status, detail)
+        except Exception as exc:
+            messages.append(f"Remote shutdown acknowledgement pending: {describe_cloud_error(exc)}")
+        if status == "failed":
+            messages.append(f"Scheduled shutdown failed: {detail}")
     return messages
 
 
@@ -1594,6 +1703,8 @@ def heartbeat_run_foreground() -> int:
                     heartbeat_payload = client.heartbeat(gpus=collect_gpu_stats(), cpu=collect_cpu_stats())
                     for action_message in apply_remote_actions(store, client, heartbeat_payload.get("actions")):
                         print(action_message, flush=True)
+                    for shutdown_message in apply_scheduled_shutdowns(store, client):
+                        print(shutdown_message, flush=True)
                     now_text = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     write_heartbeat_state(
                         haolemeVersion=__version__,
@@ -2510,8 +2621,14 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
 
     update_check_state = start_background_update_check()
     heartbeat_started, _heartbeat_message = start_heartbeat_daemon()
-    run_id = str(uuid.uuid4())
     store = RunStore()
+    requested_run_id = os.environ.pop("HAOLEME_REMOTE_RUN_ID", "").strip()
+    try:
+        run_id = str(uuid.UUID(requested_run_id)) if requested_run_id else str(uuid.uuid4())
+    except ValueError:
+        run_id = str(uuid.uuid4())
+    if store.get_run(run_id) is not None:
+        run_id = str(uuid.uuid4())
     project = default_project() if project_override is None else normalize_project_name(project_override)
     store.create_run(run_id=run_id, command=list(command), cwd=os.getcwd(), project=project)
     syncer = CloudSyncer(store, run_id, configured_cloud_client())
@@ -2526,7 +2643,11 @@ def run_command(command: Sequence[str], project_override: str | None = None) -> 
         print(f"Project: {project}", flush=True)
 
     if shell_command:
-        executable_command = ["/bin/sh", "-c", command[0]]
+        executable_command = (
+            [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", command[0]]
+            if os.name == "nt"
+            else ["/bin/sh", "-c", command[0]]
+        )
     else:
         executable_command = resolve_local_executable(runnable_command)
     if executable_command != list(runnable_command):

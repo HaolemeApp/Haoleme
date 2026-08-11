@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -207,6 +208,11 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 if not can_read_run(auth, run):
                     self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
                     return
+                run["shutdownAfterRun"] = shutdown_after_run_enabled(
+                    self.server.db_path,
+                    auth.account_key,
+                    run_id,
+                )
                 self.send_json(
                     build_run_fetch_payload(
                         run,
@@ -321,6 +327,13 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             device_id = unquote(remove_suffix(remove_prefix(parsed.path, "/api/devices/"), "/rename")).strip("/")
             self.rename_device(auth, device_id)
             return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/terminal"):
+            if auth.scope != "admin":
+                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            device_id = unquote(remove_suffix(remove_prefix(parsed.path, "/api/devices/"), "/terminal")).strip("/")
+            self.start_terminal_run(auth, device_id)
+            return
         if parsed.path == "/api/devices/heartbeat":
             if not self.allow_write_attempt(auth):
                 self.send_json({"error": "too many write requests, slow down", "code": "write_rate_limited"}, status=HTTPStatus.TOO_MANY_REQUESTS)
@@ -347,6 +360,13 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 return
             run_id = unquote(remove_suffix(remove_prefix(parsed.path, "/api/runs/"), "/rerun")).strip("/")
             self.rerun_run(auth, run_id)
+            return
+        if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/shutdown"):
+            if auth.scope != "admin":
+                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            run_id = unquote(remove_suffix(remove_prefix(parsed.path, "/api/runs/"), "/shutdown")).strip("/")
+            self.schedule_run_shutdown(auth, run_id)
             return
         if parsed.path == "/api/runs":
             if not self.allow_write_attempt(auth):
@@ -430,6 +450,53 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             return
         if error_code == "device_not_found":
             self.send_json({"error": "run has no linked device", "code": "device_not_found"}, status=HTTPStatus.CONFLICT)
+            return
+        self.send_json({"ok": True, "action": result or {}})
+
+    def schedule_run_shutdown(self, auth: AuthContext, run_id: str) -> None:
+        if not run_id:
+            self.send_json({"error": "missing run id", "code": "missing_run_id"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        payload = self.read_json()
+        enabled = bool(payload.get("enabled", True))
+        result, error_code = request_shutdown_after_run(
+            self.server.db_path,
+            auth.account_key,
+            run_id,
+            enabled=enabled,
+        )
+        if error_code == "run_not_found":
+            self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        if error_code == "run_not_active":
+            self.send_json({"error": "run is not active", "code": "run_not_active"}, status=HTTPStatus.CONFLICT)
+            return
+        if error_code == "device_not_found":
+            self.send_json({"error": "run has no linked device", "code": "device_not_found"}, status=HTTPStatus.CONFLICT)
+            return
+        self.send_json({"ok": True, "shutdownAfterRun": enabled, "action": result or {}})
+
+    def start_terminal_run(self, auth: AuthContext, device_id: str) -> None:
+        if not device_id:
+            self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        payload = self.read_json()
+        action_id = str(payload.get("actionId") or "").strip()
+        target_run_id = str(payload.get("runId") or "").strip()
+        encrypted = payload.get("e2ee")
+        result, error_code = request_terminal_run(
+            self.server.db_path,
+            auth.account_key,
+            device_id,
+            action_id,
+            target_run_id,
+            encrypted if isinstance(encrypted, dict) else {},
+        )
+        if error_code == "device_not_found":
+            self.send_json({"error": "device not found", "code": "device_not_found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        if error_code:
+            self.send_json({"error": "invalid terminal request", "code": error_code}, status=HTTPStatus.BAD_REQUEST)
             return
         self.send_json({"ok": True, "action": result or {}})
 
@@ -1256,9 +1323,11 @@ def init_db(db_path: Path) -> None:
                 account_key TEXT NOT NULL,
                 id TEXT NOT NULL,
                 run_id TEXT NOT NULL,
+                target_run_id TEXT NOT NULL DEFAULT '',
                 device_id TEXT NOT NULL,
                 action TEXT NOT NULL,
                 status TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
                 requested_at TEXT NOT NULL,
                 claimed_at TEXT NOT NULL DEFAULT '',
                 completed_at TEXT NOT NULL DEFAULT '',
@@ -1333,6 +1402,8 @@ def init_db(db_path: Path) -> None:
         ensure_column(db, "pairs", "encrypted_account_key", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "pairs", "encrypted_account_key_algorithm", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "pairs", "e2ee_version", "INTEGER")
+        ensure_column(db, "run_actions", "target_run_id", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "run_actions", "payload", "TEXT NOT NULL DEFAULT '{}'")
         ensure_column(db, "runs", "status", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "runs", "device_id", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "runs", "device_name", "TEXT NOT NULL DEFAULT ''")
@@ -2638,7 +2709,7 @@ def request_run_rerun(
 
         existing = db.execute(
             """
-            SELECT id, run_id, device_id, action, status, requested_at, claimed_at
+            SELECT id, run_id, target_run_id, device_id, action, status, requested_at, claimed_at
             FROM run_actions
             WHERE account_key = ? AND run_id = ? AND device_id = ?
               AND action = 'rerun' AND status IN ('pending', 'claimed')
@@ -2648,18 +2719,113 @@ def request_run_rerun(
             (account_key, run_id, device_id),
         ).fetchone()
         if existing is not None:
-            result = dict(existing)
-            result["duplicate"] = True
-            return result, None
+            return {
+                "id": existing["id"],
+                "runId": existing["run_id"],
+                "targetRunId": existing["target_run_id"],
+                "deviceId": existing["device_id"],
+                "action": existing["action"],
+                "status": existing["status"],
+                "requestedAt": existing["requested_at"],
+                "duplicate": True,
+            }, None
 
+        action_id = "action_" + secrets.token_urlsafe(18).replace("-", "_")
+        target_run_id = str(uuid.uuid4())
+        requested_at = iso_now()
+        db.execute(
+            """
+            INSERT INTO run_actions (
+                account_key, id, run_id, target_run_id, device_id, action, status, payload,
+                requested_at, claimed_at, completed_at, detail, launcher_pid
+            ) VALUES (?, ?, ?, ?, ?, 'rerun', 'pending', '{}', ?, '', '', '', NULL)
+            """,
+            (account_key, action_id, run_id, target_run_id, device_id, requested_at),
+        )
+    return {
+        "id": action_id,
+        "runId": run_id,
+        "targetRunId": target_run_id,
+        "deviceId": device_id,
+        "action": "rerun",
+        "status": "pending",
+        "requestedAt": requested_at,
+        "duplicate": False,
+    }, None
+
+
+def request_shutdown_after_run(
+    db_path: Path,
+    account_key: str,
+    run_id: str,
+    *,
+    enabled: bool,
+) -> tuple[dict[str, Any] | None, str | None]:
+    with connect(db_path) as db:
+        row = db.execute(
+            "SELECT status, device_id FROM runs WHERE account_key = ? AND id = ?",
+            (account_key, run_id),
+        ).fetchone()
+        if row is None:
+            return None, "run_not_found"
+        device_id = str(row["device_id"] or "").strip()
+        if not device_id:
+            return None, "device_not_found"
+        if not enabled:
+            requested_at = iso_now()
+            existing = db.execute(
+                """
+                SELECT id FROM run_actions
+                WHERE account_key = ? AND run_id = ? AND device_id = ?
+                  AND action = 'shutdown_after_run'
+                  AND status IN ('pending', 'claimed', 'scheduled', 'cancel_requested')
+                ORDER BY requested_at DESC LIMIT 1
+                """,
+                (account_key, run_id, device_id),
+            ).fetchone()
+            if existing is None:
+                return {"cancelled": True, "duplicate": True}, None
+            db.execute(
+                """
+                UPDATE run_actions
+                SET status = 'cancel_requested', requested_at = ?, claimed_at = ''
+                WHERE account_key = ? AND id = ?
+                """,
+                (requested_at, account_key, existing["id"]),
+            )
+            return {"id": existing["id"], "cancelled": True}, None
+
+        if str(row["status"] or "") not in {"created", "running"}:
+            return None, "run_not_active"
+        existing = db.execute(
+            """
+            SELECT id, run_id, target_run_id, device_id, action, status, requested_at, claimed_at
+            FROM run_actions
+            WHERE account_key = ? AND run_id = ? AND device_id = ?
+              AND action = 'shutdown_after_run'
+              AND status IN ('pending', 'claimed', 'scheduled')
+            ORDER BY requested_at DESC LIMIT 1
+            """,
+            (account_key, run_id, device_id),
+        ).fetchone()
+        if existing is not None:
+            return {
+                "id": existing["id"],
+                "runId": existing["run_id"],
+                "deviceId": existing["device_id"],
+                "action": existing["action"],
+                "status": existing["status"],
+                "requestedAt": existing["requested_at"],
+                "duplicate": True,
+            }, None
         action_id = "action_" + secrets.token_urlsafe(18).replace("-", "_")
         requested_at = iso_now()
         db.execute(
             """
             INSERT INTO run_actions (
-                account_key, id, run_id, device_id, action, status,
+                account_key, id, run_id, target_run_id, device_id, action, status, payload,
                 requested_at, claimed_at, completed_at, detail, launcher_pid
-            ) VALUES (?, ?, ?, ?, 'rerun', 'pending', ?, '', '', '', NULL)
+            ) VALUES (?, ?, ?, '', ?, 'shutdown_after_run', 'pending', '{}', ?, '', '', '', NULL)
             """,
             (account_key, action_id, run_id, device_id, requested_at),
         )
@@ -2667,7 +2833,90 @@ def request_run_rerun(
         "id": action_id,
         "runId": run_id,
         "deviceId": device_id,
-        "action": "rerun",
+        "action": "shutdown_after_run",
+        "status": "pending",
+        "requestedAt": requested_at,
+        "duplicate": False,
+    }, None
+
+
+def shutdown_after_run_enabled(db_path: Path, account_key: str, run_id: str) -> bool:
+    with connect(db_path) as db:
+        row = db.execute(
+            """
+            SELECT 1 FROM run_actions
+            WHERE account_key = ? AND run_id = ? AND action = 'shutdown_after_run'
+              AND status IN ('pending', 'claimed', 'scheduled')
+            LIMIT 1
+            """,
+            (account_key, run_id),
+        ).fetchone()
+    return row is not None
+
+
+def request_terminal_run(
+    db_path: Path,
+    account_key: str,
+    device_id: str,
+    action_id: str,
+    target_run_id: str,
+    encrypted_payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not action_id.startswith("action_") or len(action_id) > 96:
+        return None, "invalid_action_id"
+    try:
+        uuid.UUID(target_run_id)
+    except (ValueError, TypeError):
+        return None, "invalid_run_id"
+    if int(encrypted_payload.get("v") or 0) != 1:
+        return None, "e2ee_required"
+    if not str(encrypted_payload.get("nonce") or "") or not str(encrypted_payload.get("ciphertext") or ""):
+        return None, "e2ee_required"
+    if len(json.dumps(encrypted_payload, separators=(",", ":"))) > 64 * 1024:
+        return None, "payload_too_large"
+    with connect(db_path) as db:
+        device = db.execute(
+            """
+            SELECT 1 FROM devices
+            WHERE account_key = ? AND id = ? AND revoked_at = ''
+            """,
+            (account_key, device_id),
+        ).fetchone()
+        if device is None:
+            return None, "device_not_found"
+        existing = db.execute(
+            "SELECT id, target_run_id, status FROM run_actions WHERE account_key = ? AND id = ?",
+            (account_key, action_id),
+        ).fetchone()
+        if existing is not None:
+            return {
+                "id": existing["id"],
+                "targetRunId": existing["target_run_id"],
+                "status": existing["status"],
+                "duplicate": True,
+            }, None
+        requested_at = iso_now()
+        db.execute(
+            """
+            INSERT INTO run_actions (
+                account_key, id, run_id, target_run_id, device_id, action, status, payload,
+                requested_at, claimed_at, completed_at, detail, launcher_pid
+            ) VALUES (?, ?, '', ?, ?, 'terminal', 'pending', ?, ?, '', '', '', NULL)
+            """,
+            (
+                account_key,
+                action_id,
+                target_run_id,
+                device_id,
+                json.dumps(encrypted_payload, ensure_ascii=False, separators=(",", ":")),
+                requested_at,
+            ),
+        )
+    return {
+        "id": action_id,
+        "targetRunId": target_run_id,
+        "deviceId": device_id,
+        "action": "terminal",
         "status": "pending",
         "requestedAt": requested_at,
         "duplicate": False,
@@ -2690,10 +2939,10 @@ def claim_pending_run_actions(
         db.execute("BEGIN IMMEDIATE")
         rows = db.execute(
             """
-            SELECT id, run_id, action, status, requested_at, claimed_at
+            SELECT id, run_id, target_run_id, action, status, payload, requested_at, claimed_at
             FROM run_actions
             WHERE account_key = ? AND device_id = ?
-              AND status IN ('pending', 'claimed')
+              AND status IN ('pending', 'claimed', 'cancel_requested')
             ORDER BY requested_at
             LIMIT 20
             """,
@@ -2708,18 +2957,27 @@ def claim_pending_run_actions(
                 claimed_at,
             ):
                 continue
-            db.execute(
-                """
-                UPDATE run_actions
-                SET status = 'claimed', claimed_at = ?
-                WHERE account_key = ? AND id = ?
-                """,
-                (claimed_at, account_key, row["id"]),
-            )
+            cancelling = row["status"] == "cancel_requested"
+            if not cancelling:
+                db.execute(
+                    """
+                    UPDATE run_actions
+                    SET status = 'claimed', claimed_at = ?
+                    WHERE account_key = ? AND id = ?
+                    """,
+                    (claimed_at, account_key, row["id"]),
+                )
+            try:
+                action_payload = json.loads(row["payload"] or "{}")
+            except json.JSONDecodeError:
+                action_payload = {}
             actions.append({
                 "id": row["id"],
                 "runId": row["run_id"],
+                "targetRunId": row["target_run_id"],
                 "action": row["action"],
+                "cancel": cancelling,
+                "payload": action_payload if isinstance(action_payload, dict) else {},
                 "requestedAt": row["requested_at"],
             })
     return actions
@@ -2734,14 +2992,14 @@ def complete_run_action(
     detail: str = "",
     launcher_pid: int | None = None,
 ) -> bool:
-    clean_status = status if status in {"started", "failed"} else "failed"
+    clean_status = status if status in {"started", "scheduled", "completed", "cancelled", "failed"} else "failed"
     with connect(db_path) as db:
         cursor = db.execute(
             """
             UPDATE run_actions
             SET status = ?, completed_at = ?, detail = ?, launcher_pid = ?
             WHERE account_key = ? AND id = ? AND device_id = ?
-              AND action = 'rerun' AND status IN ('pending', 'claimed')
+              AND status IN ('pending', 'claimed', 'scheduled', 'cancel_requested')
             """,
             (
                 clean_status,
@@ -2759,7 +3017,7 @@ def complete_run_action(
             """
             SELECT 1 FROM run_actions
             WHERE account_key = ? AND id = ? AND device_id = ?
-              AND action = 'rerun' AND status IN ('started', 'failed')
+              AND status IN ('started', 'scheduled', 'completed', 'cancelled', 'failed')
             """,
             (account_key, action_id, device_id),
         ).fetchone()
@@ -2768,7 +3026,10 @@ def complete_run_action(
 
 def delete_run(db_path: Path, account_key: str, run_id: str) -> bool:
     with connect(db_path) as db:
-        db.execute("DELETE FROM run_actions WHERE account_key = ? AND run_id = ?", (account_key, run_id))
+        db.execute(
+            "DELETE FROM run_actions WHERE account_key = ? AND (run_id = ? OR target_run_id = ?)",
+            (account_key, run_id, run_id),
+        )
         db.execute("DELETE FROM run_output_chunks WHERE account_key = ? AND run_id = ?", (account_key, run_id))
         cursor = db.execute("DELETE FROM runs WHERE account_key = ? AND id = ?", (account_key, run_id))
         return cursor.rowcount > 0

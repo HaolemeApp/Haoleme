@@ -125,6 +125,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -237,6 +238,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView consoleAutoScrollButton;
     private TextView consoleInterruptButton;
     private TextView consoleRerunButton;
+    private TextView consoleShutdownButton;
+    private TextView consoleTerminalButton;
     private TextView consoleTopMoreButton;
     private EditText consoleSearchInput;
     private ScrollView consoleVerticalScroll;
@@ -250,6 +253,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private String selectedRunId = null;
     private String selectedRunStatus = "";
     private String pendingRerunRunId = "";
+    private String pendingShutdownRunId = "";
+    private String currentRunDeviceId = "";
     private String selectedDeviceId = "all";
     private String selectedProjectFilter = "all";
     private String latestDownloadUrl = "";
@@ -2070,12 +2075,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
             case "more": return en ? "More" : "更多";
             case "auto_on": return en ? "Auto On" : "自动滚动开";
             case "auto_off": return en ? "Auto Off" : "自动滚动关";
-            case "interrupt": return en ? "Interrupt" : "中断";
+            case "interrupt": return en ? "Terminate" : "终止";
             case "interrupt_confirm": return en ? "Stop this running command on the linked computer?" : "确定要在电脑上停止这条正在运行的命令吗？";
             case "rerun": return en ? "Rerun" : "重新运行";
             case "rerun_confirm": return en
                     ? "Run this command again on the linked computer? The saved command and working directory on that device will be used."
                     : "确定要在关联电脑上重新运行这条命令吗？将使用该设备本地保存的命令和工作目录。";
+            case "shutdown_after_run": return en ? "Shut down after run" : "跑完关机";
+            case "cancel_shutdown": return en ? "Cancel shutdown" : "取消关机";
+            case "shutdown_confirm": return en
+                    ? "Shut down the linked computer after this run finishes? Save your work first."
+                    : "确定在本任务结束后关闭关联电脑吗？请先保存电脑上的其他工作。";
+            case "remote_terminal": return en ? "Terminal" : "终端";
+            case "terminal_command": return en ? "Terminal command" : "终端命令";
             default: return key;
         }
     }
@@ -5721,21 +5733,52 @@ public class MainActivity extends Activity implements LifecycleOwner {
         metaParams.setMargins(0, dp(9), 0, 0);
         commandCard.addView(detailMeta, metaParams);
 
+        LinearLayout runControlRow = new LinearLayout(this);
+        runControlRow.setOrientation(LinearLayout.HORIZONTAL);
+        runControlRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams runControlParams = matchWrap();
+        runControlParams.setMargins(0, dp(10), 0, 0);
+
         consoleInterruptButton = actionButton(actionLabel("■", t("interrupt"), 1.12f));
         consoleInterruptButton.setTextColor(color("#B42318"));
         consoleInterruptButton.setOnClickListener(v -> confirmInterruptRun());
-        LinearLayout.LayoutParams interruptParams = matchWrap();
-        interruptParams.setMargins(0, dp(10), 0, 0);
+        LinearLayout.LayoutParams interruptParams = new LinearLayout.LayoutParams(0, dp(42), 1);
+        interruptParams.setMargins(0, 0, dp(4), 0);
         consoleInterruptButton.setVisibility(View.GONE);
-        commandCard.addView(consoleInterruptButton, interruptParams);
+        runControlRow.addView(consoleInterruptButton, interruptParams);
+
+        consoleShutdownButton = actionButton(actionLabel("⏻", t("shutdown_after_run"), 1.12f));
+        consoleShutdownButton.setTextSize(12);
+        consoleShutdownButton.setTextColor(isDarkTheme() ? color("#FBBF24") : color("#B45309"));
+        consoleShutdownButton.setOnClickListener(v -> confirmShutdownAfterRun());
+        LinearLayout.LayoutParams shutdownParams = new LinearLayout.LayoutParams(0, dp(42), 1);
+        shutdownParams.setMargins(dp(4), 0, 0, 0);
+        consoleShutdownButton.setVisibility(View.GONE);
+        runControlRow.addView(consoleShutdownButton, shutdownParams);
+        commandCard.addView(runControlRow, runControlParams);
+
+        LinearLayout launchRow = new LinearLayout(this);
+        launchRow.setOrientation(LinearLayout.HORIZONTAL);
+        launchRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams launchRowParams = matchWrap();
+        launchRowParams.setMargins(0, dp(8), 0, 0);
 
         consoleRerunButton = actionButton(actionLabel("↻", t("rerun"), 1.18f));
         consoleRerunButton.setTextColor(isDarkTheme() ? color("#93C5FD") : color("#2563EB"));
         consoleRerunButton.setOnClickListener(v -> confirmRerunRun());
-        LinearLayout.LayoutParams rerunParams = matchWrap();
-        rerunParams.setMargins(0, dp(10), 0, 0);
+        LinearLayout.LayoutParams rerunParams = new LinearLayout.LayoutParams(0, dp(42), 1);
+        rerunParams.setMargins(0, 0, dp(4), 0);
         consoleRerunButton.setVisibility(View.GONE);
-        commandCard.addView(consoleRerunButton, rerunParams);
+        launchRow.addView(consoleRerunButton, rerunParams);
+
+        consoleTerminalButton = actionButton(actionLabel("›_", t("remote_terminal"), 1.05f));
+        consoleTerminalButton.setTextColor(isDarkTheme() ? color("#86EFAC") : color("#15803D"));
+        consoleTerminalButton.setOnClickListener(v -> showRemoteTerminalDialog());
+        LinearLayout.LayoutParams terminalActionParams = new LinearLayout.LayoutParams(0, dp(42), 1);
+        terminalActionParams.setMargins(dp(4), 0, 0, 0);
+        consoleTerminalButton.setVisibility(View.GONE);
+        launchRow.addView(consoleTerminalButton, terminalActionParams);
+        commandCard.addView(launchRow, launchRowParams);
         root.addView(commandCard, commandCardParams);
 
         consoleSearchInput = new EditText(this);
@@ -5932,6 +5975,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 : t("rerun"), 1.18f));
     }
 
+    private void updateConsoleDeviceActions(boolean active) {
+        if (consoleShutdownButton != null) {
+            boolean scheduled = selectedRunId != null && selectedRunId.equals(pendingShutdownRunId);
+            consoleShutdownButton.setVisibility(active ? View.VISIBLE : View.GONE);
+            consoleShutdownButton.setText(actionLabel("⏻", scheduled ? t("cancel_shutdown") : t("shutdown_after_run"), 1.12f));
+        }
+        if (consoleTerminalButton != null) {
+            consoleTerminalButton.setVisibility(currentRunDeviceId == null || currentRunDeviceId.isEmpty()
+                    ? View.GONE : View.VISIBLE);
+        }
+    }
+
     private void confirmInterruptRun() {
         if (selectedRunId == null || selectedRunId.isEmpty()) {
             return;
@@ -5951,7 +6006,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         if (statusText != null) {
-            statusText.setText(isEnglish() ? "Sending interrupt..." : "正在发送中断请求...");
+            statusText.setText(isEnglish() ? "Sending terminate request..." : "正在发送终止请求...");
         }
         if (consoleInterruptButton != null) {
             consoleInterruptButton.setEnabled(false);
@@ -5964,7 +6019,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         return;
                     }
                     if (statusText != null) {
-                        statusText.setText(isEnglish() ? "Interrupt sent. Waiting for command to stop..." : "中断请求已发送，等待命令停止...");
+                        statusText.setText(isEnglish() ? "Terminate sent. Waiting for command to stop..." : "终止请求已发送，等待命令停止...");
                     }
                     refreshRunDetail(id, false);
                 });
@@ -5975,7 +6030,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     }
                     updateConsoleInterruptButton(true);
                     if (statusText != null) {
-                        statusText.setText((isEnglish() ? "Interrupt failed: " : "中断失败：") + e.getMessage());
+                        statusText.setText((isEnglish() ? "Terminate failed: " : "终止失败：") + e.getMessage());
                     }
                 });
             }
@@ -6007,15 +6062,22 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         submitBackground(() -> {
             try {
-                httpPostJson(normalizedServerUrl() + "/api/runs/" + Uri.encode(id) + "/rerun", "{}");
+                JSONObject response = new JSONObject(httpPostJson(
+                        normalizedServerUrl() + "/api/runs/" + Uri.encode(id) + "/rerun",
+                        "{}"
+                ));
+                String newRunId = response.optJSONObject("action") == null
+                        ? ""
+                        : response.optJSONObject("action").optString("targetRunId", "");
                 handler.post(() -> {
                     if (!id.equals(selectedRunId)) {
                         return;
                     }
                     if (statusText != null) {
-                        statusText.setText(isEnglish()
-                                ? "Rerun queued. The linked device will start it on its next heartbeat."
-                                : "重新运行已排队，关联设备会在下一次心跳时启动。");
+                        String suffix = newRunId.isEmpty() ? "" : " · " + newRunId.substring(0, Math.min(8, newRunId.length()));
+                        statusText.setText((isEnglish()
+                                ? "New run queued"
+                                : "新任务已排队") + suffix);
                     }
                     updateConsoleRerunButton(true);
                 });
@@ -6037,11 +6099,144 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     }
                     updateConsoleRerunButton(true);
                     if (statusText != null) {
-                        statusText.setText((isEnglish() ? "Rerun failed: " : "重新运行失败：") + e.getMessage());
+                        statusText.setText(remoteActionFailureMessage(e, isEnglish() ? "Rerun" : "重新运行"));
                     }
                 });
             }
         });
+    }
+
+    private void confirmShutdownAfterRun() {
+        if (selectedRunId == null || selectedRunId.isEmpty()) {
+            return;
+        }
+        if (selectedRunId.equals(pendingShutdownRunId)) {
+            setShutdownAfterRun(selectedRunId, false);
+            return;
+        }
+        AlertDialog d = dialogBuilder()
+                .setTitle(t("shutdown_after_run"))
+                .setMessage(t("shutdown_confirm"))
+                .setNegativeButton(t("cancel"), null)
+                .setPositiveButton(t("shutdown_after_run"), (dialog, which) -> setShutdownAfterRun(selectedRunId, true))
+                .create();
+        applyDialogStyle(d);
+        d.show();
+    }
+
+    private void setShutdownAfterRun(String id, boolean enabled) {
+        if (id == null || id.isEmpty()) {
+            return;
+        }
+        if (statusText != null) {
+            statusText.setText(enabled
+                    ? (isEnglish() ? "Scheduling shutdown..." : "正在设置跑完关机...")
+                    : (isEnglish() ? "Cancelling shutdown..." : "正在取消关机..."));
+        }
+        submitBackground(() -> {
+            try {
+                JSONObject body = new JSONObject().put("enabled", enabled);
+                httpPostJson(normalizedServerUrl() + "/api/runs/" + Uri.encode(id) + "/shutdown", body.toString());
+                handler.post(() -> {
+                    pendingShutdownRunId = enabled ? id : "";
+                    updateConsoleDeviceActions(true);
+                    if (statusText != null) {
+                        statusText.setText(enabled
+                                ? (isEnglish() ? "The linked computer will shut down after this run." : "已设置：本任务结束后关闭关联电脑。")
+                                : (isEnglish() ? "Scheduled shutdown cancelled." : "已取消跑完关机。"));
+                    }
+                });
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (statusText != null) {
+                        statusText.setText(remoteActionFailureMessage(e, isEnglish() ? "Shutdown" : "跑完关机"));
+                    }
+                });
+            }
+        });
+    }
+
+    private void showRemoteTerminalDialog() {
+        if (currentRunDeviceId == null || currentRunDeviceId.isEmpty()) {
+            return;
+        }
+        EditText input = new EditText(this);
+        input.setSingleLine(false);
+        input.setMinLines(2);
+        input.setMaxLines(5);
+        input.setTextSize(14);
+        input.setTextColor(textPrimary());
+        input.setHintTextColor(textSecondary());
+        input.setHint(isEnglish() ? "e.g. nvidia-smi" : "例如：nvidia-smi");
+        input.setTypeface(Typeface.MONOSPACE);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        LinearLayout wrapper = new LinearLayout(this);
+        wrapper.setPadding(dp(20), dp(4), dp(20), 0);
+        wrapper.addView(input, matchWrap());
+        AlertDialog dialog = dialogBuilder()
+                .setTitle(t("terminal_command"))
+                .setMessage(isEnglish()
+                        ? "Runs once as a new monitored task. Interactive passwords and sudo prompts are not supported."
+                        : "命令会作为新的监控任务运行一次，不支持交互式密码或 sudo 提示。")
+                .setView(wrapper)
+                .setNegativeButton(t("cancel"), null)
+                .setPositiveButton(isEnglish() ? "Run" : "运行", null)
+                .create();
+        applyDialogStyle(dialog);
+        dialog.setOnShowListener(ignored -> dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String command = input.getText().toString().trim();
+            if (command.isEmpty()) {
+                input.setError(isEnglish() ? "Enter a command" : "请输入命令");
+                return;
+            }
+            dialog.dismiss();
+            submitRemoteTerminalCommand(currentRunDeviceId, command);
+        }));
+        dialog.show();
+    }
+
+    private void submitRemoteTerminalCommand(String deviceId, String command) {
+        String actionId = "action_" + UUID.randomUUID().toString().replace("-", "");
+        String runId = UUID.randomUUID().toString();
+        if (statusText != null) {
+            statusText.setText(isEnglish() ? "Sending encrypted terminal task..." : "正在发送加密终端任务...");
+        }
+        submitBackground(() -> {
+            try {
+                JSONObject cleartext = new JSONObject()
+                        .put("command", command)
+                        .put("project", currentRunDetail == null ? "Remote terminal" : currentRunDetail.optString("project", "Remote terminal"));
+                JSONObject body = new JSONObject()
+                        .put("actionId", actionId)
+                        .put("runId", runId)
+                        .put("e2ee", encryptRemoteActionPayload(actionId, cleartext));
+                httpPostJson(
+                        normalizedServerUrl() + "/api/devices/" + Uri.encode(deviceId) + "/terminal",
+                        body.toString()
+                );
+                handler.post(() -> {
+                    if (statusText != null) {
+                        statusText.setText((isEnglish() ? "New terminal task queued" : "新终端任务已排队")
+                                + " · " + runId.substring(0, 8));
+                    }
+                });
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (statusText != null) {
+                        statusText.setText(remoteActionFailureMessage(e, isEnglish() ? "Terminal" : "终端"));
+                    }
+                });
+            }
+        });
+    }
+
+    private String remoteActionFailureMessage(Exception error, String feature) {
+        if (error instanceof HaolemeHttpException && ((HaolemeHttpException) error).statusCode == 404) {
+            return isEnglish()
+                    ? feature + " requires a newer Relay and CLI."
+                    : feature + "失败：Relay 或 CLI 版本过旧。";
+        }
+        return feature + (isEnglish() ? " failed: " : "失败：") + error.getMessage();
     }
 
     private boolean isTerminalRunStatus(String status) {
@@ -6273,8 +6468,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setText(status.toUpperCase(Locale.US) + projectSuffix + statusSuffix(run));
         detailMeta.setTextColor(statusColor(status));
         detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
+        currentRunDeviceId = run.optString("deviceId", currentRunDeviceId);
+        if (run.has("shutdownAfterRun")) {
+            pendingShutdownRunId = run.optBoolean("shutdownAfterRun", false) ? run.optString("id", "") : "";
+        }
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
         updateConsoleRerunButton(isTerminalRunStatus(status));
+        updateConsoleDeviceActions("running".equals(status) || "created".equals(status));
 
         String runId = run.optString("id", "");
         int remoteLength = payload.optInt("outputLength", run.optInt("outputLength", consoleOutputSyncedLength));
@@ -6384,8 +6584,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
         detailMeta.setText(status.toUpperCase(Locale.US) + projectSuffix + statusSuffix(run));
         detailMeta.setTextColor(statusColor(status));
         detailMeta.setBackground(roundedBg(statusBadgeColor(status), 99, Color.TRANSPARENT));
+        currentRunDeviceId = run.optString("deviceId", currentRunDeviceId);
+        if (run.has("shutdownAfterRun")) {
+            pendingShutdownRunId = run.optBoolean("shutdownAfterRun", false) ? run.optString("id", "") : "";
+        }
         updateConsoleInterruptButton("running".equals(status) || "created".equals(status));
         updateConsoleRerunButton(isTerminalRunStatus(status));
+        updateConsoleDeviceActions("running".equals(status) || "created".equals(status));
         String runId = run.optString("id", "");
         String diskOutput = readConsoleCacheTail(runId, consoleRenderLimit);
         currentConsoleOutput = diskOutput.isEmpty() ? consoleOutput(run) : diskOutput;
@@ -8589,6 +8794,21 @@ public class MainActivity extends Activity implements LifecycleOwner {
             decrypted.put(decryptRun(run));
         }
         return decrypted;
+    }
+
+    private JSONObject encryptRemoteActionPayload(String actionId, JSONObject cleartext) throws Exception {
+        byte[] key = accountEncryptionKeyBytes();
+        byte[] nonce = new byte[12];
+        new SecureRandom().nextBytes(nonce);
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
+        cipher.updateAAD(actionId.getBytes(StandardCharsets.UTF_8));
+        byte[] ciphertext = cipher.doFinal(cleartext.toString().getBytes(StandardCharsets.UTF_8));
+        return new JSONObject()
+                .put("v", 1)
+                .put("alg", "AES-256-GCM")
+                .put("nonce", base64UrlEncode(nonce))
+                .put("ciphertext", base64UrlEncode(ciphertext));
     }
 
     private JSONObject decryptRun(JSONObject run) {

@@ -18,6 +18,7 @@ from haoleme.cli import (
     ORPHANED_RUN_GRACE_SECONDS,
     acquire_process_file_lock,
     apply_remote_actions,
+    apply_scheduled_shutdowns,
     build_pair_url,
     command_needs_shell,
     compare_versions,
@@ -59,6 +60,7 @@ from haoleme.cli import (
     _parse_windows_gpu_payload,
 )
 from haoleme.cloud import CloudConfig, DEFAULT_CLOUD_URL, InterruptWatcher
+from haoleme.crypto import encrypt_action_payload, generate_account_key
 from haoleme.store import RunStore
 
 
@@ -124,14 +126,100 @@ class CliPairingTest(unittest.TestCase):
             store.finish_run("run-launch", 0)
             process = type("Process", (), {"pid": 9876})()
 
+            target_run_id = "fd55b90a-9e47-4295-b09e-4f5409b07d6f"
             with patch("haoleme.cli.subprocess.Popen", return_value=process) as popen:
-                pid = launch_remote_rerun(store.get_run("run-launch"))
+                pid = launch_remote_rerun(store.get_run("run-launch"), target_run_id)
 
             self.assertEqual(pid, 9876)
             command = popen.call_args.args[0]
             self.assertEqual(command[:5], [sys.executable, "-m", "haoleme", "--project", "Project A"])
             self.assertEqual(command[5:], ["FOO=1", "python", "app.py"])
             self.assertEqual(popen.call_args.kwargs["cwd"], tmp)
+            self.assertEqual(popen.call_args.kwargs["env"]["HAOLEME_REMOTE_RUN_ID"], target_run_id)
+
+    def test_terminal_action_is_decrypted_and_launched_as_new_run(self):
+        class ActionClient:
+            def __init__(self, key):
+                self.config = CloudConfig("https://relay.test", "default", "token", encryption_key=key)
+                self.completed = []
+
+            def complete_remote_action(self, action_id, status, detail="", launcher_pid=None):
+                self.completed.append((action_id, status, launcher_pid))
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            key = generate_account_key()
+            store = RunStore(Path(tmp) / "runs.db")
+            client = ActionClient(key)
+            action_id = "action-terminal"
+            action = {
+                "id": action_id,
+                "runId": "",
+                "targetRunId": "7bd4a3b6-5e70-4679-8887-b8e20d6d10c0",
+                "action": "terminal",
+                "payload": encrypt_action_payload(
+                    action_id,
+                    {"command": "echo terminal-ok", "project": "Remote"},
+                    key,
+                ),
+            }
+
+            with patch("haoleme.cli.launch_remote_command", return_value=7654) as launcher:
+                messages = apply_remote_actions(store, client, [action])
+
+            launcher.assert_called_once_with(
+                ["echo terminal-ok"],
+                str(Path.home()),
+                "Remote",
+                action["targetRunId"],
+            )
+            self.assertIn("Remote terminal run started", messages[0])
+            self.assertEqual(client.completed[0][1], "started")
+
+    def test_scheduled_shutdown_waits_for_run_and_executes_once(self):
+        class ActionClient:
+            def __init__(self):
+                self.completed = []
+
+            def complete_remote_action(self, action_id, status, detail="", launcher_pid=None):
+                self.completed.append((action_id, status))
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-active", ["sleep", "1"], tmp)
+            store.reserve_remote_action("action-shutdown", "run-active", "shutdown_after_run")
+            store.finish_remote_action("action-shutdown", "scheduled")
+            client = ActionClient()
+
+            with patch("haoleme.cli.request_system_shutdown") as shutdown:
+                self.assertEqual(apply_scheduled_shutdowns(store, client), [])
+                shutdown.assert_not_called()
+                store.finish_run("run-active", 0)
+                self.assertEqual(apply_scheduled_shutdowns(store, client), [])
+                shutdown.assert_called_once()
+                apply_scheduled_shutdowns(store, client)
+                shutdown.assert_called_once()
+
+            self.assertEqual(client.completed, [("action-shutdown", "completed")])
+
+    def test_remote_run_id_creates_a_distinct_run_record(self):
+        target_run_id = "ef626c63-e95b-4e6b-89d9-2152d5c40bf2"
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"HAOLEME_HOME": tmp, "HAOLEME_REMOTE_RUN_ID": target_run_id}, clear=False), \
+                patch("haoleme.cli.start_background_update_check", return_value={}), \
+                patch("haoleme.cli.start_heartbeat_daemon", return_value=(True, "started")), \
+                patch("haoleme.cli.configured_cloud_client", return_value=None), \
+                patch("haoleme.cli.should_use_pty", return_value=False), \
+                patch("haoleme.cli.run_command_with_pipes", return_value=(0, False)), \
+                patch("haoleme.cli.print_update_notice_after_command"):
+            self.assertEqual(run_command(["echo", "new-run"]), 0)
+
+            run = RunStore().get_run(target_run_id)
+            self.assertIsNotNone(run)
+            self.assertEqual(run.command, ["echo", "new-run"])
+            self.assertEqual(run.status, "succeeded")
+            self.assertNotIn("HAOLEME_REMOTE_RUN_ID", os.environ)
 
     def test_compare_versions_orders_semver_like_values(self):
         self.assertEqual(compare_versions("0.3.9", "0.3.10"), -1)
