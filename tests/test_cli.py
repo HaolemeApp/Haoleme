@@ -50,6 +50,7 @@ from haoleme.cli import (
     terminate_process_on_interrupt,
     should_continue_relogin,
     split_leading_env_assignments,
+    start_local_relay_for_login,
     stream_output,
     sync_pending_runs,
     terminate_windows_process,
@@ -257,12 +258,31 @@ class CliPairingTest(unittest.TestCase):
             self.assertEqual(prompt_login_relay_url(), DEFAULT_CLOUD_URL)
 
     def test_interactive_login_can_choose_https_private_relay(self):
-        with patch("builtins.input", side_effect=["2", "https://relay.example.com"]):
+        with patch("builtins.input", side_effect=["2", "2", "https://relay.example.com"]):
             self.assertEqual(prompt_login_relay_url(), "https://relay.example.com")
 
     def test_interactive_login_can_choose_lan_private_relay(self):
-        with patch("builtins.input", side_effect=["2", "192.168.1.20:8000"]):
+        with patch("builtins.input", side_effect=["2", "2", "192.168.1.20:8000"]):
             self.assertEqual(prompt_login_relay_url(), "http://192.168.1.20:8000")
+
+    def test_interactive_login_can_start_local_private_relay(self):
+        with patch("builtins.input", side_effect=["2", ""]), patch(
+            "haoleme.cli.start_local_relay_for_login",
+            return_value="http://192.168.1.20:8000",
+        ) as start_local:
+            self.assertEqual(prompt_login_relay_url(), "http://192.168.1.20:8000")
+
+        start_local.assert_called_once_with()
+
+    def test_start_local_relay_for_login_reports_background_service(self):
+        with patch(
+            "haoleme.relay.ensure_background_lan_relay",
+            return_value=("http://192.168.1.20:8000", True, 4321, Path("/tmp/relay.log")),
+        ), redirect_stdout(io.StringIO()) as output:
+            url = start_local_relay_for_login()
+
+        self.assertEqual(url, "http://192.168.1.20:8000")
+        self.assertIn("pid 4321", output.getvalue())
 
     def test_pairing_login_accepts_private_relay_as_positional_url(self):
         relay = "https://hao.example.com"

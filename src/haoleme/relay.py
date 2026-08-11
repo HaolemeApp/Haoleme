@@ -116,6 +116,27 @@ def start_detached_relay(args: list[str]) -> tuple[subprocess.Popen[bytes], Path
     return process, log_path
 
 
+def ensure_background_lan_relay(port: int = 8000) -> tuple[str, bool, int | None, Path]:
+    """Return a reachable LAN URL after ensuring a detached Relay is running."""
+    os.environ["HAOLEME_RELAY_HOST"] = "0.0.0.0"
+    os.environ["HAOLEME_CLOUD_HOST"] = "0.0.0.0"
+    configure_relay_environment()
+    addresses = local_lan_addresses()
+    if not addresses or addresses[0] == "YOUR_LAN_IP":
+        raise RuntimeError("could not determine this computer's private LAN address")
+
+    address = addresses[0]
+    log_path = default_relay_data_dir() / "relay-stdio.log"
+    if wait_for_relay_health(port, timeout=0.3):
+        return f"http://{address}:{port}", False, None, log_path
+
+    process, log_path = start_detached_relay(["--port", str(port)])
+    if not wait_for_relay_health(port):
+        process.terminate()
+        raise RuntimeError(f"Relay failed to start; check {log_path}")
+    return f"http://{address}:{port}", True, process.pid, log_path
+
+
 def run_lan_pairing(address: str, port: int) -> int:
     if not wait_for_relay_health(port):
         print("\nCould not start pairing: the local Relay did not become ready.", file=sys.stderr)
