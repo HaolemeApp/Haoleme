@@ -88,6 +88,11 @@ class BrokenTarget:
 
 
 class CliPairingTest(unittest.TestCase):
+    def test_stop_is_cancel_command_alias(self):
+        with patch("haoleme.cli.cancel_command", return_value=0) as cancel:
+            self.assertEqual(main(["stop", "run-123"]), 0)
+        cancel.assert_called_once_with(["run-123"])
+
     def test_remote_rerun_launch_is_idempotent_and_keeps_context(self):
         class ActionClient:
             def __init__(self):

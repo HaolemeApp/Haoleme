@@ -117,7 +117,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return devices_command(args[1:])
     if first == "clear":
         return clear_command(args[1:])
-    if first == "cancel":
+    if first in {"cancel", "stop"}:
         return cancel_command(args[1:])
 
     # Implicit run: use leading project if present, else let parse_run_args handle
@@ -684,7 +684,7 @@ def clear_command(argv: Sequence[str]) -> int:
 
 
 def cancel_command(argv: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog="hao cancel")
+    parser = argparse.ArgumentParser(prog="hao stop")
     parser.add_argument("run_id", help="Run ID (full or prefix)")
     parser.add_argument("--force", action="store_true", help="Kill even if not found locally (try cloud interrupt).")
     ns = parser.parse_args(argv)
@@ -3194,7 +3194,8 @@ Commands:
 
   status                (with filters) List/filter runs
   clear                 Clear local (and optionally cloud) run history
-  cancel <run-id>       Cancel a running command
+  stop <run-id>         Stop a running command
+  cancel <run-id>       Alias for stop
 
   server                Run local cloud server
   public                Run local server + Cloudflare tunnel
@@ -3217,6 +3218,6 @@ Notes:
 - Shell features (|, &&, redirects, etc.) must be quoted as a single argument
   to hao, e.g. `hao 'echo a | grep b'`. hao will wrap with sh -c when needed.
 
-New: hao devices, hao clear, hao cancel, improved hao status.
+New: hao devices, hao clear, hao stop, improved hao status.
 """
     )

@@ -2075,13 +2075,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
             case "more": return en ? "More" : "更多";
             case "auto_on": return en ? "Auto On" : "自动滚动开";
             case "auto_off": return en ? "Auto Off" : "自动滚动关";
-            case "interrupt": return en ? "Terminate" : "终止";
+            case "interrupt": return en ? "Stop" : "停止";
             case "interrupt_confirm": return en ? "Stop this running command on the linked computer?" : "确定要在电脑上停止这条正在运行的命令吗？";
             case "rerun": return en ? "Rerun" : "重新运行";
             case "rerun_confirm": return en
                     ? "Run this command again on the linked computer? The saved command and working directory on that device will be used."
                     : "确定要在关联电脑上重新运行这条命令吗？将使用该设备本地保存的命令和工作目录。";
-            case "shutdown_after_run": return en ? "Shut down after run" : "跑完关机";
+            case "shutdown_after_run": return en ? "Shut down when finished" : "完成后关机";
             case "cancel_shutdown": return en ? "Cancel shutdown" : "取消关机";
             case "shutdown_confirm": return en
                     ? "Shut down the linked computer after this run finishes? Save your work first."
@@ -6006,7 +6006,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         if (statusText != null) {
-            statusText.setText(isEnglish() ? "Sending terminate request..." : "正在发送终止请求...");
+            statusText.setText(isEnglish() ? "Sending stop request..." : "正在发送停止请求...");
         }
         if (consoleInterruptButton != null) {
             consoleInterruptButton.setEnabled(false);
@@ -6019,7 +6019,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         return;
                     }
                     if (statusText != null) {
-                        statusText.setText(isEnglish() ? "Terminate sent. Waiting for command to stop..." : "终止请求已发送，等待命令停止...");
+                        statusText.setText(isEnglish() ? "Stop sent. Waiting for the command to exit..." : "停止请求已发送，等待命令退出...");
                     }
                     refreshRunDetail(id, false);
                 });
@@ -6030,7 +6030,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     }
                     updateConsoleInterruptButton(true);
                     if (statusText != null) {
-                        statusText.setText((isEnglish() ? "Terminate failed: " : "终止失败：") + e.getMessage());
+                        statusText.setText((isEnglish() ? "Stop failed: " : "停止失败：") + e.getMessage());
                     }
                 });
             }
@@ -6130,7 +6130,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         if (statusText != null) {
             statusText.setText(enabled
-                    ? (isEnglish() ? "Scheduling shutdown..." : "正在设置跑完关机...")
+                    ? (isEnglish() ? "Scheduling shutdown..." : "正在设置完成后关机...")
                     : (isEnglish() ? "Cancelling shutdown..." : "正在取消关机..."));
         }
         submitBackground(() -> {
@@ -6149,7 +6149,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             } catch (Exception e) {
                 handler.post(() -> {
                     if (statusText != null) {
-                        statusText.setText(remoteActionFailureMessage(e, isEnglish() ? "Shutdown" : "跑完关机"));
+                        statusText.setText(remoteActionFailureMessage(e, isEnglish() ? "Shutdown" : "完成后关机"));
                     }
                 });
             }
