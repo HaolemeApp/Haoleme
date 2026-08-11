@@ -1727,6 +1727,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         String targetServer = normalizeServerUrl(serverUrl);
+        if (!RelayUrlPolicy.isAllowed(targetServer)) {
+            statusText.setText(isEnglish()
+                    ? "Shared-space server rejected: use HTTPS, or a private LAN IP over HTTP."
+                    : "同步空间服务器已拒绝：请使用 HTTPS，或通过 HTTP 使用局域网私有 IP。");
+            return;
+        }
         statusText.setText(isEnglish() ? "Joining shared space..." : "正在加入共享空间...");
         submitUpdateBackground(() -> {
             try {
@@ -7714,10 +7720,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
             pairInput.setText(code.replaceAll("\\D", ""));
         }
         String normalizedServer = normalizeServerUrl(server);
-        if (!isSecureRelayUrl(normalizedServer)) {
+        if (!RelayUrlPolicy.isAllowed(normalizedServer)) {
             statusText.setText(isEnglish()
-                    ? "Private relay QR rejected: HTTPS is required."
-                    : "私有 Relay 二维码已拒绝：必须使用 HTTPS。");
+                    ? "Relay QR rejected: use HTTPS, or a private LAN IP over HTTP."
+                    : "Relay 二维码已拒绝：请使用 HTTPS，或通过 HTTP 使用局域网私有 IP。");
             return;
         }
         // The QR explicitly names its relay. Never leak its pairing code to the
@@ -8354,7 +8360,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private String normalizedServerUrl() {
-        return normalizeServerUrl(prefs.getString("server_url", DEFAULT_SERVER_URL));
+        String server = normalizeServerUrl(prefs.getString("server_url", DEFAULT_SERVER_URL));
+        return RelayUrlPolicy.isAllowed(server) ? server : normalizeServerUrl(DEFAULT_SERVER_URL);
     }
 
     private boolean shouldReplaceSavedServerUrl(String rawSavedServerUrl, String normalizedSavedServerUrl) {
@@ -8457,21 +8464,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private String normalizedToken() {
         return accountTokenForServer(normalizedServerUrl());
-    }
-
-    private boolean isSecureRelayUrl(String value) {
-        try {
-            URL url = new URL(value);
-            String host = url.getHost() == null ? "" : url.getHost().trim();
-            if ("https".equalsIgnoreCase(url.getProtocol()) && !host.isEmpty()) {
-                return true;
-            }
-            return BuildConfig.DEBUG
-                    && "http".equalsIgnoreCase(url.getProtocol())
-                    && ("127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host));
-        } catch (Exception ignored) {
-            return false;
-        }
     }
 
     private String relayProfileId(String serverUrl) {

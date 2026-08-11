@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import ipaddress
 import json
 import os
 import select
@@ -815,15 +816,16 @@ def pairing_login_command(argv: Sequence[str]) -> int:
     supplied_urls = [value.strip().rstrip("/") for value in (ns.relay_url, ns.relay, ns.api_url) if value.strip()]
     if len(set(supplied_urls)) > 1:
         parser.error("provide the relay URL only once")
-    api_url = (
+    raw_api_url = (
         supplied_urls[0]
         if supplied_urls
         else os.environ.get("HAOLEME_RELAY_URL", "").strip().rstrip("/")
         or os.environ.get("HAOLEME_CLOUD_URL", DEFAULT_CLOUD_URL).strip().rstrip("/")
     )
-    parsed_api_url = urllib.parse.urlsplit(api_url)
-    if parsed_api_url.scheme.lower() != "https" or not parsed_api_url.hostname:
-        parser.error("relay URL must use HTTPS, for example https://hao.example.com")
+    try:
+        api_url = normalize_relay_login_url(raw_api_url)
+    except ValueError as exc:
+        parser.error(str(exc))
     client = PairingClient(api_url)
     machine_id = get_or_create_machine_id()
     existing_config = CloudConfig.load()
@@ -836,6 +838,7 @@ def pairing_login_command(argv: Sequence[str]) -> int:
     except Exception as exc:
         print(f"hao: could not start login: {exc}", file=sys.stderr)
         print("For a private relay, use: hao login https://hao.example.com", file=sys.stderr)
+        print("For a trusted LAN relay, use: hao login 192.168.1.20:8000", file=sys.stderr)
         return 1
 
     code = str(started.get("code", ""))
@@ -1695,6 +1698,60 @@ def build_pair_url(api_url: str, code: str) -> str:
         "v": "1",
     })
     return f"haoleme://pair?{query}"
+
+
+def normalize_relay_login_url(raw: str) -> str:
+    value = str(raw or "").strip().rstrip("/")
+    if not value:
+        raise ValueError("relay URL is empty")
+
+    if "://" not in value:
+        candidate = urllib.parse.urlsplit("//" + value)
+        if not candidate.hostname:
+            raise ValueError("invalid relay address")
+        scheme = "http" if is_local_relay_host(candidate.hostname) else "https"
+        value = f"{scheme}://{value}"
+
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"invalid relay address: {exc}") from exc
+
+    if not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("invalid relay address")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError("relay address must not include a path, query, or fragment")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("relay port must be between 1 and 65535")
+
+    scheme = parsed.scheme.lower()
+    if scheme == "https":
+        return value
+    if scheme == "http" and is_local_relay_host(parsed.hostname):
+        return value
+    raise ValueError(
+        "relay must use HTTPS; plain HTTP is allowed only for localhost or a private LAN IP"
+    )
+
+
+def is_local_relay_host(host: str) -> bool:
+    normalized = str(host or "").strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(normalized.split("%", 1)[0])
+    except ValueError:
+        return False
+    if address.is_loopback or address.is_link_local:
+        return True
+    if isinstance(address, ipaddress.IPv4Address):
+        return any(address in network for network in (
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+        ))
+    return address in ipaddress.ip_network("fc00::/7")
 
 
 def print_qr(text: str) -> None:

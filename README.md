@@ -141,6 +141,16 @@ Scanning that QR switches the app to the named relay. App credentials and E2EE
 keys are isolated per relay, and private-relay QR codes never fall back to the
 public Haoleme service.
 
+For a trusted local network, a domain is optional:
+
+```bash
+haoleme-relay --lan --port 8000
+hao login 192.168.1.20:8000
+```
+
+Local HTTP is restricted to private IP addresses. Keep it inside the LAN; use
+HTTPS for any Internet-facing relay. See [`deploy/RELAY.md`](deploy/RELAY.md).
+
 ## License
 
 Haoleme is licensed under [AGPL-3.0-or-later](LICENSE).
