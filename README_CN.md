@@ -131,6 +131,18 @@ Android 官方签名和服务器凭据只通过环境变量或本机私密配置
 
 App 和 CLI 采用端对端加密，保证用户数据安全。
 
+## 私有 Relay
+
+同一个好了么 App 可以直接连接自建 Relay，不需要重新编译专用 APK。按照
+[`deploy/RELAY.md`](deploy/RELAY.md) 部署 Docker/Caddy 后，在需要监控的电脑上只需：
+
+```bash
+hao login https://hao.example.com
+```
+
+用 App 扫描终端二维码即可自动切换。每个 Relay 分别保存 App Token 和端到端
+加密密钥，私有 Relay 的二维码不会回退到官方云进行配对。
+
 ## 开源协议
 
 本项目使用 [AGPL-3.0-or-later](LICENSE) 许可证。

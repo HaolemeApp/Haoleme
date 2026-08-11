@@ -176,6 +176,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String PREF_PENDING_RUN_DELETES = "pending_run_delete_ids";
     private static final String PREF_LANGUAGE_MODE = "language_mode";
     private static final String PREF_APP_CLIENT_ID = "app_client_id";
+    private static final String PREF_RELAY_TOKEN_PREFIX = "relay_token_";
+    private static final String PREF_RELAY_KEY_PREFIX = "relay_e2ee_key_";
     private static final String TAG_RUN_PREFIX = "run:";
     private static final String TAG_RUN_DOT = "run_dot";
     private static final String TAG_RUN_COMMAND = "run_command";
@@ -527,7 +529,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 statusText.setText(isEnglish() ? "Server changed. Pair again to continue." : "服务器已切换，请重新配对后继续使用。");
             }
         }
-        accountToken();
+        // Migrate legacy global secrets into the active relay profile before a
+        // user has any chance to scan a QR and switch endpoints.
+        activateServerProfile(savedServerUrl);
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -6980,7 +6984,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             }
-            String token = normalizedToken();
+            // Credentials are scoped to the destination relay. Reusing the
+            // official-cloud token on a private relay would let that relay
+            // impersonate this phone against the official service.
+            String token = includeToken ? accountTokenForServer(serverBaseUrl(target)) : "";
             if (includeToken && !token.isEmpty()) {
                 connection.setRequestProperty("Authorization", "Bearer " + token);
             }
@@ -7268,6 +7275,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void confirmPairingCode(String code, String serverUrl) {
+        confirmPairingCode(code, serverUrl, true);
+    }
+
+    private void confirmPairingCode(String code, String serverUrl, boolean allowDefaultFallback) {
         String normalizedCode = code == null ? "" : code.replaceAll("\\D", "");
         if (normalizedCode.length() != 6) {
             statusText.setText(isEnglish() ? "Enter the 6-digit pair code." : "请输入 6 位配对码。");
@@ -7278,11 +7289,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
 
         String targetServer = normalizeServerUrl(serverUrl);
-        prefs.edit()
-                .putString("server_url", targetServer)
-                .putString("token", normalizedToken())
-                .putBoolean("inputs_locked", true)
-                .apply();
+        String previousServer = normalizedServerUrl();
+        activateServerProfile(previousServer);
+        accountTokenForServer(targetServer);
+        accountEncryptionKeyBytesForServer(targetServer);
 
         pairingInProgress = true;
         if (pairButton != null) {
@@ -7291,7 +7301,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         statusText.setText(isEnglish() ? "Pairing..." : "正在配对...");
         submitBackground(() -> {
             try {
-                PairInfoResult pairInfo = fetchPairInfoWithFallback(targetServer, normalizedCode);
+                PairInfoResult pairInfo = fetchPairInfoWithFallback(targetServer, normalizedCode, allowDefaultFallback);
                 JSONObject info = pairInfo.info;
                 String confirmedServer = pairInfo.server;
 
@@ -7309,7 +7319,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 }
                 String publicKey = info == null ? "" : info.optString("publicKey", "").trim();
                 if (!publicKey.isEmpty()) {
-                    payload.put("encryptedAccountKey", encryptAccountKeyForPair(publicKey));
+                    payload.put("encryptedAccountKey", encryptAccountKeyForPair(publicKey, confirmedServer));
                     payload.put("encryptedAccountKeyAlgorithm", "RSA-OAEP-SHA256");
                     payload.put("e2eeVersion", 1);
                 }
@@ -7340,6 +7350,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     if (pairInput != null) {
                         pairInput.setText("");
                     }
+                    if (!normalizeServerUrl(previousServer).equals(normalizeServerUrl(finalServer))) {
+                        // Do not mix cached device/run data from independently
+                        // administered relays. Scoped credentials remain saved.
+                        clearAllPairingAndCache();
+                    }
+                    activateServerProfile(finalServer);
                     prefs.edit()
                             .putString("paired_device_name", finalDeviceName)
                             .putString("paired_device_id", finalDeviceId)
@@ -7397,13 +7413,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return name.length() > 12 && (lower.contains(".local") || lower.contains(".lan") || lower.contains(".internal"));
     }
 
-    private PairInfoResult fetchPairInfoWithFallback(String initialServer, String normalizedCode) throws Exception {
+    private PairInfoResult fetchPairInfoWithFallback(
+            String initialServer,
+            String normalizedCode,
+            boolean allowDefaultFallback
+    ) throws Exception {
         String primary = normalizeServerUrl(initialServer);
         try {
             return fetchPairInfoWithRetry(primary, normalizedCode);
         } catch (HaolemeHttpException first) {
             String fallback = normalizeServerUrl(DEFAULT_SERVER_URL);
-            if (isPairCodeMissing(first) && !fallback.equals(primary)) {
+            if (allowDefaultFallback && isPairCodeMissing(first) && !fallback.equals(primary)) {
                 handler.post(() -> statusText.setText(isEnglish()
                         ? "Pair code not found on saved server. Trying Haoleme Cloud..."
                         : "当前服务器没有找到配对码，正在切换到好了么云端..."));
@@ -7693,7 +7713,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (pairInput != null && code != null) {
             pairInput.setText(code.replaceAll("\\D", ""));
         }
-        confirmPairingCode(code, server);
+        String normalizedServer = normalizeServerUrl(server);
+        if (!isSecureRelayUrl(normalizedServer)) {
+            statusText.setText(isEnglish()
+                    ? "Private relay QR rejected: HTTPS is required."
+                    : "私有 Relay 二维码已拒绝：必须使用 HTTPS。");
+            return;
+        }
+        // The QR explicitly names its relay. Never leak its pairing code to the
+        // public service by attempting a fallback there.
+        confirmPairingCode(code, normalizedServer, false);
     }
 
     private void handleSyncSpaceUri(Uri uri) {
@@ -8427,7 +8456,41 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private String normalizedToken() {
-        return accountToken();
+        return accountTokenForServer(normalizedServerUrl());
+    }
+
+    private boolean isSecureRelayUrl(String value) {
+        try {
+            URL url = new URL(value);
+            String host = url.getHost() == null ? "" : url.getHost().trim();
+            if ("https".equalsIgnoreCase(url.getProtocol()) && !host.isEmpty()) {
+                return true;
+            }
+            return BuildConfig.DEBUG
+                    && "http".equalsIgnoreCase(url.getProtocol())
+                    && ("127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private String relayProfileId(String serverUrl) {
+        String normalized = normalizeServerUrl(serverUrl).toLowerCase(Locale.US);
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(normalized.getBytes(StandardCharsets.UTF_8));
+            StringBuilder value = new StringBuilder();
+            for (int i = 0; i < 12; i++) {
+                value.append(String.format(Locale.US, "%02x", digest[i] & 0xff));
+            }
+            return value.toString();
+        } catch (Exception ignored) {
+            return Integer.toHexString(normalized.hashCode());
+        }
+    }
+
+    private String scopedRelayPreference(String prefix, String serverUrl) {
+        return prefix + relayProfileId(serverUrl);
     }
 
     private JSONArray decryptRuns(JSONArray runs) {
@@ -8565,8 +8628,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
     }
 
-    private String encryptAccountKeyForPair(String publicKeyPem) throws Exception {
-        byte[] key = accountEncryptionKeyBytes();
+    private String encryptAccountKeyForPair(String publicKeyPem, String serverUrl) throws Exception {
+        byte[] key = accountEncryptionKeyBytesForServer(serverUrl);
         String normalized = publicKeyPem
                 .replace("-----BEGIN PUBLIC KEY-----", "")
                 .replace("-----END PUBLIC KEY-----", "")
@@ -8582,11 +8645,21 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private byte[] accountEncryptionKeyBytes() {
-        String saved = prefs.getString("encryption_key_b64", "");
+        return accountEncryptionKeyBytesForServer(normalizedServerUrl());
+    }
+
+    private byte[] accountEncryptionKeyBytesForServer(String serverUrl) {
+        String scopedPreference = scopedRelayPreference(PREF_RELAY_KEY_PREFIX, serverUrl);
+        String saved = prefs.getString(scopedPreference, "");
+        if ((saved == null || saved.isEmpty())
+                && normalizeServerUrl(serverUrl).equals(normalizedServerUrl())) {
+            saved = prefs.getString("encryption_key_b64", "");
+        }
         if (saved != null && !saved.isEmpty()) {
             try {
                 byte[] decoded = base64UrlDecode(saved);
                 if (decoded.length == 32) {
+                    prefs.edit().putString(scopedPreference, saved).apply();
                     return decoded;
                 }
             } catch (Exception ignored) {
@@ -8594,7 +8667,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         byte[] random = new byte[32];
         new SecureRandom().nextBytes(random);
-        prefs.edit().putString("encryption_key_b64", base64UrlEncode(random)).apply();
+        prefs.edit().putString(scopedPreference, base64UrlEncode(random)).apply();
         return random;
     }
 
@@ -8607,15 +8680,37 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private String accountToken() {
-        String token = prefs.getString("token", "");
+        return accountTokenForServer(normalizedServerUrl());
+    }
+
+    private String accountTokenForServer(String serverUrl) {
+        String scopedPreference = scopedRelayPreference(PREF_RELAY_TOKEN_PREFIX, serverUrl);
+        String token = prefs.getString(scopedPreference, "");
+        if ((token == null || token.isEmpty())
+                && normalizeServerUrl(serverUrl).equals(normalizedServerUrl())) {
+            token = prefs.getString("token", "");
+        }
         if (token != null && !token.isEmpty()) {
+            prefs.edit().putString(scopedPreference, token).apply();
             return token;
         }
         byte[] random = new byte[32];
         new SecureRandom().nextBytes(random);
         token = Base64.encodeToString(random, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
-        prefs.edit().putString("token", token).apply();
+        prefs.edit().putString(scopedPreference, token).apply();
         return token;
+    }
+
+    private void activateServerProfile(String serverUrl) {
+        String normalized = normalizeServerUrl(serverUrl);
+        String token = accountTokenForServer(normalized);
+        String key = base64UrlEncode(accountEncryptionKeyBytesForServer(normalized));
+        prefs.edit()
+                .putString("server_url", normalized)
+                .putString("token", token)
+                .putString("encryption_key_b64", key)
+                .putBoolean("inputs_locked", true)
+                .apply();
     }
 
     private List<String> normalizedUpdateUrls() {

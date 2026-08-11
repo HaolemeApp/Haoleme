@@ -16,6 +16,7 @@ from haoleme.cli import (
     HEARTBEAT_INTERVAL_SECONDS,
     ORPHANED_RUN_GRACE_SECONDS,
     acquire_process_file_lock,
+    build_pair_url,
     command_needs_shell,
     compare_versions,
     collect_cpu_stats,
@@ -245,6 +246,27 @@ class CliPairingTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         client_cls.assert_called_once_with(DEFAULT_CLOUD_URL)
+
+    def test_pairing_login_accepts_private_relay_as_positional_url(self):
+        relay = "https://hao.example.com"
+        with patch("haoleme.cli.PairingClient") as client_cls, \
+                patch("haoleme.cli.CloudConfig.load", return_value=None), \
+                patch("haoleme.cli.get_or_create_machine_id", return_value="machine_test"), \
+                patch("haoleme.cli.generate_pair_keypair", return_value=("public", "private")):
+            client_cls.return_value.start.side_effect = RuntimeError("stop")
+
+            exit_code = pairing_login_command([relay])
+
+        self.assertEqual(exit_code, 1)
+        client_cls.assert_called_once_with(relay)
+
+    def test_private_pair_qr_identifies_relay_protocol(self):
+        pair_url = build_pair_url("https://hao.example.com/", "123456")
+
+        self.assertIn("server=https%3A%2F%2Fhao.example.com", pair_url)
+        self.assertIn("code=123456", pair_url)
+        self.assertIn("mode=relay", pair_url)
+        self.assertIn("v=1", pair_url)
 
     def test_command_needs_shell_detects_shell_syntax(self):
         # Single tokens with shell metacharacters / whitespace run via the shell.

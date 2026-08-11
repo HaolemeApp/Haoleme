@@ -9,12 +9,12 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="好了么"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/AppTheme"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="false">
         <service
             android:name=".HaolemeForegroundService"
             android:exported="false"
