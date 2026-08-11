@@ -962,7 +962,10 @@ def reusable_login_device_id(
 
 def confirm_relogin(existing_config: CloudConfig) -> bool:
     print("好了么 is already logged in.")
-    print("Server: hidden")
+    server_label = login_server_label(existing_config.api_url)
+    print(f"Server: {server_label}")
+    if server_label == "Private Relay":
+        print(f"Address: {existing_config.api_url}")
     print(f"Account: {existing_config.account or 'default'}")
     if existing_config.device_name or existing_config.device_id:
         print(f"Device: {existing_config.device_name or existing_config.device_id}")
