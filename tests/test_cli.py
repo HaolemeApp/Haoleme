@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import redirect_stdout
 from unittest.mock import patch
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from haoleme.cli import (
     collect_cpu_stats,
     collect_gpu_stats,
     check_cli_update,
+    confirm_relogin,
     doctor_command,
     heartbeat_initial_delay,
     heartbeat_state_path,
@@ -398,6 +400,25 @@ class CliPairingTest(unittest.TestCase):
         self.assertTrue(should_continue_relogin("yes"))
         self.assertFalse(should_continue_relogin("n"))
         self.assertFalse(should_continue_relogin(" cancel "))
+
+    def test_relogin_prompt_labels_official_cloud_without_showing_url(self):
+        config = CloudConfig(api_url=DEFAULT_CLOUD_URL, account="default", token="x" * 32)
+        output = io.StringIO()
+        with patch("builtins.input", return_value="n"), redirect_stdout(output):
+            self.assertFalse(confirm_relogin(config))
+
+        self.assertIn("Server: Haoleme Cloud", output.getvalue())
+        self.assertNotIn(DEFAULT_CLOUD_URL, output.getvalue())
+
+    def test_relogin_prompt_labels_private_relay_and_shows_address(self):
+        relay = "https://relay.example.com"
+        config = CloudConfig(api_url=relay, account="default", token="x" * 32)
+        output = io.StringIO()
+        with patch("builtins.input", return_value="n"), redirect_stdout(output):
+            self.assertFalse(confirm_relogin(config))
+
+        self.assertIn("Server: Private Relay", output.getvalue())
+        self.assertIn("Address: " + relay, output.getvalue())
 
     def test_heartbeat_initial_delay_is_staggered_within_interval(self):
         first = CloudConfig(
