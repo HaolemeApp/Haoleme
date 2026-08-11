@@ -1510,6 +1510,16 @@ def launch_remote_rerun(run: RunRecord, target_run_id: str = "") -> int:
     return launch_remote_command(run.command, run.cwd, run.project, target_run_id)
 
 
+def remote_terminal_shell_command(command_text: str) -> list[str]:
+    """Run mobile terminal input through the machine's real command shell."""
+    if os.name == "nt":
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", command_text]
+    shell = os.environ.get("SHELL", "").strip()
+    if not shell or not Path(shell).is_file():
+        shell = "/bin/sh"
+    return [shell, "-lc", command_text]
+
+
 def request_system_shutdown() -> None:
     if os.name == "nt":
         candidates = [["shutdown", "/s", "/t", "0"]]
@@ -1608,7 +1618,12 @@ def apply_remote_actions(
                     raise RuntimeError("remote terminal command is empty or too long")
                 cwd = str(terminal.get("cwd") or Path.home())
                 project = str(terminal.get("project") or "Remote terminal")[:80]
-                launcher_pid = launch_remote_command([command_text], cwd, project, target_run_id)
+                launcher_pid = launch_remote_command(
+                    remote_terminal_shell_command(command_text),
+                    cwd,
+                    project,
+                    target_run_id,
+                )
                 status = "started"
                 detail = "terminal run launcher started"
                 messages.append(f"Remote terminal run started (pid {launcher_pid}).")

@@ -45,6 +45,7 @@ from haoleme.cli import (
     qr_matrix_to_terminal_lines,
     read_heartbeat_state,
     reconcile_orphaned_running_runs,
+    remote_terminal_shell_command,
     reusable_login_device_id,
     run_command,
     run_command_with_pipes,
@@ -172,22 +173,30 @@ class CliPairingTest(unittest.TestCase):
                 "action": "terminal",
                 "payload": encrypt_action_payload(
                     action_id,
-                    {"command": "echo terminal-ok", "project": "Remote"},
+                    {"command": "echo terminal-ok", "cwd": tmp, "project": "Remote"},
                     key,
                 ),
             }
 
-            with patch("haoleme.cli.launch_remote_command", return_value=7654) as launcher:
-                messages = apply_remote_actions(store, client, [action])
+            with patch.dict(os.environ, {"SHELL": "/bin/sh"}, clear=False):
+                with patch("haoleme.cli.launch_remote_command", return_value=7654) as launcher:
+                    messages = apply_remote_actions(store, client, [action])
 
             launcher.assert_called_once_with(
-                ["echo terminal-ok"],
-                str(Path.home()),
+                ["/bin/sh", "-lc", "echo terminal-ok"],
+                tmp,
                 "Remote",
                 action["targetRunId"],
             )
             self.assertIn("Remote terminal run started", messages[0])
             self.assertEqual(client.completed[0][1], "started")
+
+    def test_remote_terminal_shell_uses_login_shell(self):
+        with patch.dict(os.environ, {"SHELL": "/bin/sh"}, clear=False):
+            self.assertEqual(
+                remote_terminal_shell_command("pwd && echo ok"),
+                ["/bin/sh", "-lc", "pwd && echo ok"],
+            )
 
     def test_scheduled_shutdown_waits_for_run_and_executes_once(self):
         class ActionClient:

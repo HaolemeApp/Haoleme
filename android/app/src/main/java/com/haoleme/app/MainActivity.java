@@ -246,6 +246,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView consoleTopMoreButton;
     private EditText consoleSearchInput;
     private ScrollView consoleVerticalScroll;
+    private TextView remoteTerminalOutputView;
+    private TextView remoteTerminalStatusView;
+    private TextView remoteTerminalPathView;
+    private EditText remoteTerminalInput;
+    private TextView remoteTerminalSendButton;
+    private ScrollView remoteTerminalScroll;
     private boolean consoleSearchVisible = false;
     private boolean consoleAutoScroll = true;
     private int consoleRenderLimit = CONSOLE_RENDER_INITIAL_CHARS;
@@ -259,6 +265,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private String pendingRerunTargetRunId = "";
     private String pendingShutdownRunId = "";
     private String currentRunDeviceId = "";
+    private boolean remoteTerminalVisible = false;
+    private String remoteTerminalSourceRunId = "";
+    private String remoteTerminalDeviceId = "";
+    private String remoteTerminalDeviceName = "";
+    private String remoteTerminalCwd = "";
+    private String remoteTerminalProject = "";
+    private String remoteTerminalActiveRunId = "";
+    private String remoteTerminalLastOutput = "";
+    private boolean remoteTerminalPendingCd = false;
+    private int remoteTerminalPollAttempt = 0;
+    private final StringBuilder remoteTerminalTranscript = new StringBuilder();
     private String selectedDeviceId = "all";
     private String selectedProjectFilter = "all";
     private String latestDownloadUrl = "";
@@ -308,7 +325,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         @Override
         public void run() {
             try {
-                if (selectedRunId == null) {
+                if (remoteTerminalVisible) {
+                    // The terminal page has its own targeted poller. Avoid also
+                    // refreshing the source run while the user is in a session.
+                } else if (selectedRunId == null) {
                     refreshHome(false);
                 } else {
                     refreshRunDetail(selectedRunId, false);
@@ -318,6 +338,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 // or replace the UI with the startup-error screen. Keep polling.
             }
             handler.postDelayed(this, pollDelayMs());
+        }
+    };
+
+    private final Runnable remoteTerminalPollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (remoteTerminalVisible && !remoteTerminalActiveRunId.isEmpty()) {
+                refreshRemoteTerminalRun(remoteTerminalActiveRunId);
+            }
         }
     };
 
@@ -437,6 +466,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
     public void onBackPressed() {
         if (scannerVisible) {
             closeScanner();
+            return;
+        }
+        if (remoteTerminalVisible) {
+            closeRemoteTerminalPage();
             return;
         }
         if (selectedRunId != null) {
@@ -5777,7 +5810,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         consoleTerminalButton = actionButton(actionLabel("›_", t("remote_terminal"), 1.05f));
         consoleTerminalButton.setTextColor(isDarkTheme() ? color("#86EFAC") : color("#15803D"));
-        consoleTerminalButton.setOnClickListener(v -> showRemoteTerminalDialog());
+        consoleTerminalButton.setOnClickListener(v -> showRemoteTerminalPage());
         LinearLayout.LayoutParams terminalActionParams = new LinearLayout.LayoutParams(0, dp(42), 1);
         terminalActionParams.setMargins(dp(4), 0, 0, 0);
         consoleTerminalButton.setVisibility(View.GONE);
@@ -6231,56 +6264,215 @@ public class MainActivity extends Activity implements LifecycleOwner {
         });
     }
 
-    private void showRemoteTerminalDialog() {
+    private void showRemoteTerminalPage() {
         if (currentRunDeviceId == null || currentRunDeviceId.isEmpty()) {
             return;
         }
-        EditText input = new EditText(this);
-        input.setSingleLine(false);
-        input.setMinLines(2);
-        input.setMaxLines(5);
-        input.setTextSize(14);
-        input.setTextColor(textPrimary());
-        input.setHintTextColor(textSecondary());
-        input.setHint(isEnglish() ? "e.g. nvidia-smi" : "例如：nvidia-smi");
-        input.setTypeface(Typeface.MONOSPACE);
-        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        LinearLayout wrapper = new LinearLayout(this);
-        wrapper.setPadding(dp(20), dp(4), dp(20), 0);
-        wrapper.addView(input, matchWrap());
-        AlertDialog dialog = dialogBuilder()
-                .setTitle(t("terminal_command"))
-                .setMessage(isEnglish()
-                        ? "Runs once as a new monitored task. Interactive passwords and sudo prompts are not supported."
-                        : "命令会作为新的监控任务运行一次，不支持交互式密码或 sudo 提示。")
-                .setView(wrapper)
-                .setNegativeButton(t("cancel"), null)
-                .setPositiveButton(isEnglish() ? "Run" : "运行", null)
-                .create();
-        applyDialogStyle(dialog);
-        dialog.setOnShowListener(ignored -> dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener(v -> {
-            String command = input.getText().toString().trim();
-            if (command.isEmpty()) {
-                input.setError(isEnglish() ? "Enter a command" : "请输入命令");
-                return;
+        remoteTerminalVisible = true;
+        remoteTerminalSourceRunId = selectedRunId == null ? "" : selectedRunId;
+        remoteTerminalDeviceId = currentRunDeviceId;
+        remoteTerminalDeviceName = currentRunDetail == null
+                ? deviceNames.getOrDefault(currentRunDeviceId, currentRunDeviceId)
+                : currentRunDetail.optString("deviceName", deviceNames.getOrDefault(currentRunDeviceId, currentRunDeviceId));
+        remoteTerminalCwd = currentRunDetail == null ? "" : currentRunDetail.optString("cwd", "").trim();
+        remoteTerminalProject = currentRunDetail == null
+                ? "Remote terminal"
+                : currentRunDetail.optString("project", "Remote terminal");
+        remoteTerminalActiveRunId = "";
+        remoteTerminalLastOutput = "";
+        remoteTerminalPendingCd = false;
+        remoteTerminalTranscript.setLength(0);
+        remoteTerminalTranscript.append(isEnglish() ? "Connected to " : "已连接到 ")
+                .append(remoteTerminalDeviceName.isEmpty() ? remoteTerminalDeviceId : remoteTerminalDeviceName)
+                .append('\n');
+        buildRemoteTerminalUi();
+    }
+
+    private void buildRemoteTerminalUi() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(16), statusBarHeight() + dp(12), dp(16), navigationBarHeight() + dp(14));
+        root.setBackgroundColor(appBg());
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView back = circleIconButton("‹");
+        back.setTextSize(28);
+        back.setOnClickListener(v -> closeRemoteTerminalPage());
+        top.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+        TextView title = new TextView(this);
+        title.setText(isEnglish() ? "Terminal" : "终端");
+        title.setTextSize(22);
+        title.setTextColor(textPrimary());
+        title.setTypeface(null, Typeface.BOLD);
+        title.setGravity(Gravity.CENTER);
+        top.addView(title, new LinearLayout.LayoutParams(0, dp(44), 1));
+        top.addView(new View(this), new LinearLayout.LayoutParams(dp(44), dp(44)));
+        root.addView(top, matchWrap());
+
+        LinearLayout sessionBar = new LinearLayout(this);
+        sessionBar.setOrientation(LinearLayout.VERTICAL);
+        sessionBar.setPadding(dp(14), dp(10), dp(14), dp(10));
+        sessionBar.setBackground(roundedBg(cardBg(), 16, cardStroke()));
+
+        remoteTerminalPathView = new TextView(this);
+        remoteTerminalPathView.setTextSize(12);
+        remoteTerminalPathView.setTextColor(textPrimary());
+        remoteTerminalPathView.setTypeface(Typeface.MONOSPACE);
+        remoteTerminalPathView.setSingleLine(true);
+        remoteTerminalPathView.setEllipsize(android.text.TextUtils.TruncateAt.START);
+        sessionBar.addView(remoteTerminalPathView, matchWrap());
+
+        remoteTerminalStatusView = new TextView(this);
+        remoteTerminalStatusView.setText(isEnglish() ? "Ready" : "就绪");
+        remoteTerminalStatusView.setTextSize(11);
+        remoteTerminalStatusView.setTextColor(textSecondary());
+        remoteTerminalStatusView.setPadding(0, dp(3), 0, 0);
+        sessionBar.addView(remoteTerminalStatusView, matchWrap());
+        updateRemoteTerminalPath();
+
+        LinearLayout.LayoutParams sessionParams = matchWrap();
+        sessionParams.setMargins(0, dp(12), 0, dp(10));
+        root.addView(sessionBar, sessionParams);
+
+        LinearLayout terminal = new LinearLayout(this);
+        terminal.setOrientation(LinearLayout.VERTICAL);
+        terminal.setBackground(roundedBg(color("#111315"), 18, color("#30343A")));
+
+        LinearLayout terminalHeader = new LinearLayout(this);
+        terminalHeader.setOrientation(LinearLayout.HORIZONTAL);
+        terminalHeader.setGravity(Gravity.CENTER_VERTICAL);
+        terminalHeader.setPadding(dp(14), dp(10), dp(14), dp(9));
+        terminalHeader.setBackground(roundedBg(color("#1B1E22"), 18, Color.TRANSPARENT));
+        terminalHeader.addView(terminalDots(), new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+        TextView shellTitle = new TextView(this);
+        shellTitle.setText(remoteTerminalDeviceName.isEmpty() ? "shell" : remoteTerminalDeviceName);
+        shellTitle.setTextSize(11);
+        shellTitle.setTextColor(color("#A7ADB7"));
+        shellTitle.setGravity(Gravity.CENTER);
+        shellTitle.setSingleLine(true);
+        shellTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams shellTitleParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        shellTitleParams.setMargins(dp(8), 0, dp(48), 0);
+        terminalHeader.addView(shellTitle, shellTitleParams);
+        terminal.addView(terminalHeader, matchWrap());
+
+        remoteTerminalScroll = new ScrollView(this);
+        remoteTerminalScroll.setFillViewport(true);
+        remoteTerminalOutputView = new TextView(this);
+        remoteTerminalOutputView.setText(remoteTerminalTranscript.toString());
+        remoteTerminalOutputView.setTextSize(12);
+        remoteTerminalOutputView.setTextColor(color("#E8EAED"));
+        remoteTerminalOutputView.setTypeface(Typeface.MONOSPACE);
+        remoteTerminalOutputView.setTextIsSelectable(true);
+        remoteTerminalOutputView.setLineSpacing(dp(2), 1f);
+        remoteTerminalOutputView.setPadding(dp(14), dp(14), dp(14), dp(14));
+        remoteTerminalScroll.addView(remoteTerminalOutputView, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT
+        ));
+        terminal.addView(remoteTerminalScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
+
+        LinearLayout inputRow = new LinearLayout(this);
+        inputRow.setOrientation(LinearLayout.HORIZONTAL);
+        inputRow.setGravity(Gravity.CENTER_VERTICAL);
+        inputRow.setPadding(dp(12), dp(8), dp(8), dp(8));
+        inputRow.setBackground(roundedBg(color("#181B1F"), 0, color("#30343A")));
+
+        TextView prompt = new TextView(this);
+        prompt.setText("$");
+        prompt.setTextSize(17);
+        prompt.setTextColor(color("#4ADE80"));
+        prompt.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        inputRow.addView(prompt, new LinearLayout.LayoutParams(dp(24), dp(44)));
+
+        remoteTerminalInput = new EditText(this);
+        remoteTerminalInput.setSingleLine(true);
+        remoteTerminalInput.setTextSize(14);
+        remoteTerminalInput.setTextColor(color("#F8FAFC"));
+        remoteTerminalInput.setHintTextColor(color("#737A84"));
+        remoteTerminalInput.setHint(isEnglish() ? "Type a command" : "输入命令");
+        remoteTerminalInput.setTypeface(Typeface.MONOSPACE);
+        remoteTerminalInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        remoteTerminalInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEND);
+        remoteTerminalInput.setBackgroundColor(Color.TRANSPARENT);
+        remoteTerminalInput.setPadding(dp(4), 0, dp(8), 0);
+        inputRow.addView(remoteTerminalInput, new LinearLayout.LayoutParams(0, dp(48), 1));
+
+        remoteTerminalSendButton = circleIconButton("↑");
+        remoteTerminalSendButton.setTextSize(20);
+        remoteTerminalSendButton.setTextColor(color("#FFFFFF"));
+        remoteTerminalSendButton.setBackground(roundedBg(color("#2563EB"), 99, Color.TRANSPARENT));
+        remoteTerminalSendButton.setOnClickListener(v -> submitRemoteTerminalInput());
+        inputRow.addView(remoteTerminalSendButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        remoteTerminalInput.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND
+                    || (event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER)) {
+                submitRemoteTerminalInput();
+                return true;
             }
-            dialog.dismiss();
-            submitRemoteTerminalCommand(currentRunDeviceId, command);
-        }));
-        dialog.show();
+            return false;
+        });
+        terminal.addView(inputRow, matchWrap());
+
+        root.addView(terminal, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
+        setContentView(root);
+        remoteTerminalInput.requestFocus();
+    }
+
+    private void submitRemoteTerminalInput() {
+        if (remoteTerminalInput == null || !remoteTerminalActiveRunId.isEmpty()) {
+            return;
+        }
+        String command = remoteTerminalInput.getText().toString().trim();
+        if (command.isEmpty()) {
+            return;
+        }
+        remoteTerminalInput.setText("");
+        if ("clear".equals(command)) {
+            remoteTerminalTranscript.setLength(0);
+            updateRemoteTerminalOutput();
+            return;
+        }
+        if ("exit".equals(command)) {
+            closeRemoteTerminalPage();
+            return;
+        }
+        appendRemoteTerminal(promptPath() + " $ " + command + "\n");
+        remoteTerminalPendingCd = command.equals("cd") || command.startsWith("cd ");
+        String executableCommand = remoteTerminalPendingCd
+                ? command + " && pwd"
+                : command;
+        submitRemoteTerminalCommand(remoteTerminalDeviceId, executableCommand);
     }
 
     private void submitRemoteTerminalCommand(String deviceId, String command) {
         String actionId = "action_" + UUID.randomUUID().toString().replace("-", "");
         String runId = UUID.randomUUID().toString();
-        if (statusText != null) {
-            statusText.setText(isEnglish() ? "Sending encrypted terminal task..." : "正在发送加密终端任务...");
-        }
+        remoteTerminalActiveRunId = runId;
+        remoteTerminalLastOutput = "";
+        remoteTerminalPollAttempt = 0;
+        setRemoteTerminalBusy(true, isEnglish() ? "Starting shell command..." : "正在启动 shell 命令...");
         submitBackground(() -> {
             try {
                 JSONObject cleartext = new JSONObject()
                         .put("command", command)
-                        .put("project", currentRunDetail == null ? "Remote terminal" : currentRunDetail.optString("project", "Remote terminal"));
+                        .put("cwd", remoteTerminalCwd)
+                        .put("project", remoteTerminalProject);
                 JSONObject body = new JSONObject()
                         .put("actionId", actionId)
                         .put("runId", runId)
@@ -6290,19 +6482,183 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         body.toString()
                 );
                 handler.post(() -> {
-                    if (statusText != null) {
-                        statusText.setText((isEnglish() ? "New terminal task is starting" : "新终端任务正在启动")
-                                + " · " + runId.substring(0, 8));
+                    if (!remoteTerminalVisible || !runId.equals(remoteTerminalActiveRunId)) {
+                        return;
                     }
+                    remoteTerminalStatusView.setText((isEnglish() ? "Running" : "运行中")
+                            + " · " + runId.substring(0, 8));
+                    handler.removeCallbacks(remoteTerminalPollRunnable);
+                    handler.postDelayed(remoteTerminalPollRunnable, 220L);
                 });
             } catch (Exception e) {
                 handler.post(() -> {
-                    if (statusText != null) {
-                        statusText.setText(remoteActionFailureMessage(e, isEnglish() ? "Terminal" : "终端"));
+                    if (!runId.equals(remoteTerminalActiveRunId)) {
+                        return;
                     }
+                    remoteTerminalActiveRunId = "";
+                    appendRemoteTerminal((isEnglish() ? "Terminal failed: " : "终端失败：") + e.getMessage() + "\n");
+                    setRemoteTerminalBusy(false, isEnglish() ? "Ready" : "就绪");
                 });
             }
         });
+    }
+
+    private void refreshRemoteTerminalRun(String runId) {
+        if (!remoteTerminalVisible || runId == null || !runId.equals(remoteTerminalActiveRunId)) {
+            return;
+        }
+        submitBackground(() -> {
+            try {
+                JSONObject payload = new JSONObject(httpGet(
+                        normalizedServerUrl() + "/api/runs/" + Uri.encode(runId),
+                        HTTP_LIST_READ_TIMEOUT_MS
+                ));
+                JSONObject run = decryptRun(payload.getJSONObject("run"), payload.optJSONArray("outputChunks"));
+                String output = consoleOutput(run);
+                String status = run.optString("status", "created");
+                int exitCode = run.optInt("exitCode", 0);
+                handler.post(() -> applyRemoteTerminalRun(runId, output, status, exitCode));
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (!remoteTerminalVisible || !runId.equals(remoteTerminalActiveRunId)) {
+                        return;
+                    }
+                    remoteTerminalPollAttempt++;
+                    if (remoteTerminalStatusView != null && remoteTerminalPollAttempt > 2) {
+                        remoteTerminalStatusView.setText(isEnglish() ? "Waiting for device..." : "正在等待设备...");
+                    }
+                    handler.postDelayed(remoteTerminalPollRunnable, 900L);
+                });
+            }
+        });
+    }
+
+    private void applyRemoteTerminalRun(String runId, String output, String status, int exitCode) {
+        if (!remoteTerminalVisible || !runId.equals(remoteTerminalActiveRunId)) {
+            return;
+        }
+        remoteTerminalPollAttempt = 0;
+        String cleanOutput = output == null || isNoOutputPlaceholder(output) ? "" : output;
+        if (!cleanOutput.equals(remoteTerminalLastOutput)) {
+            if (cleanOutput.startsWith(remoteTerminalLastOutput)) {
+                appendRemoteTerminal(cleanOutput.substring(remoteTerminalLastOutput.length()));
+            } else if (!cleanOutput.isEmpty()) {
+                appendRemoteTerminal(cleanOutput);
+            }
+            remoteTerminalLastOutput = cleanOutput;
+        }
+        boolean active = "created".equals(status) || "running".equals(status);
+        if (active) {
+            if (remoteTerminalStatusView != null) {
+                remoteTerminalStatusView.setText(isEnglish() ? "Running" : "运行中");
+            }
+            handler.postDelayed(remoteTerminalPollRunnable, 900L);
+            return;
+        }
+        if (remoteTerminalPendingCd && "succeeded".equals(status)) {
+            String newPath = lastNonEmptyLine(cleanOutput);
+            if (!newPath.isEmpty()) {
+                remoteTerminalCwd = newPath;
+                updateRemoteTerminalPath();
+            }
+        }
+        if (!"succeeded".equals(status)) {
+            appendRemoteTerminal("\n[" + status + " · exit " + exitCode + "]\n");
+        } else if (!remoteTerminalTranscript.toString().endsWith("\n")) {
+            appendRemoteTerminal("\n");
+        }
+        remoteTerminalActiveRunId = "";
+        remoteTerminalPendingCd = false;
+        setRemoteTerminalBusy(false, isEnglish() ? "Ready" : "就绪");
+    }
+
+    private void setRemoteTerminalBusy(boolean busy, String status) {
+        if (remoteTerminalInput != null) {
+            remoteTerminalInput.setEnabled(!busy);
+            remoteTerminalInput.setAlpha(busy ? 0.58f : 1f);
+        }
+        if (remoteTerminalSendButton != null) {
+            remoteTerminalSendButton.setEnabled(!busy);
+            remoteTerminalSendButton.setAlpha(busy ? 0.5f : 1f);
+        }
+        if (remoteTerminalStatusView != null) {
+            remoteTerminalStatusView.setText(status);
+        }
+        if (!busy && remoteTerminalInput != null) {
+            if (remoteTerminalOutputView != null) {
+                remoteTerminalOutputView.clearFocus();
+            }
+            remoteTerminalInput.postDelayed(() -> remoteTerminalInput.requestFocus(), 60L);
+        }
+    }
+
+    private void appendRemoteTerminal(String text) {
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        String rendered = displayText(renderTerminalText(text));
+        remoteTerminalTranscript.append(rendered);
+        if ((text.endsWith("\n") || text.endsWith("\r"))
+                && !rendered.endsWith("\n")
+                && !rendered.endsWith("\r")) {
+            remoteTerminalTranscript.append('\n');
+        }
+        updateRemoteTerminalOutput();
+    }
+
+    private void updateRemoteTerminalOutput() {
+        if (remoteTerminalOutputView != null) {
+            remoteTerminalOutputView.setText(remoteTerminalTranscript.toString());
+        }
+        if (remoteTerminalScroll != null) {
+            remoteTerminalScroll.post(() -> remoteTerminalScroll.fullScroll(View.FOCUS_DOWN));
+        }
+    }
+
+    private void updateRemoteTerminalPath() {
+        if (remoteTerminalPathView != null) {
+            remoteTerminalPathView.setText("⌁  " + promptPath());
+        }
+    }
+
+    private String promptPath() {
+        return remoteTerminalCwd == null || remoteTerminalCwd.isEmpty() ? "~" : remoteTerminalCwd;
+    }
+
+    private String lastNonEmptyLine(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        String[] lines = text.replace("\r", "").split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            if (!line.isEmpty()) {
+                return line;
+            }
+        }
+        return "";
+    }
+
+    private void closeRemoteTerminalPage() {
+        handler.removeCallbacks(remoteTerminalPollRunnable);
+        remoteTerminalVisible = false;
+        remoteTerminalActiveRunId = "";
+        String sourceRunId = remoteTerminalSourceRunId;
+        remoteTerminalSourceRunId = "";
+        if (sourceRunId == null || sourceRunId.isEmpty()) {
+            returnToList();
+            return;
+        }
+        selectedRunId = sourceRunId;
+        selectedRunStatus = "";
+        consoleOutputSyncedLength = 0;
+        outputChunkSyncedCount = 0;
+        consoleIncrementalUsesChunks = false;
+        currentConsoleOutput = "";
+        currentConsoleStoredBytes = 0L;
+        buildConsoleUi();
+        loadCachedRunDetail(sourceRunId);
+        refreshRunDetail(sourceRunId, true);
     }
 
     private String remoteActionFailureMessage(Exception error, String feature) {
