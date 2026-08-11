@@ -810,27 +810,34 @@ def pairing_login_command(argv: Sequence[str]) -> int:
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--new-device", action="store_true", help="Ignore the saved device id and pair this machine as a new device.")
     parser.add_argument("--reuse-saved-device", action="store_true", help="Trust and reuse the saved device id, then bind it to this machine.")
-    parser.add_argument("--yes", "-y", action="store_true", help="Re-login without prompting when 好了么 is already logged in.")
+    parser.add_argument("--yes", "-y", action="store_true", help="Skip login prompts and use the default or explicitly supplied relay.")
     ns = parser.parse_args(argv)
 
     supplied_urls = [value.strip().rstrip("/") for value in (ns.relay_url, ns.relay, ns.api_url) if value.strip()]
     if len(set(supplied_urls)) > 1:
         parser.error("provide the relay URL only once")
-    raw_api_url = (
-        supplied_urls[0]
-        if supplied_urls
-        else os.environ.get("HAOLEME_RELAY_URL", "").strip().rstrip("/")
-        or os.environ.get("HAOLEME_CLOUD_URL", DEFAULT_CLOUD_URL).strip().rstrip("/")
+    existing_config = CloudConfig.load()
+    if existing_config is not None and not ns.yes and not confirm_relogin(existing_config):
+        return 0
+
+    configured_url = (
+        os.environ.get("HAOLEME_RELAY_URL", "").strip().rstrip("/")
+        or os.environ.get("HAOLEME_CLOUD_URL", "").strip().rstrip("/")
     )
+    if supplied_urls:
+        raw_api_url = supplied_urls[0]
+    elif configured_url:
+        raw_api_url = configured_url
+    elif not ns.yes and stdin_is_interactive():
+        raw_api_url = prompt_login_relay_url()
+    else:
+        raw_api_url = DEFAULT_CLOUD_URL
     try:
         api_url = normalize_relay_login_url(raw_api_url)
     except ValueError as exc:
         parser.error(str(exc))
     client = PairingClient(api_url)
     machine_id = get_or_create_machine_id()
-    existing_config = CloudConfig.load()
-    if existing_config is not None and not ns.yes and not confirm_relogin(existing_config):
-        return 0
     existing_device_id = reusable_login_device_id(existing_config, api_url, machine_id, ns.new_device, ns.reuse_saved_device)
     public_key, private_key = generate_pair_keypair()
     try:
@@ -1733,6 +1740,35 @@ def normalize_relay_login_url(raw: str) -> str:
     raise ValueError(
         "relay must use HTTPS; plain HTTP is allowed only for localhost or a private LAN IP"
     )
+
+
+def stdin_is_interactive() -> bool:
+    return sys.stdin is not None and sys.stdin.isatty()
+
+
+def prompt_login_relay_url() -> str:
+    print("Choose where Haoleme should connect:")
+    print("  1. Haoleme Cloud (recommended, no setup)")
+    print("  2. Private Relay (self-hosted)")
+    while True:
+        try:
+            choice = input("Select [1]: ").strip().lower()
+        except EOFError:
+            return DEFAULT_CLOUD_URL
+        if choice in {"", "1", "cloud", "official"}:
+            return DEFAULT_CLOUD_URL
+        if choice not in {"2", "private", "relay", "self-hosted", "selfhosted"}:
+            print("Please enter 1 or 2.")
+            continue
+        while True:
+            try:
+                value = input("Private Relay address (HTTPS or LAN IP:port): ").strip()
+            except EOFError:
+                return DEFAULT_CLOUD_URL
+            try:
+                return normalize_relay_login_url(value)
+            except ValueError as exc:
+                print(f"Invalid Relay address: {exc}")
 
 
 def is_local_relay_host(host: str) -> bool:

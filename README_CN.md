@@ -79,7 +79,7 @@ pip install -U haoleme
 hao login
 ```
 
-打开 App，扫码或输入 6 位配对码。
+选择好了么官方云或自建私有 Relay，然后打开 App 扫码或输入 6 位配对码。
 
 ### 4. 运行命令
 
