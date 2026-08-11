@@ -13,9 +13,9 @@
     "notes": "修复长时间训练日志停止更新的问题，控制台历史默认提升至 100MB，并改为手机本地按需加载。"
   },
   "python": {
-    "version": "0.4.29",
-    "packageUrl": "https://pypi.org/project/haoleme/",
-    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/cli-v0.4.29/haoleme-0.4.29-py3-none-any.whl",
-    "notes": "Adds self-hosted Private Relay support, trusted LAN mode, and guided Relay setup inside hao login. / 新增自建 Private Relay、可信局域网模式，以及 hao login 内置的 Relay 配置流程。"
+    "version": "0.5.0",
+    "packageUrl": "haoleme",
+    "wheelUrl": "",
+    "notes": "Adds instant remote actions for Private Relay, a dedicated mobile terminal rooted at the current run directory, and reliable rerun state tracking. / 新增 Private Relay 即时远程操作、默认进入当前任务目录的手机终端，以及可靠的重新运行状态跟踪。"
   }
 }
