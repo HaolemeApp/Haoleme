@@ -432,6 +432,50 @@ class CloudServerDeviceTest(unittest.TestCase):
                 thread.join(timeout=2)
                 server.server_close()
 
+    def test_action_wait_wakes_immediately_when_rerun_is_queued(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 66)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            account_key = "account-action-wait"
+            device_id = "dev_action_wait"
+            device_token = "device-token-action-wait-123456"
+            app_token = "app-token-action-wait-123456789"
+            result = {}
+            try:
+                store_device_token(db_path, account_key, device_id, "Local Mac", device_token, iso_now())
+                store_app_token(db_path, account_key, "app_test", "Test App", "android", app_token, iso_now())
+                upsert_device(db_path, account_key, device_id, "Local Mac", iso_now())
+                upsert_run(db_path, account_key, self.sample_run("run-action-wait", device_id, "Local Mac", "running"))
+
+                def wait_for_action():
+                    request = urllib.request.Request(
+                        base + "/api/devices/actions/wait?timeout=5",
+                        headers={"Authorization": "Bearer " + device_token},
+                        method="GET",
+                    )
+                    started = time.monotonic()
+                    with urllib.request.urlopen(request, timeout=7) as response:
+                        result["payload"] = json.loads(response.read().decode("utf-8"))
+                    result["elapsed"] = time.monotonic() - started
+
+                waiter = threading.Thread(target=wait_for_action)
+                waiter.start()
+                time.sleep(0.15)
+                queued = self.post_json(base + "/api/runs/run-action-wait/rerun", {}, token=app_token)
+                waiter.join(timeout=3)
+
+                self.assertFalse(waiter.is_alive())
+                self.assertLess(result["elapsed"], 2.0)
+                self.assertEqual(result["payload"]["actions"][0]["id"], queued["action"]["id"])
+                self.assertEqual(result["payload"]["actions"][0]["targetRunId"], queued["action"]["targetRunId"])
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
     def test_pair_confirm_reuses_matching_existing_device_for_app_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"

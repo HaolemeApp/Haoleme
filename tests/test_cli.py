@@ -55,6 +55,7 @@ from haoleme.cli import (
     stream_output,
     sync_pending_runs,
     terminate_windows_process,
+    uses_private_relay,
     write_update_check_cache,
     write_heartbeat_state,
     _parse_windows_gpu_payload,
@@ -88,6 +89,13 @@ class BrokenTarget:
 
 
 class CliPairingTest(unittest.TestCase):
+    def test_instant_action_channel_is_limited_to_private_relays(self):
+        private = CloudConfig("http://192.168.1.20:8000", "default", "x" * 32)
+        official = CloudConfig(DEFAULT_CLOUD_URL, "default", "x" * 32)
+
+        self.assertTrue(uses_private_relay(private))
+        self.assertFalse(uses_private_relay(official))
+
     def test_stop_is_cancel_command_alias(self):
         with patch("haoleme.cli.cancel_command", return_value=0) as cancel:
             self.assertEqual(main(["stop", "run-123"]), 0)

@@ -5975,7 +5975,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         consoleRerunButton.setEnabled(hasDevice && visible && !pending);
         consoleRerunButton.setAlpha(pending ? 0.62f : 1f);
         consoleRerunButton.setText(actionLabel("↻", pending
-                ? (isEnglish() ? "Queued" : "已排队")
+                ? (isEnglish() ? "Starting" : "启动中")
                 : t("rerun"), 1.18f));
     }
 
@@ -6083,8 +6083,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     if (statusText != null) {
                         String suffix = newRunId.isEmpty() ? "" : " · " + newRunId.substring(0, Math.min(8, newRunId.length()));
                         statusText.setText((isEnglish()
-                                ? "New run queued"
-                                : "新任务已排队") + suffix);
+                                ? "New run is starting"
+                                : "新任务正在启动") + suffix);
                     }
                     updateConsoleRerunButton(true);
                 });
@@ -6223,7 +6223,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 );
                 handler.post(() -> {
                     if (statusText != null) {
-                        statusText.setText((isEnglish() ? "New terminal task queued" : "新终端任务已排队")
+                        statusText.setText((isEnglish() ? "New terminal task is starting" : "新终端任务正在启动")
                                 + " · " + runId.substring(0, 8));
                     }
                 });

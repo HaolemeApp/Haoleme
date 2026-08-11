@@ -64,6 +64,7 @@ ORPHANED_RUN_GRACE_SECONDS = 30
 INTERRUPT_NOTE = "\n[好了么] Interrupted from mobile app.\n"
 OUTPUT_STORE_BATCH_CHARS = 64 * 1024
 OUTPUT_STORE_FLUSH_SECONDS = 0.25
+REMOTE_ACTION_WAIT_SECONDS = 25
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1583,7 +1584,11 @@ def apply_remote_actions(
                 messages.append(f"Remote rerun acknowledgement pending: {describe_cloud_error(exc)}")
             continue
 
-        store.reserve_remote_action(action_id, source_run_id, action, target_run_id)
+        if not store.reserve_remote_action(action_id, source_run_id, action, target_run_id):
+            # The heartbeat and the instant-action watcher can receive the same
+            # leased action at nearly the same time. Only the process that won
+            # the durable reservation may launch it.
+            continue
         launcher_pid = None
         if action == "shutdown_after_run":
             run = store.get_run(source_run_id)
@@ -1662,6 +1667,54 @@ def apply_scheduled_shutdowns(store: RunStore, client: CloudClient) -> list[str]
     return messages
 
 
+def uses_private_relay(config: CloudConfig) -> bool:
+    return config.api_url.rstrip("/") != DEFAULT_CLOUD_URL.rstrip("/")
+
+
+class RemoteActionWatcher:
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.last_error = ""
+
+    def start(self) -> None:
+        config = CloudConfig.load()
+        if config is None or not uses_private_relay(config):
+            return
+        self._thread = threading.Thread(target=self._loop, name="haoleme-actions", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+
+    def _loop(self) -> None:
+        failures = 0
+        while not self._stop.is_set():
+            config = CloudConfig.load()
+            if config is None or not uses_private_relay(config):
+                self._stop.wait(5)
+                continue
+            client = CloudClient(config, timeout=REMOTE_ACTION_WAIT_SECONDS + 5)
+            try:
+                payload = client.wait_remote_actions(REMOTE_ACTION_WAIT_SECONDS)
+                store = RunStore()
+                for message in apply_remote_actions(store, client, payload.get("actions")):
+                    print(message, flush=True)
+                interrupted = apply_interrupt_items(store, client, payload.get("interrupts"))
+                if interrupted:
+                    print(f"Applied {interrupted} remote stop request(s).", flush=True)
+                for message in apply_scheduled_shutdowns(store, client):
+                    print(message, flush=True)
+                failures = 0
+                self.last_error = ""
+            except Exception as exc:
+                self.last_error = describe_cloud_error(exc)
+                failures = min(failures + 1, 6)
+                self._stop.wait(min(30.0, float(2 ** (failures - 1))))
+
+
 def heartbeat_run_foreground() -> int:
     config = CloudConfig.load()
     if config is None:
@@ -1676,6 +1729,8 @@ def heartbeat_run_foreground() -> int:
     pid_path = heartbeat_pid_path()
     pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
     previous_sighup = ignore_sighup()
+    action_watcher = RemoteActionWatcher()
+    action_watcher.start()
     write_heartbeat_state(haolemeVersion=__version__)
     delay = heartbeat_initial_delay(config)
     print(f"好了么 heartbeat started. First heartbeat in {delay}s, then every {HEARTBEAT_INTERVAL_SECONDS}s.", flush=True)
@@ -1788,6 +1843,7 @@ def heartbeat_run_foreground() -> int:
         print("好了么 heartbeat stopped.", flush=True)
         return 130
     finally:
+        action_watcher.stop()
         if read_heartbeat_pid() == os.getpid():
             unlink_missing(pid_path)
         restore_sighup(previous_sighup)
@@ -2801,8 +2857,23 @@ def kill_process_tree(pid: int) -> None:
 
 
 def apply_cloud_interrupts(store: RunStore, client: CloudClient, deadline: float | None = None) -> int:
+    return apply_interrupt_items(store, client, client.list_pending_interrupts(), deadline=deadline)
+
+
+def apply_interrupt_items(
+    store: RunStore,
+    client: CloudClient,
+    items: object,
+    deadline: float | None = None,
+) -> int:
+    if not isinstance(items, list):
+        return 0
     applied = 0
-    pending_ids = {str(item.get("id") or "") for item in client.list_pending_interrupts() if item.get("id")}
+    pending_ids = {
+        str(item.get("id") or "")
+        for item in items
+        if isinstance(item, dict) and item.get("id")
+    }
     if not pending_ids:
         return 0
     for run in store.list_active_runs(limit=100):

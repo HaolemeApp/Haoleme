@@ -54,6 +54,7 @@ SPACE_JOIN_CODE_TTL_SECONDS = 300
 DEFAULT_MAX_REQUEST_THREADS = 32
 REMOTE_ACTION_LEASE_SECONDS = 120
 REMOTE_ACTIONS_PER_HEARTBEAT = 3
+REMOTE_ACTION_WAIT_MAX_SECONDS = 25
 
 
 @dataclass(frozen=True)
@@ -103,7 +104,20 @@ class HaolemeCloudServer(ThreadingHTTPServer):
         self.read_attempts_lock = threading.Lock()
         self.write_attempts: dict[str, list[float]] = {}
         self.write_attempts_lock = threading.Lock()
+        self.action_condition = threading.Condition()
+        self.action_generation = 0
         init_db(db_path)
+
+    def notify_action_waiters(self) -> None:
+        with self.action_condition:
+            self.action_generation += 1
+            self.action_condition.notify_all()
+
+    def wait_for_action_notification(self, generation: int, timeout: float) -> int:
+        with self.action_condition:
+            if self.action_generation == generation:
+                self.action_condition.wait(timeout=max(0.0, timeout))
+            return self.action_generation
 
     def process_request(self, request, client_address) -> None:
         self.request_slots.acquire()
@@ -180,6 +194,21 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                     )
                 }
             )
+            return
+
+        if parsed.path == "/api/devices/actions/wait":
+            if auth.scope != "write":
+                self.send_json({"error": "write token required", "code": "write_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            if not auth.device_id:
+                self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            query = parse_qs(parsed.query)
+            try:
+                wait_seconds = int(first_query_value(query, "timeout") or REMOTE_ACTION_WAIT_MAX_SECONDS)
+            except ValueError:
+                wait_seconds = REMOTE_ACTION_WAIT_MAX_SECONDS
+            self.wait_for_remote_actions(auth, max(1, min(wait_seconds, REMOTE_ACTION_WAIT_MAX_SECONDS)))
             return
 
         if parsed.path.startswith("/api/runs/"):
@@ -430,6 +459,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         if error_code == "run_not_active":
             self.send_json({"error": "run is not active", "code": "run_not_active"}, status=HTTPStatus.CONFLICT)
             return
+        self.server.notify_action_waiters()
         self.send_json(
             {
                 "ok": True,
@@ -448,6 +478,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         if error_code == "device_not_found":
             self.send_json({"error": "run has no linked device", "code": "device_not_found"}, status=HTTPStatus.CONFLICT)
             return
+        self.server.notify_action_waiters()
         self.send_json({"ok": True, "action": result or {}})
 
     def schedule_run_shutdown(self, auth: AuthContext, run_id: str) -> None:
@@ -471,6 +502,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         if error_code == "device_not_found":
             self.send_json({"error": "run has no linked device", "code": "device_not_found"}, status=HTTPStatus.CONFLICT)
             return
+        self.server.notify_action_waiters()
         self.send_json({"ok": True, "shutdownAfterRun": enabled, "action": result or {}})
 
     def start_terminal_run(self, auth: AuthContext, device_id: str) -> None:
@@ -495,7 +527,32 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         if error_code:
             self.send_json({"error": "invalid terminal request", "code": error_code}, status=HTTPStatus.BAD_REQUEST)
             return
+        self.server.notify_action_waiters()
         self.send_json({"ok": True, "action": result or {}})
+
+    def wait_for_remote_actions(self, auth: AuthContext, wait_seconds: int) -> None:
+        deadline = time.monotonic() + wait_seconds
+        generation = self.server.action_generation
+        while True:
+            actions = claim_pending_run_actions(
+                self.server.db_path,
+                auth.account_key,
+                auth.device_id,
+                limit=REMOTE_ACTIONS_PER_HEARTBEAT,
+            )
+            interrupts = list_pending_interrupts(
+                self.server.db_path,
+                auth.account_key,
+                auth.device_id,
+            )
+            if actions or interrupts:
+                self.send_json({"actions": actions, "interrupts": interrupts})
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.send_json({"actions": [], "interrupts": []})
+                return
+            generation = self.server.wait_for_action_notification(generation, remaining)
 
     def complete_remote_action(self, auth: AuthContext, action_id: str) -> None:
         if not action_id:

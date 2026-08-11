@@ -402,6 +402,14 @@ class CloudClient:
         encoded_id = urllib.parse.quote(action_id, safe="")
         return self.request("POST", f"/api/devices/actions/{encoded_id}/complete", payload)
 
+    def wait_remote_actions(self, wait_seconds: int = 25) -> dict[str, Any]:
+        timeout = max(1, min(int(wait_seconds), 25))
+        return self.request(
+            "GET",
+            f"/api/devices/actions/wait?timeout={timeout}",
+            timeout=timeout + 5.0,
+        )
+
     def clear_all_runs(self) -> int:
         """Delete all runs on the cloud for this account. Returns deleted count if available."""
         try:
@@ -413,7 +421,14 @@ class CloudClient:
             # Some deployments may not return count; assume success if no exception on 2xx
             return -1
 
-    def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         body = None
         headers = {
             "Authorization": f"Bearer {self.config.token}",
@@ -427,7 +442,7 @@ class CloudClient:
         url = self.config.api_url.rstrip("/") + path
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout if timeout is None else timeout) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             raise RuntimeError(describe_cloud_error(exc)) from exc
