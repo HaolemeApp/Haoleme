@@ -30,6 +30,7 @@ from haoleme.cli import (
     main,
     mark_stale_active_runs_pending,
     latest_python_release,
+    normalize_relay_login_url,
     pairing_login_command,
     print_update_notice_after_command,
     python_wheel_candidates,
@@ -259,6 +260,29 @@ class CliPairingTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         client_cls.assert_called_once_with(relay)
+
+    def test_pairing_login_accepts_bare_private_lan_address(self):
+        with patch("haoleme.cli.PairingClient") as client_cls, \
+                patch("haoleme.cli.CloudConfig.load", return_value=None), \
+                patch("haoleme.cli.get_or_create_machine_id", return_value="machine_test"), \
+                patch("haoleme.cli.generate_pair_keypair", return_value=("public", "private")):
+            client_cls.return_value.start.side_effect = RuntimeError("stop")
+
+            exit_code = pairing_login_command(["192.168.1.20:8000"])
+
+        self.assertEqual(exit_code, 1)
+        client_cls.assert_called_once_with("http://192.168.1.20:8000")
+
+    def test_relay_url_policy_keeps_https_and_limits_http_to_lan(self):
+        self.assertEqual(normalize_relay_login_url("relay.example.com"), "https://relay.example.com")
+        self.assertEqual(normalize_relay_login_url("localhost:8000"), "http://localhost:8000")
+        self.assertEqual(normalize_relay_login_url("http://10.1.2.3:8000"), "http://10.1.2.3:8000")
+        with self.assertRaises(ValueError):
+            normalize_relay_login_url("http://8.8.8.8:8000")
+        with self.assertRaises(ValueError):
+            normalize_relay_login_url("http://relay.example.com:8000")
+        with self.assertRaises(ValueError):
+            normalize_relay_login_url("https://relay.example.com/unexpected")
 
     def test_private_pair_qr_identifies_relay_protocol(self):
         pair_url = build_pair_url("https://hao.example.com/", "123456")

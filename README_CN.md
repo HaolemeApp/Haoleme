@@ -110,6 +110,16 @@ hao login https://hao.example.com
 用 App 扫描终端二维码即可自动切换。每个 Relay 分别保存 App Token 和端到端
 加密密钥，私有 Relay 的二维码不会回退到官方云进行配对。
 
+可信局域网内也可以不准备域名和证书：
+
+```bash
+haoleme-relay --lan --port 8000
+hao login 192.168.1.20:8000
+```
+
+局域网 HTTP 只允许私有 IP，请勿将该端口映射到公网。公网或不可信网络仍应使用
+HTTPS。完整说明见 [`deploy/RELAY.md`](deploy/RELAY.md)。
+
 ## 开源协议
 
 本项目使用 [AGPL-3.0-or-later](LICENSE) 许可证。
