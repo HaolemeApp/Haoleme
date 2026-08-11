@@ -21,6 +21,16 @@ def hasReleaseSigning = releaseStorePath
         && releaseKeyAlias
         && releaseKeyPassword
         && file(releaseStorePath).isFile()
+def releaseBuildRequested = gradle.startParameter.taskNames.any {
+    it.toLowerCase(Locale.ROOT).contains("release")
+}
+
+if (releaseBuildRequested && !hasReleaseSigning) {
+    throw new GradleException(
+            "Release signing is not configured. Set all HAOLEME_ANDROID_KEYSTORE* environment variables; " +
+            "refusing to create an APK that cannot update existing installations."
+    )
+}
 
 android {
     namespace "com.haoleme.app"
@@ -40,7 +50,7 @@ android {
                 keyPassword releaseKeyPassword
                 println "Haoleme signing: using RELEASE keystore from env"
             } else {
-                println "Haoleme signing: FALLBACK to local debug signing. Do not use this APK for official releases."
+                println "Haoleme signing: debug-only fallback; release tasks are blocked."
                 initWith signingConfigs.debug
             }
         }
