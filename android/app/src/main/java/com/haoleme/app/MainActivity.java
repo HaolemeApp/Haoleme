@@ -149,6 +149,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final int HTTP_CONNECT_TIMEOUT_MS = 8000;
     private static final int HTTP_READ_TIMEOUT_MS = 12000;
     private static final int HTTP_LIST_READ_TIMEOUT_MS = 6500;
+    private static final int RERUN_START_CHECK_TIMEOUT_MS = 2500;
+    private static final int RERUN_START_MAX_CHECKS = 8;
+    private static final long RERUN_START_CHECK_DELAY_MS = 500L;
     private static final long TRANSIENT_GET_RETRY_DELAY_MS = 250L;
     private static final long READ_RATE_LIMIT_BACKOFF_MS = 30000L;
     private static final int MAX_BACKGROUND_OUTPUT_SYNC = 1;
@@ -253,6 +256,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private String selectedRunId = null;
     private String selectedRunStatus = "";
     private String pendingRerunRunId = "";
+    private String pendingRerunTargetRunId = "";
     private String pendingShutdownRunId = "";
     private String currentRunDeviceId = "";
     private String selectedDeviceId = "all";
@@ -6063,6 +6067,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         pendingRerunRunId = id;
+        pendingRerunTargetRunId = "";
         updateConsoleRerunButton(true);
         if (statusText != null) {
             statusText.setText(isEnglish() ? "Queuing rerun..." : "正在提交重新运行请求...");
@@ -6077,29 +6082,30 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         ? ""
                         : response.optJSONObject("action").optString("targetRunId", "");
                 handler.post(() -> {
-                    if (!id.equals(selectedRunId)) {
+                    if (!id.equals(pendingRerunRunId)) {
                         return;
                     }
-                    if (statusText != null) {
+                    pendingRerunTargetRunId = newRunId;
+                    if (id.equals(selectedRunId) && statusText != null) {
                         String suffix = newRunId.isEmpty() ? "" : " · " + newRunId.substring(0, Math.min(8, newRunId.length()));
                         statusText.setText((isEnglish()
                                 ? "New run is starting"
                                 : "新任务正在启动") + suffix);
                     }
-                    updateConsoleRerunButton(true);
-                });
-                handler.postDelayed(() -> {
-                    if (id.equals(pendingRerunRunId)) {
-                        pendingRerunRunId = "";
-                        if (id.equals(selectedRunId)) {
-                            updateConsoleRerunButton(true);
-                        }
+                    if (id.equals(selectedRunId)) {
+                        updateConsoleRerunButton(true);
                     }
-                }, 60_000L);
+                    if (newRunId.isEmpty()) {
+                        finishRerunStartCheck(id, "", false);
+                    } else {
+                        watchRerunStart(id, newRunId, 0);
+                    }
+                });
             } catch (Exception e) {
                 handler.post(() -> {
                     if (id.equals(pendingRerunRunId)) {
                         pendingRerunRunId = "";
+                        pendingRerunTargetRunId = "";
                     }
                     if (!id.equals(selectedRunId)) {
                         return;
@@ -6111,6 +6117,68 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 });
             }
         });
+    }
+
+    private void watchRerunStart(String sourceRunId, String targetRunId, int attempt) {
+        if (destroyed
+                || !sourceRunId.equals(pendingRerunRunId)
+                || !targetRunId.equals(pendingRerunTargetRunId)) {
+            return;
+        }
+        submitBackground(() -> {
+            boolean started = false;
+            try {
+                JSONObject payload = new JSONObject(httpGet(
+                        normalizedServerUrl() + "/api/runs/" + Uri.encode(targetRunId),
+                        RERUN_START_CHECK_TIMEOUT_MS
+                ));
+                started = payload.optJSONObject("run") != null;
+            } catch (Exception ignored) {
+                // The new process may need a moment to create and sync its run record.
+            }
+            boolean runStarted = started;
+            handler.post(() -> {
+                if (destroyed
+                        || !sourceRunId.equals(pendingRerunRunId)
+                        || !targetRunId.equals(pendingRerunTargetRunId)) {
+                    return;
+                }
+                if (runStarted) {
+                    finishRerunStartCheck(sourceRunId, targetRunId, true);
+                    return;
+                }
+                if (attempt + 1 >= RERUN_START_MAX_CHECKS) {
+                    finishRerunStartCheck(sourceRunId, targetRunId, false);
+                    return;
+                }
+                handler.postDelayed(
+                        () -> watchRerunStart(sourceRunId, targetRunId, attempt + 1),
+                        RERUN_START_CHECK_DELAY_MS
+                );
+            });
+        });
+    }
+
+    private void finishRerunStartCheck(String sourceRunId, String targetRunId, boolean started) {
+        if (!sourceRunId.equals(pendingRerunRunId)) {
+            return;
+        }
+        pendingRerunRunId = "";
+        pendingRerunTargetRunId = "";
+        if (!sourceRunId.equals(selectedRunId)) {
+            return;
+        }
+        updateConsoleRerunButton(true);
+        if (statusText != null) {
+            String suffix = targetRunId.isEmpty() ? "" : " · " + targetRunId.substring(0, Math.min(8, targetRunId.length()));
+            if (started) {
+                statusText.setText((isEnglish() ? "New run started" : "新任务已启动") + suffix);
+            } else {
+                statusText.setText((isEnglish()
+                        ? "Rerun requested. It will appear in Runs shortly."
+                        : "重新运行已提交，新任务稍后会出现在 Runs 中。") + suffix);
+            }
+        }
     }
 
     private void confirmShutdownAfterRun() {
