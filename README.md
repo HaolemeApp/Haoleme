@@ -145,14 +145,14 @@ public Haoleme service.
 For a trusted local network, a domain is optional:
 
 ```bash
-haoleme-relay --lan --port 8000
-hao login 192.168.1.20:8000
+hao login
 ```
 
-The first command automatically prints a pair code and QR for the Relay host.
-After pairing it returns to the shell and leaves the Relay in the background.
-Other computers use the second command. Add `--no-pair` for foreground
-Relay-only mode.
+Choose **Private Relay**, then **Start a LAN Relay on this computer**. `hao`
+starts it in the background and immediately shows the pair code and QR. Other
+computers can use the LAN address it prints. For explicit Relay-only control,
+`haoleme-relay --lan --port 8000` remains available; add `--no-pair` to keep it
+in the foreground without pairing the Relay host.
 
 Local HTTP is restricted to private IP addresses. Keep it inside the LAN; use
 HTTPS for any Internet-facing relay. See [`deploy/RELAY.md`](deploy/RELAY.md).

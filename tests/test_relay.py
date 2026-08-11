@@ -4,7 +4,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from haoleme.relay import configure_relay_environment, default_relay_data_dir, main, run_lan_pairing
+from haoleme.relay import (
+    configure_relay_environment,
+    default_relay_data_dir,
+    ensure_background_lan_relay,
+    main,
+    run_lan_pairing,
+)
 
 
 class RelayTest(unittest.TestCase):
@@ -74,6 +80,26 @@ class RelayTest(unittest.TestCase):
             self.assertEqual(result, 0)
             start_relay.assert_not_called()
             pair.assert_called_once_with("192.168.1.20", 8123)
+
+    def test_ensure_background_lan_relay_starts_detached_service(self):
+        process = Mock(pid=4321)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HAOLEME_RELAY_DATA_DIR": tmp},
+            clear=True,
+        ), patch("haoleme.relay.local_lan_addresses", return_value=["192.168.1.20"]), patch(
+            "haoleme.relay.wait_for_relay_health", side_effect=[False, True]
+        ), patch(
+            "haoleme.relay.start_detached_relay",
+            return_value=(process, Path(tmp) / "relay.log"),
+        ) as start_relay:
+            url, started, pid, log_path = ensure_background_lan_relay(8123)
+
+        self.assertEqual(url, "http://192.168.1.20:8123")
+        self.assertTrue(started)
+        self.assertEqual(pid, 4321)
+        self.assertEqual(log_path, Path(tmp) / "relay.log")
+        start_relay.assert_called_once_with(["--port", "8123"])
 
     def test_lan_pairing_waits_for_health_then_uses_lan_address(self):
         with patch("haoleme.relay.wait_for_relay_health", return_value=True), patch(

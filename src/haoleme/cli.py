@@ -846,11 +846,11 @@ def pairing_login_command(argv: Sequence[str]) -> int:
         print(f"hao: could not start login: {exc}", file=sys.stderr)
         parsed_login_url = urllib.parse.urlsplit(api_url)
         if parsed_login_url.scheme == "http" and is_local_relay_host(parsed_login_url.hostname or ""):
-            print("Start the LAN relay first in another terminal:", file=sys.stderr)
-            print("  haoleme-relay --lan --port 8000", file=sys.stderr)
+            print("Make sure the LAN Relay is running and reachable.", file=sys.stderr)
+            print("Run hao login interactively to start one on this computer.", file=sys.stderr)
             if is_loopback_relay_host(parsed_login_url.hostname or ""):
                 print("127.0.0.1 points to the phone itself after scanning.", file=sys.stderr)
-                print("Use the LAN IP printed by haoleme-relay, for example 192.168.1.20:8000.", file=sys.stderr)
+                print("Use the LAN IP printed by hao login, for example 192.168.1.20:8000.", file=sys.stderr)
         else:
             print("For a private relay, use: hao login https://hao.example.com", file=sys.stderr)
         return 1
@@ -1783,9 +1783,24 @@ def prompt_login_relay_url() -> str:
         if choice not in {"2", "private", "relay", "self-hosted", "selfhosted"}:
             print("Please enter 1 or 2.")
             continue
-        print("Start a LAN relay first with: haoleme-relay --lan --port 8000")
-        print("Or enter the HTTPS address of an already deployed private Relay.")
+        print("How should Private Relay connect?")
+        print("  1. Start a LAN Relay on this computer (recommended)")
+        print("  2. Connect to an existing Relay")
         while True:
+            try:
+                relay_choice = input("Select [1]: ").strip().lower()
+            except EOFError:
+                return DEFAULT_CLOUD_URL
+            if relay_choice in {"", "1", "local", "start"}:
+                try:
+                    return start_local_relay_for_login()
+                except RuntimeError as exc:
+                    print(f"Could not start local Relay: {exc}")
+                    print("Choose 2 to connect to an existing Relay, or try again.")
+                    continue
+            if relay_choice not in {"2", "existing", "remote"}:
+                print("Please enter 1 or 2.")
+                continue
             try:
                 value = input("Private Relay address (HTTPS or LAN IP:port): ").strip()
             except EOFError:
@@ -1794,6 +1809,19 @@ def prompt_login_relay_url() -> str:
                 return normalize_relay_login_url(value)
             except ValueError as exc:
                 print(f"Invalid Relay address: {exc}")
+
+
+def start_local_relay_for_login(port: int = 8000) -> str:
+    from .relay import ensure_background_lan_relay
+
+    url, started, pid, log_path = ensure_background_lan_relay(port)
+    if started:
+        print(f"Local Relay started in the background (pid {pid}).")
+    else:
+        print("Using the local Relay already running on this computer.")
+    print(f"Relay address: {url}")
+    print(f"Relay log: {log_path}")
+    return url
 
 
 def is_local_relay_host(host: str) -> bool:
