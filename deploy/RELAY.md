@@ -14,8 +14,9 @@ haoleme-relay --lan --port 8000
 ```
 
 Once the Relay is ready, the same terminal automatically prints a 6-digit pair
-code and QR code for this computer. Scan it in the Android app. The command also
-prints the LAN address that other computers can use, for example:
+code and QR code for this computer. Scan it in the Android app. After pairing,
+the command returns to the shell while the Relay keeps running in the background.
+It also prints the LAN address that other computers can use, for example:
 
 ```bash
 hao login 192.168.1.20:8000
@@ -26,7 +27,8 @@ normal Android app to that endpoint. The phone and monitored computers must be
 able to reach the relay on the same LAN. Allow inbound TCP 8000 in the machine's
 firewall if necessary.
 
-To run only the Relay without pairing the Relay host itself, add `--no-pair`.
+To run the Relay in the foreground without pairing the Relay host, add
+`--no-pair`.
 
 Plain HTTP is accepted only for localhost and private LAN IP ranges. Run content
 is still end-to-end encrypted, but HTTP exposes credentials and connection
