@@ -62,7 +62,8 @@ Pair your computer or server:
 hao login
 ```
 
-Open the app, then scan the QR code or enter the 6-digit pairing code.
+Choose Haoleme Cloud or a self-hosted Private Relay, then open the app and scan
+the QR code or enter the 6-digit pairing code.
 
 Run commands by prefixing them with `hao`:
 

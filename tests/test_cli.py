@@ -32,6 +32,7 @@ from haoleme.cli import (
     latest_python_release,
     normalize_relay_login_url,
     pairing_login_command,
+    prompt_login_relay_url,
     print_update_notice_after_command,
     python_wheel_candidates,
     update_command,
@@ -247,6 +248,18 @@ class CliPairingTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         client_cls.assert_called_once_with(DEFAULT_CLOUD_URL)
+
+    def test_interactive_login_can_choose_official_cloud(self):
+        with patch("builtins.input", return_value=""):
+            self.assertEqual(prompt_login_relay_url(), DEFAULT_CLOUD_URL)
+
+    def test_interactive_login_can_choose_https_private_relay(self):
+        with patch("builtins.input", side_effect=["2", "https://relay.example.com"]):
+            self.assertEqual(prompt_login_relay_url(), "https://relay.example.com")
+
+    def test_interactive_login_can_choose_lan_private_relay(self):
+        with patch("builtins.input", side_effect=["2", "192.168.1.20:8000"]):
+            self.assertEqual(prompt_login_relay_url(), "http://192.168.1.20:8000")
 
     def test_pairing_login_accepts_private_relay_as_positional_url(self):
         relay = "https://hao.example.com"
