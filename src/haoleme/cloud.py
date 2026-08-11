@@ -362,6 +362,16 @@ class CloudClient:
             return []
         return [item for item in interrupts if isinstance(item, dict)]
 
+    def list_pending_controls(self) -> dict[str, list[dict[str, Any]]]:
+        """Fetch every mobile control using the existing active-run cadence."""
+        payload = self.request("GET", "/api/devices/pending-controls")
+        actions = payload.get("actions")
+        interrupts = payload.get("interrupts")
+        return {
+            "actions": [item for item in actions if isinstance(item, dict)] if isinstance(actions, list) else [],
+            "interrupts": [item for item in interrupts if isinstance(item, dict)] if isinstance(interrupts, list) else [],
+        }
+
     def list_devices(self) -> list[dict[str, Any]]:
         payload = self.request("GET", "/api/devices")
         devices = payload.get("devices", [])

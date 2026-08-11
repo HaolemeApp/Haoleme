@@ -476,6 +476,40 @@ class CloudServerDeviceTest(unittest.TestCase):
                 thread.join(timeout=2)
                 server.server_close()
 
+    def test_pending_controls_returns_stop_and_remote_actions_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 66)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            account_key = "account-controls"
+            device_id = "dev_controls"
+            device_token = "device-token-controls-123456"
+            try:
+                store_device_token(db_path, account_key, device_id, "Control Mac", device_token, iso_now())
+                upsert_device(db_path, account_key, device_id, "Control Mac", iso_now())
+                upsert_run(db_path, account_key, self.sample_run("run-controls", device_id, "Control Mac", "running"))
+                request_run_interrupt(db_path, account_key, "run-controls")
+                queued, error = request_run_rerun(db_path, account_key, "run-controls")
+                self.assertIsNone(error)
+
+                request = urllib.request.Request(
+                    base + "/api/devices/pending-controls",
+                    headers={"Authorization": "Bearer " + device_token},
+                    method="GET",
+                )
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(payload["interrupts"][0]["id"], "run-controls")
+                self.assertEqual(payload["actions"][0]["id"], queued["id"])
+                self.assertEqual(payload["actions"][0]["action"], "rerun")
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
     def test_pair_confirm_reuses_matching_existing_device_for_app_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"

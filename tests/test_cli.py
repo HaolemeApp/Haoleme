@@ -17,6 +17,7 @@ from haoleme.cli import (
     HEARTBEAT_INTERVAL_SECONDS,
     ORPHANED_RUN_GRACE_SECONDS,
     acquire_process_file_lock,
+    apply_cloud_controls,
     apply_remote_actions,
     apply_scheduled_shutdowns,
     build_pair_url,
@@ -132,6 +133,66 @@ class CliPairingTest(unittest.TestCase):
             self.assertEqual(second, [])
             self.assertEqual(client.completed[-1][1], "started")
             self.assertEqual(client.completed[-1][3], 4321)
+
+    def test_active_control_poll_applies_stop_and_rerun_together(self):
+        class ControlClient:
+            def __init__(self):
+                self.completed = []
+                self.synced = []
+
+            def list_pending_controls(self):
+                return {
+                    "actions": [{"id": "action-rerun", "runId": "run-source", "action": "rerun"}],
+                    "interrupts": [{"id": "run-active", "interruptRequestedAt": "2026-08-12T00:00:00Z"}],
+                }
+
+            def complete_remote_action(self, action_id, status, detail="", launcher_pid=None):
+                self.completed.append((action_id, status, launcher_pid))
+                return {"ok": True}
+
+            def upsert_run(self, run, *, include_output=True):
+                self.synced.append(run.id)
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-source", ["echo", "again"], tmp)
+            store.finish_run("run-source", 0)
+            store.create_run("run-active", ["sleep", "30"], tmp)
+            store.mark_running("run-active", None)
+            client = ControlClient()
+
+            with patch("haoleme.cli.launch_remote_rerun", return_value=5432) as launcher:
+                messages, interrupted = apply_cloud_controls(store, client)
+
+            launcher.assert_called_once()
+            self.assertEqual(interrupted, 1)
+            self.assertIn("Remote rerun started", messages[0])
+            self.assertEqual(store.get_run("run-active").status, "failed")
+            self.assertEqual(client.synced, ["run-active"])
+            self.assertEqual(client.completed, [("action-rerun", "started", 5432)])
+
+    def test_active_control_poll_keeps_stop_working_with_old_server(self):
+        class LegacyClient:
+            def list_pending_controls(self):
+                raise RuntimeError("HTTP 403: permission denied; re-pair this device")
+
+            def list_pending_interrupts(self):
+                return [{"id": "run-active", "interruptRequestedAt": "2026-08-12T00:00:00Z"}]
+
+            def upsert_run(self, run, *, include_output=True):
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-active", ["sleep", "30"], tmp)
+            store.mark_running("run-active", None)
+
+            messages, interrupted = apply_cloud_controls(store, LegacyClient())
+
+            self.assertEqual(messages, [])
+            self.assertEqual(interrupted, 1)
+            self.assertEqual(store.get_run("run-active").status, "failed")
 
     def test_launch_remote_rerun_uses_saved_command_directory_and_project(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -125,6 +125,21 @@ class CloudSyncerReliabilityTest(unittest.TestCase):
 
 
 class CloudConfigTest(unittest.TestCase):
+    def test_pending_controls_keep_actions_and_interrupts_in_one_poll(self):
+        client = CloudClient(
+            CloudConfig("https://cloud.example", "default", "write-token", device_id="dev-1")
+        )
+        response = {
+            "actions": [{"id": "action-1"}, "invalid"],
+            "interrupts": [{"id": "run-1"}, None],
+        }
+        with patch.object(client, "request", return_value=response) as request:
+            controls = client.list_pending_controls()
+
+        request.assert_called_once_with("GET", "/api/devices/pending-controls")
+        self.assertEqual(controls["actions"], [{"id": "action-1"}])
+        self.assertEqual(controls["interrupts"], [{"id": "run-1"}])
+
     def test_cloud_config_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"

@@ -1807,11 +1807,17 @@ def heartbeat_run_foreground() -> int:
                 )
                 try:
                     # An idle device has nothing to interrupt, so avoid the
-                    # read request entirely. Live run output is owned by that
-                    # command's CloudSyncer; this daemon only catches terminal
-                    # backlog and orphaned commands.
+                    # read request entirely. During an active run, collect all
+                    # mobile controls in the same poll that historically drove
+                    # Stop, keeping rerun and shutdown on that proven cadence.
                     if active:
-                        interrupted = apply_cloud_interrupts(store, client, deadline=maintenance_deadline)
+                        control_messages, interrupted = apply_cloud_controls(
+                            store,
+                            client,
+                            deadline=maintenance_deadline,
+                        )
+                        for message in control_messages:
+                            print(message, flush=True)
                         if interrupted:
                             print(f"Applied {interrupted} cloud interrupt(s).", flush=True)
                         recovered = reconcile_orphaned_running_runs(store, client, deadline=maintenance_deadline)
@@ -2873,6 +2879,27 @@ def kill_process_tree(pid: int) -> None:
 
 def apply_cloud_interrupts(store: RunStore, client: CloudClient, deadline: float | None = None) -> int:
     return apply_interrupt_items(store, client, client.list_pending_interrupts(), deadline=deadline)
+
+
+def apply_cloud_controls(
+    store: RunStore,
+    client: CloudClient,
+    deadline: float | None = None,
+) -> tuple[list[str], int]:
+    """Apply stop, rerun, and shutdown controls from one device poll."""
+    try:
+        payload = client.list_pending_controls()
+    except Exception as exc:
+        error = describe_cloud_error(exc)
+        if not error.startswith(("HTTP 403:", "HTTP 404:")):
+            raise
+        # During a rolling upgrade, an older Relay does not know the unified
+        # endpoint. Preserve the established Stop path until it is upgraded.
+        return [], apply_cloud_interrupts(store, client, deadline=deadline)
+    messages = apply_remote_actions(store, client, payload.get("actions"))
+    interrupted = apply_interrupt_items(store, client, payload.get("interrupts"), deadline=deadline)
+    messages.extend(apply_scheduled_shutdowns(store, client))
+    return messages, interrupted
 
 
 def apply_interrupt_items(

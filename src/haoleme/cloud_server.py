@@ -196,6 +196,36 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/api/devices/pending-controls":
+            if auth.scope != "write":
+                self.send_json({"error": "write token required", "code": "write_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            if not auth.device_id:
+                self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if not self.allow_read_attempt(auth):
+                self.send_json(
+                    {"error": "too many read requests, slow down", "code": "read_rate_limited"},
+                    status=HTTPStatus.TOO_MANY_REQUESTS,
+                )
+                return
+            self.send_json(
+                {
+                    "actions": claim_pending_run_actions(
+                        self.server.db_path,
+                        auth.account_key,
+                        auth.device_id,
+                        limit=REMOTE_ACTIONS_PER_HEARTBEAT,
+                    ),
+                    "interrupts": list_pending_interrupts(
+                        self.server.db_path,
+                        auth.account_key,
+                        auth.device_id,
+                    ),
+                }
+            )
+            return
+
         if parsed.path == "/api/devices/actions/wait":
             if auth.scope != "write":
                 self.send_json({"error": "write token required", "code": "write_token_required"}, status=HTTPStatus.FORBIDDEN)
