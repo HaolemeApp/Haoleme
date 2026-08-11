@@ -1,25 +1,30 @@
-# 安全策略
+<p align="center">
+  <a href="SECURITY.md"><img src="https://img.shields.io/badge/English-Primary-2563EB?style=flat-square&amp;logo=googletranslate&amp;logoColor=white" alt="English security policy"></a>
+  <a href="SECURITY_CN.md"><img src="https://img.shields.io/badge/简体中文-中文文档-E85D75?style=flat-square&amp;logo=googletranslate&amp;logoColor=white" alt="简体中文安全策略"></a>
+</p>
 
-## 报告安全问题
+# Security Policy
 
-请使用 GitHub 仓库的 **Security > Report a vulnerability** 私密报告功能。不要在公开 Issue 中粘贴 Token、密码、配对码、数据库、日志或其他个人数据。
+## Reporting a Security Issue
 
-## 仓库中的敏感信息
+Use the repository's **Security > Report a vulnerability** feature on GitHub to report vulnerabilities privately. Do not post tokens, passwords, pairing codes, databases, logs, or other personal data in a public issue.
 
-本仓库不会保存：
+## Sensitive Information
 
-- 服务器真实 IP、SSH 密码或私钥
-- PyPI、GitHub、Cloudflare 等平台的访问令牌
-- Android 官方签名文件及密码
-- 生产数据库、日志、备份和私有部署配置
-- 个人收款二维码或用户运行数据
+This repository does not store:
 
-这些信息必须通过环境变量、权限受限的本机文件或部署平台的 Secret 管理功能注入。
+- Real server IP addresses, SSH passwords, or private keys
+- Access tokens for PyPI, GitHub, Cloudflare, or other platforms
+- Official Android signing files or their passwords
+- Production databases, logs, backups, or private deployment configuration
+- Personal payment QR codes or user run data
 
-## 提交前检查
+Inject these values through environment variables, permission-restricted local files, or the deployment platform's secret-management system.
 
-提交代码前请确认 `git diff --cached` 中没有密钥、Token、密码、真实服务器地址、用户数据或本机绝对路径。若凭据曾经进入 Git 历史，仅删除当前文件并不够，应立即撤销凭据并清理历史。
+## Pre-commit Review
 
-## 支持范围
+Before committing, verify that `git diff --cached` contains no keys, tokens, passwords, real server addresses, user data, or local absolute paths. If a credential has entered Git history, deleting the current file is not enough: revoke the credential immediately and clean the repository history.
 
-安全修复优先提供给当前最新版 Android App 和 `haoleme` CLI。请先升级到最新版后再复现和报告问题。
+## Supported Versions
+
+Security fixes are prioritized for the latest Android app and `haoleme` CLI releases. Upgrade to the latest version before reproducing and reporting an issue.

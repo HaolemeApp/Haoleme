@@ -5,14 +5,14 @@
 
 # Android App
 
-This directory contains the complete buildable Haoleme Android app project.
+这里是好了么 Android App 的完整可构建工程。
 
-## Requirements
+## 环境要求
 
 - JDK 17
 - Android SDK 35
 
-## Build and Test
+## 构建与测试
 
 ```bash
 cd android
@@ -20,11 +20,11 @@ cd android
 ./gradlew assembleDebug
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/`.
+调试 APK 位于 `app/build/outputs/apk/debug/`。
 
-## Self-hosted Endpoint
+## 自托管地址
 
-The default build connects to the official Haoleme HTTPS service. For a self-hosted build, override the server and update manifest from the command line:
+默认构建连接好了么官方 HTTPS 服务。自托管构建可以在命令行覆盖服务器和更新清单：
 
 ```bash
 ./gradlew assembleDebug \
@@ -32,9 +32,9 @@ The default build connects to the official Haoleme HTTPS service. For a self-hos
   -PHAOLEME_UPDATE_URLS=https://haoleme.example.com/downloads/update.json
 ```
 
-## Release Signing
+## Release 签名
 
-Official signing materials are not stored in this repository. Release builds read their signing configuration from these environment variables:
+官方签名材料不在仓库中。Release 构建从以下环境变量读取签名配置：
 
 ```bash
 export HAOLEME_ANDROID_KEYSTORE=/private/path/release.jks
@@ -44,6 +44,6 @@ export HAOLEME_ANDROID_KEY_PASSWORD='...'
 ./gradlew assembleRelease
 ```
 
-Without these variables, the release task uses the local debug signing key and is suitable only for development and testing.
+如果没有配置这些变量，Release 任务会使用本机 debug 签名，仅适合开发测试。
 
-Do not commit keystores, passwords, `local.properties`, `.env`, or `google-services.json`.
+请勿提交 keystore、密码、`local.properties`、`.env` 或 `google-services.json`。
