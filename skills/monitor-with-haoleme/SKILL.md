@@ -3,6 +3,11 @@ name: monitor-with-haoleme
 description: Selectively monitor important long-running or resource-intensive commands with Haoleme by prefixing them with `hao`, so status, output, and completion notifications sync to the mobile app. Use while running training, fine-tuning, full evaluations, benchmarks, simulations, large builds, data pipelines, batch jobs, crawlers, deployments, migrations, or other consequential commands likely to take minutes. Do not trigger for dependency or environment installation, quick smoke tests, formatting or linting, simple probes, ordinary file or Git commands, or commands that expose secrets.
 ---
 
+<p align="center">
+  <a href="SKILL.md"><img src="https://img.shields.io/badge/English-Primary-2563EB?style=flat-square&amp;logo=googletranslate&amp;logoColor=white" alt="English skill guide"></a>
+  <a href="SKILL_CN.md"><img src="https://img.shields.io/badge/简体中文-中文文档-E85D75?style=flat-square&amp;logo=googletranslate&amp;logoColor=white" alt="简体中文 Skill 指南"></a>
+</p>
+
 # Monitor With Haoleme
 
 Use `hao` only for commands worth following from the Haoleme mobile app. Keep routine development commands local.

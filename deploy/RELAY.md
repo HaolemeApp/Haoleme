@@ -1,3 +1,8 @@
+<p align="center">
+  <a href="RELAY.md"><img src="https://img.shields.io/badge/English-Primary-2563EB?style=flat-square&amp;logo=googletranslate&amp;logoColor=white" alt="English private Relay guide"></a>
+  <a href="RELAY_CN.md"><img src="https://img.shields.io/badge/简体中文-中文文档-E85D75?style=flat-square&amp;logo=googletranslate&amp;logoColor=white" alt="简体中文私有 Relay 指南"></a>
+</p>
+
 # Haoleme Private Relay
 
 The same Haoleme Android app and `hao` CLI can use an operator-owned relay. Run
