@@ -50,43 +50,6 @@ Haoleme is a command monitoring tool.
 
 Start a command with `hao`, then watch its status, console output, device online state, and finish notification in the mobile app. It is useful for training jobs, remote scripts, batch tasks, crawlers, long SSH sessions, and anything you do not want to babysit in a terminal.
 
-## Architecture
-
-```mermaid
-flowchart LR
-  subgraph Host["Computer or server"]
-    CLI["hao CLI<br/>process wrapper + PTY capture"]
-    PROC["Command process"]
-    LOCAL[("Local SQLite<br/>runs + retry queue")]
-    CLI -->|"start / interrupt"| PROC
-    PROC -->|"stdout · stderr · exit code"| CLI
-    CLI <-->|"local-first writes"| LOCAL
-  end
-
-  subgraph Relay["Haoleme Cloud or Private Relay"]
-    API["Relay API<br/>pairing · sync · heartbeat · control"]
-    CLOUD[("Relay SQLite<br/>encrypted runs + device metadata")]
-    API <-->|"store / query"| CLOUD
-  end
-
-  subgraph Mobile["Android app"]
-    APP["Haoleme App<br/>Runs · Devices · Console · Notifications"]
-    CACHE[("Phone cache<br/>runs + console history")]
-    APP <-->|"offline access"| CACHE
-  end
-
-  CLI -->|"AES-256-GCM run updates"| API
-  CLI -.->|"online + CPU/GPU heartbeat"| API
-  API -->|"encrypted updates + status"| APP
-  APP -->|"pair · refresh · delete · interrupt"| API
-  API -.->|"interrupt request"| CLI
-```
-
-- **Local first:** `hao` starts the command through a PTY, saves status and output to local SQLite, and retries cloud synchronization after a network interruption.
-- **End-to-end encrypted:** during pairing, the app wraps the account encryption key with the CLI's temporary RSA-OAEP-SHA256 public key. The CLI encrypts commands, working directories, host details, and console output with AES-256-GCM before upload.
-- **Replaceable relay:** Haoleme Cloud and a self-hosted Private Relay expose the same API. The relay stores encrypted run payloads plus the status and device metadata needed for synchronization; it does not receive plaintext command or console content.
-- **Mobile cache and control:** the Android app decrypts runs locally, keeps run and console history on the phone, displays completion notifications, and sends interrupt or deletion requests back through the relay.
-
 ## Preview
 
 The home screen shows active and completed runs in one place. Settings covers pairing, shared spaces, appearance, and security options.
@@ -160,6 +123,43 @@ The skill adds `hao` to training, full evaluations, long batch jobs, and other i
 - CLI and cloud protocol: `src/haoleme`
 - Android app: [`android`](android/README.md)
 - Cloud deployment examples: [`deploy`](deploy/README.md)
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Host["Computer or server"]
+    CLI["hao CLI<br/>process wrapper + PTY capture"]
+    PROC["Command process"]
+    LOCAL[("Local SQLite<br/>runs + retry queue")]
+    CLI -->|"start / interrupt"| PROC
+    PROC -->|"stdout · stderr · exit code"| CLI
+    CLI <-->|"local-first writes"| LOCAL
+  end
+
+  subgraph Relay["Haoleme Cloud or Private Relay"]
+    API["Relay API<br/>pairing · sync · heartbeat · control"]
+    CLOUD[("Relay SQLite<br/>encrypted runs + device metadata")]
+    API <-->|"store / query"| CLOUD
+  end
+
+  subgraph Mobile["Android app"]
+    APP["Haoleme App<br/>Runs · Devices · Console · Notifications"]
+    CACHE[("Phone cache<br/>runs + console history")]
+    APP <-->|"offline access"| CACHE
+  end
+
+  CLI -->|"AES-256-GCM run updates"| API
+  CLI -.->|"online + CPU/GPU heartbeat"| API
+  API -->|"encrypted updates + status"| APP
+  APP -->|"pair · refresh · delete · interrupt"| API
+  API -.->|"interrupt request"| CLI
+```
+
+- **Local first:** `hao` starts the command through a PTY, saves status and output to local SQLite, and retries cloud synchronization after a network interruption.
+- **End-to-end encrypted:** during pairing, the app wraps the account encryption key with the CLI's temporary RSA-OAEP-SHA256 public key. The CLI encrypts commands, working directories, host details, and console output with AES-256-GCM before upload.
+- **Replaceable relay:** Haoleme Cloud and a self-hosted Private Relay expose the same API. The relay stores encrypted run payloads plus the status and device metadata needed for synchronization; it does not receive plaintext command or console content.
+- **Mobile cache and control:** the Android app decrypts runs locally, keeps run and console history on the phone, displays completion notifications, and sends interrupt or deletion requests back through the relay.
 
 ## Security
 

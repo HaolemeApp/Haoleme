@@ -50,43 +50,6 @@
 
 在电脑或服务器上用 `hao` 启动命令，手机 App 就能看到运行状态、终端输出、设备在线状态和运行结束通知。它适合训练任务、远程脚本、批处理、爬虫、长时间 SSH 任务，以及任何“不想一直盯着终端”的场景。
 
-## 整体架构
-
-```mermaid
-flowchart LR
-  subgraph Host["电脑或服务器"]
-    CLI["hao CLI<br/>进程包装 + PTY 输出捕获"]
-    PROC["命令进程"]
-    LOCAL[("本地 SQLite<br/>运行记录 + 重试队列")]
-    CLI -->|"启动 / 终止"| PROC
-    PROC -->|"标准输出 · 错误输出 · 退出码"| CLI
-    CLI <-->|"本地优先写入"| LOCAL
-  end
-
-  subgraph Relay["好了么 Cloud 或 Private Relay"]
-    API["Relay API<br/>配对 · 同步 · 心跳 · 控制"]
-    CLOUD[("Relay SQLite<br/>加密运行数据 + 设备元数据")]
-    API <-->|"存储 / 查询"| CLOUD
-  end
-
-  subgraph Mobile["Android App"]
-    APP["好了么 App<br/>运行 · 设备 · 控制台 · 通知"]
-    CACHE[("手机缓存<br/>运行记录 + 控制台历史")]
-    APP <-->|"离线查看"| CACHE
-  end
-
-  CLI -->|"AES-256-GCM 加密运行更新"| API
-  CLI -.->|"在线状态 + CPU/GPU 心跳"| API
-  API -->|"加密更新 + 运行状态"| APP
-  APP -->|"配对 · 刷新 · 删除 · 终止"| API
-  API -.->|"终止请求"| CLI
-```
-
-- **本地优先：**`hao` 通过 PTY 启动命令，先把状态和输出保存到本地 SQLite；网络中断后会自动重试云端同步。
-- **端到端加密：**配对时，App 使用 CLI 的临时 RSA-OAEP-SHA256 公钥封装账户加密密钥。CLI 在上传前使用 AES-256-GCM 加密命令、工作目录、主机信息和控制台输出。
-- **Relay 可替换：**好了么 Cloud 和自建 Private Relay 使用相同 API。Relay 保存加密后的运行数据，以及同步所需的状态和设备元数据，不会收到明文命令或控制台内容。
-- **手机缓存与控制：**Android App 在本地解密运行数据，将运行记录和控制台历史缓存在手机上，显示结束通知，并通过 Relay 发送终止或删除请求。
-
 ## 界面预览
 
 首页集中展示正在运行和已经结束的命令；设置页提供配对、共享空间、外观和安全选项。
@@ -159,6 +122,43 @@ Skill 会自动为训练、完整评测、长批处理等重要任务添加 `hao
 - CLI 和云端协议：`src/haoleme`
 - Android App：[`android`](android/README.md)
 - 云端部署示例：[`deploy`](deploy/README.md)
+
+## 整体架构
+
+```mermaid
+flowchart LR
+  subgraph Host["电脑或服务器"]
+    CLI["hao CLI<br/>进程包装 + PTY 输出捕获"]
+    PROC["命令进程"]
+    LOCAL[("本地 SQLite<br/>运行记录 + 重试队列")]
+    CLI -->|"启动 / 终止"| PROC
+    PROC -->|"标准输出 · 错误输出 · 退出码"| CLI
+    CLI <-->|"本地优先写入"| LOCAL
+  end
+
+  subgraph Relay["好了么 Cloud 或 Private Relay"]
+    API["Relay API<br/>配对 · 同步 · 心跳 · 控制"]
+    CLOUD[("Relay SQLite<br/>加密运行数据 + 设备元数据")]
+    API <-->|"存储 / 查询"| CLOUD
+  end
+
+  subgraph Mobile["Android App"]
+    APP["好了么 App<br/>运行 · 设备 · 控制台 · 通知"]
+    CACHE[("手机缓存<br/>运行记录 + 控制台历史")]
+    APP <-->|"离线查看"| CACHE
+  end
+
+  CLI -->|"AES-256-GCM 加密运行更新"| API
+  CLI -.->|"在线状态 + CPU/GPU 心跳"| API
+  API -->|"加密更新 + 运行状态"| APP
+  APP -->|"配对 · 刷新 · 删除 · 终止"| API
+  API -.->|"终止请求"| CLI
+```
+
+- **本地优先：**`hao` 通过 PTY 启动命令，先把状态和输出保存到本地 SQLite；网络中断后会自动重试云端同步。
+- **端到端加密：**配对时，App 使用 CLI 的临时 RSA-OAEP-SHA256 公钥封装账户加密密钥。CLI 在上传前使用 AES-256-GCM 加密命令、工作目录、主机信息和控制台输出。
+- **Relay 可替换：**好了么 Cloud 和自建 Private Relay 使用相同 API。Relay 保存加密后的运行数据，以及同步所需的状态和设备元数据，不会收到明文命令或控制台内容。
+- **手机缓存与控制：**Android App 在本地解密运行数据，将运行记录和控制台历史缓存在手机上，显示结束通知，并通过 Relay 发送终止或删除请求。
 
 ## 安全
 
