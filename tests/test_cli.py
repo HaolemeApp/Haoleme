@@ -16,6 +16,7 @@ from pathlib import Path
 from haoleme.cli import (
     HEARTBEAT_INTERVAL_SECONDS,
     ORPHANED_RUN_GRACE_SECONDS,
+    RemoteActionWatcher,
     acquire_process_file_lock,
     apply_cloud_controls,
     apply_remote_actions,
@@ -91,6 +92,17 @@ class BrokenTarget:
 
 
 class CliPairingTest(unittest.TestCase):
+    def test_remote_action_watcher_starts_for_official_cloud(self):
+        config = CloudConfig(DEFAULT_CLOUD_URL, "default", "token", device_id="dev-cloud")
+        watcher = RemoteActionWatcher()
+        thread = unittest.mock.MagicMock()
+        with patch("haoleme.cli.CloudConfig.load", return_value=config), \
+                patch("haoleme.cli.threading.Thread", return_value=thread) as thread_factory:
+            watcher.start()
+
+        thread_factory.assert_called_once_with(target=watcher._loop, name="haoleme-actions", daemon=True)
+        thread.start.assert_called_once_with()
+
     def test_instant_action_channel_is_limited_to_private_relays(self):
         private = CloudConfig("http://192.168.1.20:8000", "default", "x" * 32)
         official = CloudConfig(DEFAULT_CLOUD_URL, "default", "x" * 32)

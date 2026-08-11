@@ -476,6 +476,104 @@ class CloudServerDeviceTest(unittest.TestCase):
                 thread.join(timeout=2)
                 server.server_close()
 
+    def test_action_wait_combines_stop_rerun_shutdown_and_terminal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 66)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            account_key = "account-all-controls"
+            device_id = "dev_all_controls"
+            device_token = "device-token-all-controls-123456"
+            try:
+                store_device_token(db_path, account_key, device_id, "All Controls", device_token, iso_now())
+                upsert_device(db_path, account_key, device_id, "All Controls", iso_now())
+                upsert_run(db_path, account_key, self.sample_run("run-all-controls", device_id, "All Controls", "running"))
+                request_run_interrupt(db_path, account_key, "run-all-controls")
+                request_run_rerun(db_path, account_key, "run-all-controls")
+                request_shutdown_after_run(db_path, account_key, "run-all-controls", enabled=True)
+                terminal, terminal_error = request_terminal_run(
+                    db_path,
+                    account_key,
+                    device_id,
+                    "action_terminal_all_controls",
+                    "4bc778f1-0eed-4021-bd0a-87ed0cb8a3dd",
+                    {"v": 1, "nonce": "nonce", "ciphertext": "ciphertext"},
+                )
+                self.assertIsNone(terminal_error)
+                self.assertIsNotNone(terminal)
+
+                request = urllib.request.Request(
+                    base + "/api/devices/actions/wait?timeout=1",
+                    headers={"Authorization": "Bearer " + device_token},
+                    method="GET",
+                )
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(payload["interrupts"][0]["id"], "run-all-controls")
+                self.assertEqual(
+                    {item["action"] for item in payload["actions"]},
+                    {"rerun", "shutdown_after_run", "terminal"},
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
+    def test_action_waiters_do_not_consume_regular_request_capacity(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"HAOLEME_MAX_REQUEST_THREADS": "4"}
+        ):
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 66)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            account_key = "account-wait-capacity"
+            device_id = "dev_wait_capacity"
+            device_token = "device-token-wait-capacity-123456"
+            waiters = []
+            errors = []
+            try:
+                store_device_token(db_path, account_key, device_id, "Wait Mac", device_token, iso_now())
+
+                def wait_for_controls():
+                    try:
+                        request = urllib.request.Request(
+                            base + "/api/devices/actions/wait?timeout=2",
+                            headers={"Authorization": "Bearer " + device_token},
+                            method="GET",
+                        )
+                        with urllib.request.urlopen(request, timeout=4) as response:
+                            response.read()
+                    except Exception as exc:
+                        errors.append(exc)
+
+                for _ in range(4):
+                    waiter = threading.Thread(target=wait_for_controls)
+                    waiter.start()
+                    waiters.append(waiter)
+                time.sleep(0.25)
+
+                started = time.monotonic()
+                with urllib.request.urlopen(base + "/health", timeout=1.5) as response:
+                    health = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(health["ok"])
+                self.assertLess(time.monotonic() - started, 1.0)
+                for waiter in waiters:
+                    waiter.join(timeout=4)
+                self.assertFalse(errors)
+            finally:
+                server.notify_action_waiters()
+                for waiter in waiters:
+                    waiter.join(timeout=1)
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
     def test_pending_controls_returns_stop_and_remote_actions_together(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"

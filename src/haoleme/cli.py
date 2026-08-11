@@ -1694,7 +1694,7 @@ class RemoteActionWatcher:
 
     def start(self) -> None:
         config = CloudConfig.load()
-        if config is None or not uses_private_relay(config):
+        if config is None:
             return
         self._thread = threading.Thread(target=self._loop, name="haoleme-actions", daemon=True)
         self._thread.start()
@@ -1708,7 +1708,7 @@ class RemoteActionWatcher:
         failures = 0
         while not self._stop.is_set():
             config = CloudConfig.load()
-            if config is None or not uses_private_relay(config):
+            if config is None:
                 self._stop.wait(5)
                 continue
             client = CloudClient(config, timeout=REMOTE_ACTION_WAIT_SECONDS + 5)
@@ -1806,20 +1806,20 @@ def heartbeat_run_foreground() -> int:
                     next_heartbeat_at - 2.0,
                 )
                 try:
-                    # An idle device has nothing to interrupt, so avoid the
-                    # read request entirely. During an active run, collect all
-                    # mobile controls in the same poll that historically drove
-                    # Stop, keeping rerun and shutdown on that proven cadence.
+                    # The dedicated control watcher owns stop, rerun, shutdown,
+                    # and terminal delivery. Fall back to the legacy active-run
+                    # poll only while that watcher cannot reach its endpoint.
                     if active:
-                        control_messages, interrupted = apply_cloud_controls(
-                            store,
-                            client,
-                            deadline=maintenance_deadline,
-                        )
-                        for message in control_messages:
-                            print(message, flush=True)
-                        if interrupted:
-                            print(f"Applied {interrupted} cloud interrupt(s).", flush=True)
+                        if action_watcher.last_error:
+                            control_messages, interrupted = apply_cloud_controls(
+                                store,
+                                client,
+                                deadline=maintenance_deadline,
+                            )
+                            for message in control_messages:
+                                print(message, flush=True)
+                            if interrupted:
+                                print(f"Applied {interrupted} cloud interrupt(s).", flush=True)
                         recovered = reconcile_orphaned_running_runs(store, client, deadline=maintenance_deadline)
                         if recovered:
                             print(f"Recovered {recovered} orphaned run(s).", flush=True)

@@ -52,6 +52,7 @@ DEFAULT_MONITOR_MIN_FREE_BYTES = 512 * 1024 * 1024
 DEFAULT_MONITOR_MAX_BACKUP_AGE_HOURS = 30
 SPACE_JOIN_CODE_TTL_SECONDS = 300
 DEFAULT_MAX_REQUEST_THREADS = 32
+DEFAULT_MAX_ACTION_WAITERS = 256
 REMOTE_ACTION_LEASE_SECONDS = 120
 REMOTE_ACTIONS_PER_HEARTBEAT = 3
 REMOTE_ACTION_WAIT_MAX_SECONDS = 25
@@ -92,6 +93,12 @@ class HaolemeCloudServer(ThreadingHTTPServer):
         except ValueError:
             configured_threads = DEFAULT_MAX_REQUEST_THREADS
         self.request_slots = threading.BoundedSemaphore(max(4, min(configured_threads, 128)))
+        try:
+            configured_waiters = int(os.environ.get("HAOLEME_MAX_ACTION_WAITERS", str(DEFAULT_MAX_ACTION_WAITERS)))
+        except ValueError:
+            configured_waiters = DEFAULT_MAX_ACTION_WAITERS
+        self.action_wait_slots = threading.BoundedSemaphore(max(8, min(configured_waiters, 1024)))
+        self.request_slot_state = threading.local()
         self.pair_confirm_attempts: dict[str, list[float]] = {}
         self.pair_confirm_attempts_lock = threading.Lock()
         self.pair_start_attempts: dict[str, list[float]] = {}
@@ -128,10 +135,23 @@ class HaolemeCloudServer(ThreadingHTTPServer):
             raise
 
     def process_request_thread(self, request, client_address) -> None:
+        self.request_slot_state.held = True
         try:
             super().process_request_thread(request, client_address)
         finally:
+            if getattr(self.request_slot_state, "held", False):
+                self.request_slots.release()
+                self.request_slot_state.held = False
+
+    def suspend_current_request_slot(self) -> None:
+        if getattr(self.request_slot_state, "held", False):
             self.request_slots.release()
+            self.request_slot_state.held = False
+
+    def resume_current_request_slot(self) -> None:
+        if not getattr(self.request_slot_state, "held", False):
+            self.request_slots.acquire()
+            self.request_slot_state.held = True
 
 
 class HaolemeCloudHandler(BaseHTTPRequestHandler):
@@ -238,7 +258,16 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 wait_seconds = int(first_query_value(query, "timeout") or REMOTE_ACTION_WAIT_MAX_SECONDS)
             except ValueError:
                 wait_seconds = REMOTE_ACTION_WAIT_MAX_SECONDS
-            self.wait_for_remote_actions(auth, max(1, min(wait_seconds, REMOTE_ACTION_WAIT_MAX_SECONDS)))
+            if not self.server.action_wait_slots.acquire(blocking=False):
+                self.send_json(
+                    {"error": "too many control listeners, retry shortly", "code": "action_wait_capacity"},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            try:
+                self.wait_for_remote_actions(auth, max(1, min(wait_seconds, REMOTE_ACTION_WAIT_MAX_SECONDS)))
+            finally:
+                self.server.action_wait_slots.release()
             return
 
         if parsed.path.startswith("/api/runs/"):
@@ -582,7 +611,11 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             if remaining <= 0:
                 self.send_json({"actions": [], "interrupts": []})
                 return
-            generation = self.server.wait_for_action_notification(generation, remaining)
+            self.server.suspend_current_request_slot()
+            try:
+                generation = self.server.wait_for_action_notification(generation, remaining)
+            finally:
+                self.server.resume_current_request_slot()
 
     def complete_remote_action(self, auth: AuthContext, action_id: str) -> None:
         if not action_id:
@@ -3018,6 +3051,19 @@ def claim_pending_run_actions(
     claimed_at = now or iso_now()
     actions: list[dict[str, Any]] = []
     with connect(db_path) as db:
+        pending = db.execute(
+            """
+            SELECT 1 FROM run_actions
+            WHERE account_key = ? AND device_id = ?
+              AND status IN ('pending', 'claimed', 'cancel_requested')
+            LIMIT 1
+            """,
+            (account_key, device_id),
+        ).fetchone()
+        if pending is None:
+            return []
+        # Empty control heartbeats stay read-only. Only contend for SQLite's
+        # writer lock when this device actually has an action to claim.
         db.execute("BEGIN IMMEDIATE")
         rows = db.execute(
             """
