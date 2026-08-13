@@ -16,7 +16,7 @@
 <p align="center">
   <a href="https://haolemeapp.github.io/">Website</a>
   ·
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/Haoleme-1.0.0.apk">Download APK</a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk">Download APK</a>
   ·
   <a href="#quick-start">Quick Start</a>
   ·
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/Haoleme-1.0.0.apk"><img src="https://img.shields.io/badge/APK-v1.0.0-3DDC84?logo=android&logoColor=white" alt="Android APK 1.0.0"></a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk"><img src="https://img.shields.io/badge/APK-v1.0.1-3DDC84?logo=android&logoColor=white" alt="Android APK 1.0.1"></a>
   <a href="https://pypi.org/project/haoleme/"><img src="https://img.shields.io/pypi/v/haoleme?label=CLI&logo=pypi&logoColor=white&color=F0B429" alt="Haoleme CLI on PyPI"></a>
   <a href="https://github.com/HaolemeApp/Haoleme/issues"><img src="https://img.shields.io/github/issues-search/HaolemeApp/Haoleme?query=is%3Aissue&label=issues&logo=github&color=E85D75" alt="Total GitHub Issues"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-8B5CF6" alt="License: AGPL-3.0-or-later"></a>
@@ -35,12 +35,12 @@
 </p>
 
 > [!NOTE]
-> **Haoleme v1.0.0 is now available as the first stable release.**
+> **Haoleme v1.0.1 is a stable release.** Model-training progress monitoring is available as a feature in development, so its recognition and presentation may continue to evolve.
 > [View the release](https://github.com/HaolemeApp/Haoleme/releases/latest) or install it directly over an existing version.
 
 ## Why Haoleme
 
-Haoleme is a local-first command monitor for work that should keep running while you do something else. Prefix a command with `hao`, then use the Android app to follow live output, switch between machines, receive completion notifications, or stop a task remotely.
+Haoleme is a local-first command monitor for work that should keep running while you do something else. Prefix a command with `hao`, then use the Android app to follow live output, switch between machines, receive completion notifications, or stop a task remotely. For supported model-training output, run cards can also surface the latest epoch, loss, elapsed time, and a visual progress bar.
 
 It is built for model training, evaluations, remote scripts, batch jobs, crawlers, builds, and long SSH sessions. Commands and console output are end-to-end encrypted before they reach Haoleme Cloud or a self-hosted Relay.
 
@@ -57,7 +57,7 @@ It is built for model training, evaluations, remote scripts, batch jobs, crawler
 
 ### 1. Download the Android app
 
-[Download Haoleme v1.0.0](https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/Haoleme-1.0.0.apk)
+[Download Haoleme v1.0.1](https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk)
 
 ### 2. Install the CLI
 
@@ -94,6 +94,7 @@ The run, live console output, and final status will appear in the app automatica
 ## Features
 
 - **Live runs:** running, succeeded, and failed states with searchable console output and local history.
+- **Training progress (in development):** detect common epoch, loss, and tqdm output and show progress directly on run cards. Recognition and presentation may change as this feature evolves.
 - **Phone notifications:** know when a command completes or fails without watching SSH.
 - **Multiple machines:** switch between computers and servers, rename devices, and see online status.
 - **Projects and metrics:** group related runs and inspect CPU, memory, and GPU utilization.

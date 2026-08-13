@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 182,
-    "versionName": "1.0.0",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/Haoleme-1.0.0.apk",
+    "versionCode": 183,
+    "versionName": "1.0.1",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/Haoleme-1.0.0.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-1.0.0.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-1.0.1.apk"
     ],
-    "sha256": "a5cc860feeb35db77742e022e0d7b28126c9f076e21441d123079131f98000c7",
+    "sha256": "26b06b3f91d27330530daaf6bef6edea1e1c25eb184579e6bde20d85f286fd29",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "设备利用率使用绿黄红渐变；修复控制台实时输出不自动跟随；新任务低打扰自动出现；修复切换暗色主题后卡片仍为白色。"
+    "notes": "稳定版更新：模型训练卡片可显示命令、耗时、loss、Epoch 和进度条；修复训练指标挤压命令与时间、进度停在首轮的问题。训练进度监控仍在开发中，展示可能继续调整。"
   },
   "python": {
-    "version": "0.5.3",
+    "version": "0.5.4",
     "packageUrl": "haoleme",
-    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/haoleme-0.5.3-py3-none-any.whl",
-    "notes": "Login now restarts heartbeat so memory and process snapshots start uploading immediately. / 登录后自动重启心跳，内存和进程快照无需再手动重启即可上报。"
+    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/haoleme-0.5.4-py3-none-any.whl",
+    "notes": "Training progress now follows the latest Epoch in the output tail instead of freezing on the first one. / 训练进度会跟随输出尾部的最新 Epoch，不再停留在第一轮。"
   }
 }

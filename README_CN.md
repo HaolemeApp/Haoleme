@@ -16,7 +16,7 @@
 <p align="center">
   <a href="https://haolemeapp.github.io/">官网</a>
   ·
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/Haoleme-1.0.0.apk">下载 APK</a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk">下载 APK</a>
   ·
   <a href="#快速开始">快速开始</a>
   ·
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/Haoleme-1.0.0.apk"><img src="https://img.shields.io/badge/APK-v1.0.0-3DDC84?logo=android&logoColor=white" alt="Android APK 1.0.0"></a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk"><img src="https://img.shields.io/badge/APK-v1.0.1-3DDC84?logo=android&logoColor=white" alt="Android APK 1.0.1"></a>
   <a href="https://pypi.org/project/haoleme/"><img src="https://img.shields.io/pypi/v/haoleme?label=CLI&logo=pypi&logoColor=white&color=F0B429" alt="PyPI 上的 Haoleme CLI"></a>
   <a href="https://github.com/HaolemeApp/Haoleme/issues"><img src="https://img.shields.io/github/issues-search/HaolemeApp/Haoleme?query=is%3Aissue&label=issues&logo=github&color=E85D75" alt="GitHub Issue 总数"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-8B5CF6" alt="许可证：AGPL-3.0-or-later"></a>
@@ -35,12 +35,12 @@
 </p>
 
 > [!NOTE]
-> **好了么 v1.0.0 已正式上线，这是首个稳定版本。**
+> **好了么 v1.0.1 是稳定版本。** 模型训练进程监控目前属于开发中功能，识别规则和展示方式后续可能继续调整。
 > [查看最新 Release](https://github.com/HaolemeApp/Haoleme/releases/latest)，已有版本可以直接覆盖安装升级。
 
 ## 为什么使用好了么
 
-好了么是一个本地优先的命令监控工具，适合那些“应该继续运行，但不值得一直守在终端前”的任务。在原命令前加上 `hao`，就可以在 Android App 中查看实时输出、切换设备、接收结束通知，或远程停止任务。
+好了么是一个本地优先的命令监控工具，适合那些“应该继续运行，但不值得一直守在终端前”的任务。在原命令前加上 `hao`，就可以在 Android App 中查看实时输出、切换设备、接收结束通知，或远程停止任务。对于能够识别的模型训练输出，运行卡片还会显示最新 Epoch、loss、耗时和可视化进度条。
 
 它适合模型训练、完整评测、远程脚本、批处理、爬虫、构建和长时间 SSH 会话。命令与控制台输出会先进行端到端加密，再发送到好了么 Cloud 或自建 Relay。
 
@@ -57,7 +57,7 @@
 
 ### 1. 下载 Android App
 
-[下载好了么 v1.0.0](https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/Haoleme-1.0.0.apk)
+[下载好了么 v1.0.1](https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk)
 
 ### 2. 安装 CLI
 
@@ -94,6 +94,7 @@ hao bash script.sh
 ## 功能
 
 - **实时运行：**查看 running、succeeded 和 failed 状态，搜索控制台输出并在手机本地保存历史。
+- **训练进度（开发中）：**识别常见的 Epoch、loss 和 tqdm 输出，直接在运行卡片显示进度；随着功能完善，识别规则和界面可能继续变化。
 - **手机通知：**命令完成或失败后收到通知，不必一直守着 SSH。
 - **多台设备：**在电脑和服务器之间切换，重命名设备并查看在线状态。
 - **项目与指标：**按项目整理运行记录，查看 CPU、内存和 GPU 利用率。
