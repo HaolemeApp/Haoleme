@@ -1,13 +1,13 @@
 {
   "android": {
-    "versionCode": 181,
-    "versionName": "0.9.46",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.46/Haoleme-0.9.46.apk",
+    "versionCode": 182,
+    "versionName": "1.0.0",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/Haoleme-1.0.0.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.46/Haoleme-0.9.46.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.46.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/Haoleme-1.0.0.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-1.0.0.apk"
     ],
-    "sha256": "56509676ebe9994c6a762c32b62a60878eba55efd780f7f43080d9165f93d86e",
+    "sha256": "a5cc860feeb35db77742e022e0d7b28126c9f076e21441d123079131f98000c7",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
     "notes": "设备利用率使用绿黄红渐变；修复控制台实时输出不自动跟随；新任务低打扰自动出现；修复切换暗色主题后卡片仍为白色。"
