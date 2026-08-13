@@ -998,6 +998,8 @@ def heartbeat_command(argv: Sequence[str]) -> int:
                 print(f"Last sync: {state.get('lastSyncAt')} ({state.get('lastSyncedRuns', 0)} run(s))")
             if state.get("lastError"):
                 print(f"Last err:  {state.get('lastError')}")
+            if state.get("lastMetricsError"):
+                print(f"Metrics:   {state.get('lastMetricsError')}")
         return 0
     print("Heartbeat: stopped")
     state = read_heartbeat_state()
@@ -1202,13 +1204,24 @@ def start_heartbeat_daemon() -> tuple[bool, str]:
         unlink_missing(pid_path)
         log_path = heartbeat_log_path()
         with log_path.open("a", encoding="utf-8") as log_file:
+            popen_kwargs: dict[str, object] = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": log_file,
+                "stderr": subprocess.STDOUT,
+                "close_fds": True,
+            }
+            if os.name == "nt":
+                # Keep the heartbeat alive after the PowerShell/cmd window or
+                # the monitored hao process exits.
+                popen_kwargs["creationflags"] = (
+                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    | getattr(subprocess, "DETACHED_PROCESS", 0)
+                )
+            else:
+                popen_kwargs["start_new_session"] = True
             proc = subprocess.Popen(
                 [sys.executable, "-m", "haoleme", "heartbeat", "run"],
-                stdin=subprocess.DEVNULL,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                close_fds=True,
+                **popen_kwargs,
             )
         pid_path.write_text(f"{proc.pid}\n", encoding="utf-8")
         time.sleep(0.2)
@@ -1246,12 +1259,39 @@ def heartbeat_initial_delay(config: CloudConfig) -> int:
     return int(digest[:8], 16) % HEARTBEAT_STAGGER_SECONDS
 
 
-def _parse_int(value: str):
-    value = value.strip()
+def _parse_int(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    try:
+        value = str(value).strip()
+    except Exception:
+        return None
+    if not value:
+        return None
     try:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def collect_heartbeat_metrics() -> tuple[list, dict, str]:
+    """Collect best-effort metrics without ever suppressing device presence."""
+    errors: list[str] = []
+    try:
+        gpus = collect_gpu_stats()
+    except Exception as exc:
+        gpus = []
+        errors.append(f"GPU: {type(exc).__name__}: {exc}")
+    try:
+        cpu = collect_cpu_stats()
+    except Exception as exc:
+        cpu = {"cores": os.cpu_count() or 1}
+        errors.append(f"CPU/memory: {type(exc).__name__}: {exc}")
+    return gpus, cpu, "; ".join(errors)[:500]
 
 
 def _collect_nvidia_gpu_stats() -> list:
@@ -2013,7 +2053,8 @@ def heartbeat_run_foreground() -> int:
                     # Presence must never wait behind a large pending-output
                     # backlog. Send it first, then spend a bounded amount of
                     # time on maintenance below.
-                    heartbeat_payload = client.heartbeat(gpus=collect_gpu_stats(), cpu=collect_cpu_stats())
+                    gpus, cpu, metrics_error = collect_heartbeat_metrics()
+                    heartbeat_payload = client.heartbeat(gpus=gpus, cpu=cpu)
                     for action_message in apply_remote_actions(store, client, heartbeat_payload.get("actions")):
                         print(action_message, flush=True)
                     for shutdown_message in apply_scheduled_shutdowns(store, client):
@@ -2023,9 +2064,12 @@ def heartbeat_run_foreground() -> int:
                         haolemeVersion=__version__,
                         lastOkAt=now_text,
                         lastError="",
+                        lastMetricsError=metrics_error,
                         pendingRuns=store.count_unsynced_runs(),
                     )
                     print(f"Heartbeat ok: {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+                    if metrics_error:
+                        print(f"Heartbeat metrics warning: {metrics_error}", flush=True)
                     last_heartbeat_ok = True
                 except Exception as exc:
                     last_heartbeat_ok = False
@@ -2849,6 +2893,11 @@ def doctor_command(argv: Sequence[str]) -> int:
         report("heartbeat last ok", "OK", detail)
     elif heartbeat_state.get("lastError"):
         report("heartbeat last ok", "WARN", f"never; last error={heartbeat_state.get('lastError')}")
+    metrics_error = str(heartbeat_state.get("lastMetricsError") or "").strip()
+    if metrics_error:
+        report("heartbeat metrics", "WARN", metrics_error)
+    elif heartbeat_state.get("lastOkAt"):
+        report("heartbeat metrics", "OK")
 
     store = RunStore()
     pending = store.count_unsynced_runs()

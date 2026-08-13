@@ -25,6 +25,7 @@ from haoleme.cli import (
     command_needs_shell,
     compare_versions,
     collect_cpu_stats,
+    collect_heartbeat_metrics,
     collect_gpu_stats,
     collect_memory_stats,
     _parse_darwin_vm_stat,
@@ -68,6 +69,7 @@ from haoleme.cli import (
     write_update_check_cache,
     write_heartbeat_state,
     _parse_windows_gpu_payload,
+    _windows_memory_stats,
 )
 from haoleme.cloud import CloudConfig, DEFAULT_CLOUD_URL, InterruptWatcher
 from haoleme.crypto import encrypt_action_payload, generate_account_key
@@ -861,6 +863,28 @@ class CliPairingTest(unittest.TestCase):
             stats = collect_cpu_stats()
 
         self.assertEqual(stats["utilization"], 47)
+
+    def test_windows_memory_stats_accepts_numeric_powershell_json(self):
+        with patch(
+            "haoleme.cli._windows_json_command",
+            return_value={"total": 16 * 1024 * 1024, "free": 6 * 1024 * 1024},
+        ):
+            stats = _windows_memory_stats()
+
+        self.assertEqual(stats["memoryTotal"], 16 * 1024)
+        self.assertEqual(stats["memoryUsed"], 10 * 1024)
+        self.assertEqual(stats["memoryUtilization"], 62)
+
+    def test_metric_failure_does_not_suppress_heartbeat_payload(self):
+        with patch("haoleme.cli.collect_gpu_stats", side_effect=RuntimeError("counter unavailable")), patch(
+            "haoleme.cli.collect_cpu_stats", side_effect=AttributeError("bad CIM value")
+        ), patch("haoleme.cli.os.cpu_count", return_value=12):
+            gpus, cpu, error = collect_heartbeat_metrics()
+
+        self.assertEqual(gpus, [])
+        self.assertEqual(cpu, {"cores": 12})
+        self.assertIn("GPU: RuntimeError", error)
+        self.assertIn("CPU/memory: AttributeError", error)
 
     def test_parse_windows_gpu_payload_supports_amd_adapter(self):
         payload = {
