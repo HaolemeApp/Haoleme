@@ -15,6 +15,15 @@ class ProgressParserTest(unittest.TestCase):
         self.assertEqual(fields["progress"], 30.0)
         self.assertAlmostEqual(fields["lastLoss"], 0.4312)
 
+    def test_uses_latest_bracketed_epoch_from_output_tail(self):
+        fields = progress_fields(
+            "Epoch [1/100] | loss=2.4031 | acc=52.20%\n"
+            "Epoch [72/100] | loss=0.2401 | acc=93.77%\n"
+            "Epoch [99/100] | loss=0.1477 | acc=94.68%"
+        )
+        self.assertEqual(fields["progress"], 99.0)
+        self.assertAlmostEqual(fields["lastLoss"], 0.1477)
+
     def test_parse_eta_supports_mm_ss(self):
         self.assertEqual(parse_eta("01:05"), 65)
         self.assertEqual(parse_eta("1:02:03"), 3723)

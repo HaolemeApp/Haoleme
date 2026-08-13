@@ -36,16 +36,20 @@ class ProgressParser:
         if not text:
             return False
         for line in re.split(r"[\r\n]", text):
-            if match := TQDM_RE.search(line):
-                self.state.percent = float(match.group(1))
+            tqdm_match = TQDM_RE.search(line)
+            if tqdm_match:
+                self.state.percent = float(tqdm_match.group(1))
                 changed = True
-                if match.group(5) and (eta := parse_eta(match.group(5))) is not None:
+                if tqdm_match.group(5) and (eta := parse_eta(tqdm_match.group(5))) is not None:
                     self.state.eta_seconds = eta
             if match := EPOCH_RE.search(line):
                 current, total = int(match.group(1)), int(match.group(2))
                 if total > 0:
                     self.state.epoch = (current, total)
-                    if self.state.percent is None:
+                    # Each cloud update parses a tail containing several epochs.
+                    # Keep the newest epoch instead of freezing on the first one.
+                    # A tqdm percentage on the same line is more precise.
+                    if not tqdm_match:
                         self.state.percent = min(100.0, current * 100.0 / total)
                     changed = True
             if match := LOSS_RE.search(line):

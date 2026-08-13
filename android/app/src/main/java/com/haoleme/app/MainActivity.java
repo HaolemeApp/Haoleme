@@ -211,6 +211,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String TAG_RUN_LOSS = "run_loss";
     private static final String TAG_RUN_ETA = "run_eta";
     private static final String TAG_RUN_ETA_BAR = "run_eta_bar";
+    private static final String TAG_RUN_TRAINING_SECTION = "run_training_section";
     private static final int CONSOLE_RENDER_INITIAL_CHARS = 60000;
     private static final int CONSOLE_RENDER_STEP_CHARS = 60000;
     private static final int CONSOLE_HISTORY_DEFAULT_CHARS = 100_000_000;
@@ -5931,13 +5932,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
             output.setText(hasOutput ? displayText(latest) : (isEnglish() ? "(no output)" : "（暂无输出）"));
             output.setTextColor(hasOutput ? textPrimary() : textSecondary());
         }
-        bindRunTrainingChrome(
-                taggedTextView(root, TAG_RUN_LOSS),
-                taggedTextView(root, TAG_RUN_ETA),
-                taggedView(root, TAG_RUN_ETA_BAR) instanceof MeterBarView
-                        ? (MeterBarView) taggedView(root, TAG_RUN_ETA_BAR) : null,
-                run
-        );
+        TextView lossView = taggedTextView(root, TAG_RUN_LOSS);
+        TextView etaView = taggedTextView(root, TAG_RUN_ETA);
+        View etaBarView = taggedView(root, TAG_RUN_ETA_BAR);
+        MeterBarView etaBar = etaBarView instanceof MeterBarView ? (MeterBarView) etaBarView : null;
+        bindRunTrainingChrome(lossView, etaView, etaBar, run);
+        updateRunTrainingVisibility(taggedView(root, TAG_RUN_TRAINING_SECTION), lossView, etaView, etaBar);
         View oldProgress = taggedView(root, TAG_RUN_PROGRESS_ROW);
         if (oldProgress != null) oldProgress.setVisibility(View.GONE);
     }
@@ -5989,9 +5989,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
             } else {
                 etaBar.setVisibility(View.VISIBLE);
                 int value = (int) Math.round(Math.max(0, Math.min(100, progress)));
-                etaBar.setMeter(value, meterFillColor(value), meterTrackColor());
+                etaBar.setMeter(value, statusColor(run.optString("status", "running")), meterTrackColor());
             }
         }
+    }
+
+    private void updateRunTrainingVisibility(View section, TextView lossView, TextView etaView, MeterBarView etaBar) {
+        if (section == null) return;
+        boolean visible = (lossView != null && lossView.getVisibility() == View.VISIBLE)
+                || (etaView != null && etaView.getVisibility() == View.VISIBLE)
+                || (etaBar != null && etaBar.getVisibility() == View.VISIBLE);
+        section.setVisibility(visible ? View.VISIBLE : View.GONE);
     }
 
     private Double runLossValue(JSONObject run) {
@@ -6063,27 +6071,31 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private Double runProgressValue(JSONObject run) {
+        Double latest = parseProgressFromLine(latestOutputLine(run));
+        if (latest != null) return latest;
         if (run != null && run.has("progress") && !run.isNull("progress")) {
             double value = run.optDouble("progress", -1);
             if (value >= 0) return Math.max(0, Math.min(100, value));
         }
-        return parseProgressFromLine(latestOutputLine(run));
+        return null;
     }
 
     private Double parseProgressFromLine(String line) {
         if (line == null || line.isEmpty()) return null;
-        java.util.regex.Matcher percent = java.util.regex.Pattern.compile("(\\d+(?:\\.\\d+)?)%").matcher(line);
-        if (percent.find()) {
-            try {
-                return Math.max(0, Math.min(100, Double.parseDouble(percent.group(1))));
-            } catch (Exception ignored) {
-            }
-        }
-        java.util.regex.Matcher epoch = java.util.regex.Pattern.compile("(?i)epoch\\s*(\\d+)\\s*/\\s*(\\d+)").matcher(line);
+        java.util.regex.Matcher epoch = java.util.regex.Pattern
+                .compile("(?i)epoch[\\s:=\\[]*(\\d+)\\s*/\\s*(\\d+)")
+                .matcher(line);
         if (epoch.find()) {
             try {
                 double total = Double.parseDouble(epoch.group(2));
                 if (total > 0) return Math.max(0, Math.min(100, Double.parseDouble(epoch.group(1)) * 100.0 / total));
+            } catch (Exception ignored) {
+            }
+        }
+        java.util.regex.Matcher percent = java.util.regex.Pattern.compile("(\\d+(?:\\.\\d+)?)%").matcher(line);
+        if (percent.find()) {
+            try {
+                return Math.max(0, Math.min(100, Double.parseDouble(percent.group(1))));
             } catch (Exception ignored) {
             }
         }
@@ -6577,13 +6589,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             pinnedParams.setMargins(0, 0, dp(6), 0);
             topLine.addView(pinnedBadge, pinnedParams);
         }
-        TextView lossView = new TextView(this);
-        lossView.setTag(TAG_RUN_LOSS);
-        lossView.setTextSize(11);
-        lossView.setTypeface(android.graphics.Typeface.MONOSPACE);
-        lossView.setTextColor(textSecondary());
-        lossView.setPadding(0, 0, dp(6), 0);
-        topLine.addView(lossView, matchWrap());
         topLine.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         card.addView(topLine, matchWrap());
 
@@ -6599,19 +6604,48 @@ public class MainActivity extends Activity implements LifecycleOwner {
         meta.setSingleLine(true);
         meta.setEllipsize(android.text.TextUtils.TruncateAt.END);
         metaRow.addView(meta, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        card.addView(metaRow, matchWrap());
+
+        LinearLayout trainingSection = new LinearLayout(this);
+        trainingSection.setTag(TAG_RUN_TRAINING_SECTION);
+        trainingSection.setOrientation(LinearLayout.VERTICAL);
+        trainingSection.setPadding(0, dp(7), 0, 0);
+
+        LinearLayout trainingLabels = new LinearLayout(this);
+        trainingLabels.setOrientation(LinearLayout.HORIZONTAL);
+        trainingLabels.setGravity(Gravity.CENTER_VERTICAL);
+        TextView lossView = new TextView(this);
+        lossView.setTag(TAG_RUN_LOSS);
+        lossView.setTextSize(11);
+        lossView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        lossView.setTextColor(textSecondary());
+        trainingLabels.addView(lossView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+        View trainingSpacer = new View(this);
+        trainingLabels.addView(trainingSpacer, new LinearLayout.LayoutParams(0, 0, 1));
         TextView eta = new TextView(this);
         eta.setTag(TAG_RUN_ETA);
         eta.setTextSize(10);
         eta.setTypeface(android.graphics.Typeface.MONOSPACE);
         eta.setTextColor(textSecondary());
-        eta.setPadding(dp(6), 0, dp(6), 0);
-        metaRow.addView(eta, matchWrap());
+        trainingLabels.addView(eta, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+        trainingSection.addView(trainingLabels, matchWrap());
         MeterBarView etaBar = new MeterBarView(this);
         etaBar.setTag(TAG_RUN_ETA_BAR);
-        LinearLayout.LayoutParams etaBarParams = new LinearLayout.LayoutParams(dp(64), dp(6));
-        metaRow.addView(etaBar, etaBarParams);
-        card.addView(metaRow, matchWrap());
+        LinearLayout.LayoutParams etaBarParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(6)
+        );
+        etaBarParams.setMargins(0, dp(5), 0, 0);
+        trainingSection.addView(etaBar, etaBarParams);
+        card.addView(trainingSection, matchWrap());
         bindRunTrainingChrome(lossView, eta, etaBar, run);
+        updateRunTrainingVisibility(trainingSection, lossView, eta, etaBar);
 
         String latest = latestOutputLine(run);
         boolean hasOutput = !latest.isEmpty();
