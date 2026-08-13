@@ -134,7 +134,8 @@ public class HaolemeForegroundService extends Service {
                     String did = run.optString("deviceId", "").trim();
                     if (!did.isEmpty()) {
                         long now = System.currentTimeMillis();
-                        long prev = deviceLastReportTime.getOrDefault(did, 0L);
+                        Long previousReport = deviceLastReportTime.get(did);
+                        long prev = previousReport == null ? 0L : previousReport;
                         long gap = now - prev;
                         deviceLastReportTime.put(did, now);
                         if (gap > 5 * 60 * 1000) {
@@ -281,7 +282,10 @@ public class HaolemeForegroundService extends Service {
         boolean completedDuringSession = runTerminalAtMillis(run) >= notificationSessionStartedAt;
 
         // Detect reconnect: if this terminal report comes long after last non-terminal for this run
-        long lastNon = lastNonTerminalForRun.getOrDefault(id, notificationSessionStartedAt);
+        Long previousNonTerminal = lastNonTerminalForRun.get(id);
+        long lastNon = previousNonTerminal == null
+                ? notificationSessionStartedAt
+                : previousNonTerminal;
         long termTime = runTerminalAtMillis(run);
         boolean afterReconnect = (termTime - lastNon > 5 * 60 * 1000); // >5min gap
 

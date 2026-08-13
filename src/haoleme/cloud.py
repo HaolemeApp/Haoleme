@@ -19,6 +19,7 @@ from typing import Any
 from .store import RunRecord, RunStore, default_data_dir
 from . import __version__
 from .crypto import encrypt_output_chunk, encrypt_run_payload, is_valid_account_key
+from .progress import progress_fields
 
 
 DEFAULT_CLOUD_URL = os.environ.get("HAOLEME_CLOUD_URL", "https://api.haoleme.cloud").rstrip("/")
@@ -286,6 +287,7 @@ class CloudClient:
             payload["deviceId"] = self.config.device_id
         if self.config.device_name:
             payload["deviceName"] = self.config.device_name
+        payload.update(progress_fields(str(run.output_tail or "")))
         if is_valid_account_key(self.config.encryption_key):
             payload = encrypt_run_payload(payload, self.config.encryption_key, include_output=include_output)
         elif not env_flag("HAOLEME_ALLOW_PLAINTEXT_CLOUD_RUNS", False):
@@ -315,6 +317,7 @@ class CloudClient:
             patch["deviceId"] = self.config.device_id
         if self.config.device_name:
             patch["deviceName"] = self.config.device_name
+        patch.update(progress_fields(str(run.output_tail or deltas.get("output_tail") or "")))
         output_delta = deltas.get("output_tail") or ""
         stdout_delta = deltas.get("stdout_tail") or ""
         stderr_delta = deltas.get("stderr_tail") or ""

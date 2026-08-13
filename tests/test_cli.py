@@ -26,6 +26,11 @@ from haoleme.cli import (
     compare_versions,
     collect_cpu_stats,
     collect_gpu_stats,
+    collect_memory_stats,
+    _parse_darwin_vm_stat,
+    _parse_linux_meminfo,
+    _parse_nvidia_compute_apps,
+    _parse_posix_ps,
     check_cli_update,
     doctor_command,
     heartbeat_initial_delay,
@@ -795,6 +800,58 @@ class CliPairingTest(unittest.TestCase):
         if "utilization" in stats:
             self.assertGreaterEqual(stats["utilization"], 0)
             self.assertLessEqual(stats["utilization"], 100)
+        if "memoryUtilization" in stats:
+            self.assertGreaterEqual(stats["memoryUtilization"], 0)
+            self.assertLessEqual(stats["memoryUtilization"], 100)
+
+    def test_parse_linux_meminfo_uses_available(self):
+        text = "MemTotal:        16384000 kB\nMemFree:          1000000 kB\nMemAvailable:     8192000 kB\n"
+        stats = _parse_linux_meminfo(text)
+        self.assertEqual(stats["memoryTotal"], 16000)
+        self.assertEqual(stats["memoryUsed"], 8000)
+        self.assertEqual(stats["memoryUtilization"], 50)
+
+    def test_parse_darwin_vm_stat_computes_utilization(self):
+        text = (
+            "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+            "Pages free:                               1000.\n"
+            "Pages active:                             2000.\n"
+            "Pages inactive:                           500.\n"
+            "Pages speculative:                        100.\n"
+            "Pages wired down:                         400.\n"
+            "Pages purgeable:                          200.\n"
+        )
+        # 1800 free-ish pages * 16384 = 29491200; total 64MB
+        stats = _parse_darwin_vm_stat(text, 64 * 1024 * 1024)
+        self.assertEqual(stats["memoryTotal"], 64)
+        self.assertGreaterEqual(stats["memoryUtilization"], 0)
+        self.assertLessEqual(stats["memoryUtilization"], 100)
+
+    def test_collect_memory_stats_returns_bounded_snapshot(self):
+        stats = collect_memory_stats()
+        if not stats:
+            return
+        self.assertGreaterEqual(stats["memoryUtilization"], 0)
+        self.assertLessEqual(stats["memoryUtilization"], 100)
+        self.assertGreater(stats["memoryTotal"], 0)
+
+    def test_parse_nvidia_compute_apps_groups_by_uuid(self):
+        text = (
+            "GPU-aaa, 1234, 1024, /usr/bin/python\n"
+            "GPU-aaa, 99, 256, torchrun\n"
+            "GPU-bbb, 7, 512, llama\n"
+        )
+        grouped = _parse_nvidia_compute_apps(text)
+        self.assertEqual(len(grouped["GPU-aaa"]), 2)
+        self.assertEqual(grouped["GPU-aaa"][0]["name"], "python")
+        self.assertEqual(grouped["GPU-bbb"][0]["pid"], 7)
+
+    def test_parse_posix_ps_reads_top_fields(self):
+        text = "  42  12.5  3.0  204800 python\n  7   0.1  1.2   10240 sshd\n"
+        rows = _parse_posix_ps(text)
+        self.assertEqual(rows[0]["pid"], 42)
+        self.assertEqual(rows[0]["cpu"], 12.5)
+        self.assertEqual(rows[0]["memoryUsed"], 200)
 
     def test_collect_cpu_stats_uses_windows_cim_utilization(self):
         with patch("haoleme.cli.os.name", "nt"), patch(

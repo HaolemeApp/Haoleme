@@ -7,13 +7,22 @@
         <item name="android:windowLightStatusBar">true</item>
     </style>
 
+    <style name="AppDialogAnimation">
+        <item name="android:windowEnterAnimation">@anim/dialog_enter</item>
+        <item name="android:windowExitAnimation">@anim/dialog_exit</item>
+    </style>
+
     <!-- For nicer popup dialogs with rounded textured borders -->
     <style name="AppDialog" parent="android:Theme.Material.Light.Dialog">
         <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@style/AppDialogAnimation</item>
+        <item name="android:backgroundDimEnabled">true</item>
     </style>
 
     <style name="AppDialog.Dark" parent="android:Theme.Material.Dialog">
         <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@style/AppDialogAnimation</item>
+        <item name="android:backgroundDimEnabled">true</item>
         <!-- Force light text for dark dialog background -->
         <item name="android:textColorPrimary">#F4F4F5</item>
         <item name="android:textColorSecondary">#B8B8C2</item>

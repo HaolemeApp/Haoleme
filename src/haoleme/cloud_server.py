@@ -53,6 +53,7 @@ DEFAULT_MONITOR_MAX_BACKUP_AGE_HOURS = 30
 SPACE_JOIN_CODE_TTL_SECONDS = 300
 DEFAULT_MAX_REQUEST_THREADS = 32
 DEFAULT_MAX_ACTION_WAITERS = 256
+DEFAULT_MAX_STREAM_LISTENERS = 256
 REMOTE_ACTION_LEASE_SECONDS = 120
 REMOTE_ACTIONS_PER_HEARTBEAT = 3
 REMOTE_ACTION_WAIT_MAX_SECONDS = 25
@@ -113,6 +114,15 @@ class HaolemeCloudServer(ThreadingHTTPServer):
         self.write_attempts_lock = threading.Lock()
         self.action_condition = threading.Condition()
         self.action_generation = 0
+        try:
+            configured_streams = int(os.environ.get("HAOLEME_MAX_STREAM_LISTENERS", str(DEFAULT_MAX_STREAM_LISTENERS)))
+        except ValueError:
+            configured_streams = DEFAULT_MAX_STREAM_LISTENERS
+        self.stream_slots = threading.BoundedSemaphore(max(8, min(configured_streams, 1024)))
+        self.stream_condition = threading.Condition()
+        self.stream_revisions: dict[str, int] = {}
+        self.stream_event_types: dict[str, str] = {}
+        self.stream_payloads: dict[str, dict[str, Any]] = {}
         init_db(db_path)
 
     def notify_action_waiters(self) -> None:
@@ -125,6 +135,34 @@ class HaolemeCloudServer(ThreadingHTTPServer):
             if self.action_generation == generation:
                 self.action_condition.wait(timeout=max(0.0, timeout))
             return self.action_generation
+
+    def notify_stream(self, account_key: str, event_type: str, payload: dict[str, Any] | None = None) -> int:
+        if not account_key:
+            return 0
+        with self.stream_condition:
+            revision = self.stream_revisions.get(account_key, 0) + 1
+            self.stream_revisions[account_key] = revision
+            self.stream_event_types[account_key] = event_type or "refresh"
+            self.stream_payloads[account_key] = dict(payload or {})
+            self.stream_condition.notify_all()
+            return revision
+
+    def wait_for_stream_event(self, account_key: str, since: int, timeout: float) -> tuple[int, str, dict[str, Any]]:
+        with self.stream_condition:
+            revision = self.stream_revisions.get(account_key, 0)
+            if revision <= since:
+                self.stream_condition.wait(timeout=max(0.0, timeout))
+                revision = self.stream_revisions.get(account_key, 0)
+            event_type = self.stream_event_types.get(account_key, "refresh")
+            payload = dict(self.stream_payloads.get(account_key) or {})
+            if revision - since > 1:
+                event_type = "refresh"
+                payload = {}
+            return revision, event_type, payload
+
+    def current_stream_revision(self, account_key: str) -> int:
+        with self.stream_condition:
+            return self.stream_revisions.get(account_key, 0)
 
     def process_request(self, request, client_address) -> None:
         self.request_slots.acquire()
@@ -268,6 +306,27 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 self.wait_for_remote_actions(auth, max(1, min(wait_seconds, REMOTE_ACTION_WAIT_MAX_SECONDS)))
             finally:
                 self.server.action_wait_slots.release()
+            return
+
+        if parsed.path == "/api/stream":
+            if auth.scope != "admin":
+                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            if not self.server.stream_slots.acquire(blocking=False):
+                self.send_json(
+                    {"error": "too many stream listeners, retry shortly", "code": "stream_capacity"},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            try:
+                query = parse_qs(parsed.query)
+                try:
+                    since = max(0, int(first_query_value(query, "since") or "0"))
+                except ValueError:
+                    since = 0
+                self.stream_changes(auth, since)
+            finally:
+                self.server.stream_slots.release()
             return
 
         if parsed.path.startswith("/api/runs/"):
@@ -474,6 +533,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                     stored["deviceId"] = auth.device_id
                     if not stored.get("deviceName"):
                         stored["deviceName"] = auth.device_name
+                self.server.notify_stream(auth.account_key, "run_patch", stream_run_payload(stored))
                 self.send_json({
                     "ok": True,
                     "outputLength": stored.get("outputLength", 0),
@@ -502,6 +562,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                     received_at,
                 )
             touch_token(self.server.db_path, auth.token_hash, received_at)
+            self.server.notify_stream(auth.account_key, "run_patch", stream_run_payload(stored))
             self.send_json({"ok": True})
             return
 
@@ -519,6 +580,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "run is not active", "code": "run_not_active"}, status=HTTPStatus.CONFLICT)
             return
         self.server.notify_action_waiters()
+        self.server.notify_stream(auth.account_key, "runs")
         self.send_json(
             {
                 "ok": True,
@@ -562,6 +624,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "run has no linked device", "code": "device_not_found"}, status=HTTPStatus.CONFLICT)
             return
         self.server.notify_action_waiters()
+        self.server.notify_stream(auth.account_key, "runs")
         self.send_json({"ok": True, "shutdownAfterRun": enabled, "action": result or {}})
 
     def start_terminal_run(self, auth: AuthContext, device_id: str) -> None:
@@ -617,6 +680,58 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             finally:
                 self.server.resume_current_request_slot()
 
+    def stream_changes(self, auth: AuthContext, since: int) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_cors_headers()
+        self.end_headers()
+
+        # Always reconcile once after connecting. Revisions live in memory and
+        # restart at zero after a Relay restart, so they are wake-up hints rather
+        # than durable cursors; the existing HTTP APIs remain the source of truth.
+        revision = self.server.current_stream_revision(auth.account_key)
+        self.write_stream_event("refresh", revision, None)
+        deadline = time.monotonic() + 55.0
+        while time.monotonic() < deadline:
+            self.server.suspend_current_request_slot()
+            try:
+                next_revision, event_type, payload = self.server.wait_for_stream_event(
+                    auth.account_key, revision, min(15.0, max(0.0, deadline - time.monotonic()))
+                )
+            finally:
+                self.server.resume_current_request_slot()
+            if next_revision > revision:
+                revision = next_revision
+                if not self.write_stream_event(event_type, revision, payload):
+                    return
+            else:
+                try:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+
+    def write_stream_event(self, event_type: str, revision: int, extra: dict[str, Any] | None = None) -> bool:
+        body = {"type": event_type or "refresh", "revision": max(0, revision)}
+        if extra:
+            for key, value in extra.items():
+                if key not in {"type", "revision"} and value is not None:
+                    body[key] = value
+        payload = json.dumps(
+            body,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        try:
+            self.wfile.write(b"data: " + payload + b"\n\n")
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
+
     def complete_remote_action(self, auth: AuthContext, action_id: str) -> None:
         if not action_id:
             self.send_json({"error": "missing action id", "code": "missing_action_id"}, status=HTTPStatus.BAD_REQUEST)
@@ -637,6 +752,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         if not completed:
             self.send_json({"error": "action not found", "code": "action_not_found"}, status=HTTPStatus.NOT_FOUND)
             return
+        self.server.notify_stream(auth.account_key, "runs")
         self.send_json({"ok": True})
 
     def rename_device(self, auth: AuthContext, device_id: str) -> None:
@@ -652,6 +768,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         if device is None:
             self.send_json({"error": "device not found", "code": "device_not_found"}, status=HTTPStatus.NOT_FOUND)
             return
+        self.server.notify_stream(auth.account_key, "devices")
         self.send_json({"ok": True, "device": device})
 
     def device_heartbeat(self, auth: AuthContext) -> None:
@@ -686,6 +803,19 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             now=seen_at,
             limit=REMOTE_ACTIONS_PER_HEARTBEAT,
         )
+        hb: dict[str, Any] = {
+            "deviceId": device_id,
+            "online": True,
+            "lastSeenAt": seen_at,
+        }
+        if device:
+            if device.get("name"):
+                hb["name"] = device.get("name")
+            if device.get("cpu") is not None:
+                hb["cpu"] = device.get("cpu")
+            if device.get("gpus") is not None:
+                hb["gpus"] = device.get("gpus")
+        self.server.notify_stream(auth.account_key, "hb", hb)
         self.send_json({
             "ok": True,
             "device": device,
@@ -709,11 +839,13 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             if not deleted:
                 self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
                 return
+            self.server.notify_stream(auth.account_key, "runs")
             self.send_json({"deleted": True})
             return
 
         if parsed.path == "/api/runs":
             deleted = delete_all_runs(self.server.db_path, auth.account_key)
+            self.server.notify_stream(auth.account_key, "runs")
             self.send_json({"deleted": deleted})
             return
 
@@ -726,6 +858,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "device not found", "code": "device_not_found"}, status=HTTPStatus.NOT_FOUND)
                 return
             deleted = delete_runs_for_device(self.server.db_path, auth.account_key, device_id)
+            self.server.notify_stream(auth.account_key, "runs")
             self.send_json({"deleted": deleted})
             return
 
@@ -735,6 +868,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             if not revoked:
                 self.send_json({"error": "device not found", "code": "device_not_found"}, status=HTTPStatus.NOT_FOUND)
                 return
+            self.server.notify_stream(auth.account_key, "devices")
             self.send_json({"revoked": True})
             return
 
@@ -2515,7 +2649,7 @@ def append_run_update(
             device_id = str(existing.get("deviceId") or "")
             if device_id and device_id != auth.device_id:
                 return None
-        for key in ("status", "pid", "exitCode", "endedAt", "updatedAt", "deviceId", "deviceName", "project"):
+        for key in ("status", "pid", "exitCode", "endedAt", "updatedAt", "deviceId", "deviceName", "project", "progress", "lastLoss", "etaSeconds"):
             if key in patch and patch.get(key) is not None:
                 existing[key] = patch[key]
         if auth.scope == "write" and auth.device_id:
@@ -3269,14 +3403,46 @@ def sanitize_gpus(value: Any) -> list[dict[str, Any]]:
     for item in value[:16]:
         if not isinstance(item, dict):
             continue
-        out.append({
+        gpu = {
             "index": int_or_none(item.get("index")),
             "name": str(item.get("name") or "")[:80],
             "utilization": int_or_none(item.get("utilization")),
             "memoryUsed": int_or_none(item.get("memoryUsed")),
             "memoryTotal": int_or_none(item.get("memoryTotal")),
             "temperature": int_or_none(item.get("temperature")),
-        })
+        }
+        processes = sanitize_processes(item.get("processes"), gpu=True)
+        if processes:
+            gpu["processes"] = processes
+        out.append(gpu)
+    return out
+
+
+def sanitize_processes(value: Any, *, gpu: bool = False) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value[:16]:
+        if not isinstance(item, dict):
+            continue
+        pid = int_or_none(item.get("pid"))
+        if pid is None or pid <= 0:
+            continue
+        row: dict[str, Any] = {
+            "pid": pid,
+            "name": str(item.get("name") or "process")[:80],
+        }
+        memory_used = int_or_none(item.get("memoryUsed"))
+        if memory_used is not None:
+            row["memoryUsed"] = max(0, memory_used)
+        if not gpu:
+            cpu = float_or_none(item.get("cpu"))
+            if cpu is not None:
+                row["cpu"] = round(max(0.0, min(100.0, cpu)), 1)
+            mem = float_or_none(item.get("mem"))
+            if mem is not None:
+                row["mem"] = round(max(0.0, min(100.0, mem)), 1)
+        out.append(row)
     return out
 
 
@@ -3293,6 +3459,18 @@ def sanitize_cpu(value: Any) -> dict[str, Any]:
     load1 = float_or_none(value.get("load1"))
     if load1 is not None:
         out["load1"] = round(max(0.0, min(100000.0, load1)), 2)
+    memory_util = int_or_none(value.get("memoryUtilization"))
+    if memory_util is not None:
+        out["memoryUtilization"] = max(0, min(100, memory_util))
+    memory_used = int_or_none(value.get("memoryUsed"))
+    if memory_used is not None:
+        out["memoryUsed"] = max(0, memory_used)
+    memory_total = int_or_none(value.get("memoryTotal"))
+    if memory_total is not None:
+        out["memoryTotal"] = max(0, memory_total)
+    processes = sanitize_processes(value.get("processes"), gpu=False)
+    if processes:
+        out["processes"] = processes
     return out
 
 
@@ -3603,7 +3781,26 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
     output_length = int_or_none(run.get("outputLength"))
     if output_length is not None:
         normalized["outputLength"] = max(0, output_length)
+    progress = float_or_none(run.get("progress"))
+    if progress is not None:
+        normalized["progress"] = max(0.0, min(100.0, progress))
+    last_loss = float_or_none(run.get("lastLoss"))
+    if last_loss is not None:
+        normalized["lastLoss"] = last_loss
+    eta_seconds = int_or_none(run.get("etaSeconds"))
+    if eta_seconds is not None:
+        normalized["etaSeconds"] = max(0, eta_seconds)
     return normalized
+
+
+def stream_run_payload(run: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(run, dict):
+        return {}
+    payload: dict[str, Any] = {"runId": str(run.get("id") or "")}
+    for key in ("status", "outputLength", "progress", "lastLoss", "etaSeconds", "updatedAt"):
+        if run.get(key) is not None:
+            payload[key] = run.get(key)
+    return payload
 
 
 def normalize_pair_code(value: object) -> str:

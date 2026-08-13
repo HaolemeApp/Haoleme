@@ -1,5 +1,6 @@
 package com.haoleme.app;
 
+import android.animation.ValueAnimator;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -19,6 +20,8 @@ import android.graphics.Canvas;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PorterDuff;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -46,6 +49,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.CheckedTextView;
 import android.widget.EditText;
@@ -76,6 +80,11 @@ import androidx.core.content.FileProvider;
 import androidx.lifecycle.Lifecycle;
 import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.LifecycleRegistry;
+import androidx.recyclerview.widget.DefaultItemAnimator;
+import androidx.recyclerview.widget.DiffUtil;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.ListAdapter;
+import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.mlkit.vision.barcode.BarcodeScanner;
@@ -165,6 +174,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String CACHE_DEVICES = "cached_devices_json";
     private static final String CACHE_RUN_PREFIX = "cached_run_";
     private static final String CPU_HISTORY_PREFIX = "cpu_history_";
+    private static final String MEM_HISTORY_PREFIX = "mem_history_";
+    private static final String GPU_UTIL_HISTORY_PREFIX = "gpu_util_history_";
+    private static final String GPU_MEM_HISTORY_PREFIX = "gpu_mem_history_";
     private static final String PREF_STATUS_FILTER = "status_filter";
     private static final String PREF_ARCHIVED_RUNS = "archived_run_ids";
     private static final String PREF_PINNED_RUNS = "pinned_run_ids";
@@ -191,6 +203,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String TAG_RUN_STATUS = "run_status";
     private static final String TAG_RUN_META = "run_meta";
     private static final String TAG_RUN_OUTPUT = "run_output";
+    private static final String TAG_RUN_PROGRESS = "run_progress";
+    private static final String TAG_RUN_PROGRESS_ROW = "run_progress_row";
+    private static final String TAG_RUN_PROGRESS_LABEL = "run_progress_label";
     private static final int CONSOLE_RENDER_INITIAL_CHARS = 60000;
     private static final int CONSOLE_RENDER_STEP_CHARS = 60000;
     private static final int CONSOLE_HISTORY_DEFAULT_CHARS = 100_000_000;
@@ -226,14 +241,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView deviceHeartbeatText;
     private FrameLayout monitorDeck;
     private int monitorPageIndex = 0;
+    private String metricDetailKind;
+    private LinearLayout metricDetailBody;
+    private ScrollView metricDetailScroll;
     private int gpuMetricIndex = 0;
     private static final int GPU_METRIC_COUNT = 3;
     private android.view.GestureDetector gpuGestureDetector;
     private android.view.GestureDetector monitorGestureDetector;
     private HorizontalScrollView devicesScrollView;
     private LinearLayout devicesContainer;
-    private LinearLayout runsContainer;
-    private ScrollView homeRunsScrollView;
+    private RecyclerView runsContainer;
+    private RunListAdapter runListAdapter;
     private Button renameDeviceButton;
     private Button revokeDeviceButton;
     private Button clearDeviceRunsButton;
@@ -304,7 +322,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean consoleIncrementalUsesChunks = false;
     private String currentTab = "runs";
     private String settingsSection = null;
-    private String lastRunsSig = "";
     private String lastDevicesSig = "";
     private boolean hasActiveRunVisible = false;
     private volatile boolean pendingRunDeleteSyncing = false;
@@ -324,6 +341,41 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private volatile long readRateLimitedUntilMs = 0L;
     private volatile int runsRefreshFailureCount = 0;
     private volatile int devicesRefreshFailureCount = 0;
+    private AppCacheDatabase appCache;
+    private RealtimeSyncClient realtimeSyncClient;
+    private volatile boolean realtimeConnected = false;
+    private boolean realtimeRefreshScheduled = false;
+    private boolean realtimeRunsDirty = false;
+    private boolean realtimeDevicesDirty = false;
+    private String lastRenderedConsoleText = "";
+    private int lastRenderedConsoleLength = 0;
+    private boolean consoleRenderScheduled = false;
+    private PageShell pageShell;
+    private TextView headerTitle;
+    private ImageView tabHomeIcon;
+    private TextView tabHomeLabel;
+    private TextView tabSettingsIcon;
+    private TextView tabSettingsLabel;
+
+    private final Runnable consoleRenderRunnable = () -> {
+        consoleRenderScheduled = false;
+        renderConsoleTextNow();
+    };
+
+    private final Runnable realtimeRefreshRunnable = () -> {
+        realtimeRefreshScheduled = false;
+        if (destroyed) return;
+        boolean updateRuns = realtimeRunsDirty;
+        boolean updateDevices = realtimeDevicesDirty;
+        realtimeRunsDirty = false;
+        realtimeDevicesDirty = false;
+        if (selectedRunId != null && updateRuns) {
+            refreshRunDetail(selectedRunId, false);
+        } else if ("home".equals(currentTab)) {
+            if (updateRuns) refreshRuns(false);
+            if (updateDevices) refreshDevices(false);
+        }
+    };
 
     private final Runnable pollRunnable = new Runnable() {
         @Override
@@ -355,6 +407,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     };
 
     private long pollDelayMs() {
+        if (realtimeConnected) {
+            // A slow reconciliation poll protects against missed events without
+            // competing with the realtime stream.
+            return hasActiveRunVisible || selectedRunId != null ? 30000L : 60000L;
+        }
         if (selectedRunId != null) {
             return ("running".equals(selectedRunStatus) || "created".equals(selectedRunStatus))
                     ? CONSOLE_RUNNING_POLL_MS : POLL_MS;
@@ -371,6 +428,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
         try {
             lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE);
             prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+            appCache = new AppCacheDatabase(this);
+            migrateLegacyCaches();
+            realtimeSyncClient = new RealtimeSyncClient(new RealtimeSyncClient.Listener() {
+                @Override
+                public void onEvent(String type, long revision, JSONObject payload) {
+                    handler.post(() -> applyRealtimeEvent(type, payload));
+                }
+
+                @Override
+                public void onConnectionChanged(boolean connected) {
+                    realtimeConnected = connected;
+                }
+            });
             updateLauncherAlias();
             createNotificationChannel();
             requestNotificationPermission();
@@ -397,12 +467,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
     protected void onStart() {
         super.onStart();
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START);
+        startRealtimeSyncIfPossible();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME);
+        startRealtimeSyncIfPossible();
         if (selectedRunId == null && "home".equals(currentTab) && hasPairedDevice()) {
             syncPendingRunDeletesAsync(false);
             refreshHome(false);
@@ -417,6 +489,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     @Override
     protected void onStop() {
+        if (realtimeSyncClient != null) realtimeSyncClient.stop();
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP);
         super.onStop();
     }
@@ -426,8 +499,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         destroyed = true;
         stopScannerCamera();
         handler.removeCallbacksAndMessages(null);
+        if (realtimeSyncClient != null) realtimeSyncClient.stop();
         executor.shutdownNow();
         updateExecutor.shutdownNow();
+        if (appCache != null) appCache.close();
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY);
         super.onDestroy();
     }
@@ -451,6 +526,126 @@ public class MainActivity extends Activity implements LifecycleOwner {
             updateExecutor.submit(task);
         } catch (RejectedExecutionException ignored) {
             // Update checks can finish while the activity is being replaced.
+        }
+    }
+
+    private void startRealtimeSyncIfPossible() {
+        if (realtimeSyncClient == null || destroyed) return;
+        String token = accountToken();
+        if (token.isEmpty() || !hasPairedDevice()) {
+            realtimeSyncClient.stop();
+            return;
+        }
+        realtimeSyncClient.start(normalizedServerUrl(), token);
+    }
+
+    private void scheduleRealtimeRefresh(String type) {
+        if (destroyed) return;
+        if ("devices".equals(type) || "hb".equals(type)) realtimeDevicesDirty = true;
+        else if ("runs".equals(type) || "run_patch".equals(type) || "tail_delta".equals(type)) realtimeRunsDirty = true;
+        else {
+            realtimeRunsDirty = true;
+            realtimeDevicesDirty = true;
+        }
+        if (realtimeRefreshScheduled) return;
+        realtimeRefreshScheduled = true;
+        handler.postDelayed(realtimeRefreshRunnable, 240L);
+    }
+
+    private void applyRealtimeEvent(String type, JSONObject payload) {
+        if (destroyed) return;
+        if (payload == null) payload = new JSONObject();
+        if ("hb".equals(type)) {
+            applyHeartbeatPatch(payload);
+            return;
+        }
+        if ("run_patch".equals(type)) {
+            applyRunPatch(payload);
+            return;
+        }
+        if ("tail_delta".equals(type)) {
+            if (selectedRunId != null && selectedRunId.equals(payload.optString("runId", ""))) {
+                refreshRunDetail(selectedRunId, false);
+            } else {
+                applyRunPatch(payload);
+            }
+            return;
+        }
+        scheduleRealtimeRefresh(type);
+    }
+
+    private void applyHeartbeatPatch(JSONObject payload) {
+        String deviceId = payload.optString("deviceId", "").trim();
+        if (deviceId.isEmpty()) {
+            scheduleRealtimeRefresh("devices");
+            return;
+        }
+        try {
+            JSONArray devices = cachedDevicesArray();
+            boolean found = false;
+            for (int i = 0; i < devices.length(); i++) {
+                JSONObject device = devices.optJSONObject(i);
+                if (device == null || !deviceId.equals(device.optString("id", ""))) continue;
+                found = true;
+                if (payload.has("name") && !payload.optString("name").isEmpty()) {
+                    device.put("name", payload.optString("name"));
+                    deviceNames.put(deviceId, payload.optString("name"));
+                }
+                if (payload.has("lastSeenAt")) device.put("lastSeenAt", payload.optString("lastSeenAt"));
+                device.put("online", payload.optBoolean("online", true));
+                deviceOnline.put(deviceId, payload.optBoolean("online", true));
+                if (payload.has("cpu")) device.put("cpu", payload.opt("cpu"));
+                if (payload.has("gpus")) device.put("gpus", payload.opt("gpus"));
+                if (payload.has("lastSeenAt")) deviceLastSeen.put(deviceId, payload.optString("lastSeenAt"));
+            }
+            if (!found) {
+                scheduleRealtimeRefresh("devices");
+                return;
+            }
+            storeSnapshot(CACHE_DEVICES, devices.toString(), System.currentTimeMillis());
+            recordCpuHistoryFromDevices(devices);
+            lastDevicesSig = "";
+            loadCachedDevices();
+            updateDeviceSummary();
+        } catch (Exception ignored) {
+            scheduleRealtimeRefresh("devices");
+        }
+    }
+
+    private void applyRunPatch(JSONObject payload) {
+        String runId = payload.optString("runId", payload.optString("id", "")).trim();
+        if (runId.isEmpty()) {
+            scheduleRealtimeRefresh("runs");
+            return;
+        }
+        if (selectedRunId != null && selectedRunId.equals(runId)) {
+            refreshRunDetail(runId, false);
+        }
+        if (runListAdapter == null) {
+            scheduleRealtimeRefresh("runs");
+            return;
+        }
+        List<JSONObject> current = new ArrayList<>(runListAdapter.getCurrentList());
+        boolean found = false;
+        for (int i = 0; i < current.size(); i++) {
+            JSONObject run = current.get(i);
+            if (run == null || !runId.equals(run.optString("id", ""))) continue;
+            found = true;
+            try {
+                JSONObject next = new JSONObject(run.toString());
+                for (String key : new String[]{"status", "updatedAt", "progress", "lastLoss", "etaSeconds", "outputLength"}) {
+                    if (payload.has(key)) next.put(key, payload.get(key));
+                }
+                next.put("__pinned", isRunPinned(runId));
+                current.set(i, next);
+            } catch (Exception ignored) {
+            }
+            break;
+        }
+        if (found) {
+            runListAdapter.submitList(current);
+        } else {
+            scheduleRealtimeRefresh("runs");
         }
     }
 
@@ -480,9 +675,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
             returnToList();
             return;
         }
+        if (pageShell != null && pageShell.hasOverlay()) {
+            clearMetricDetailState();
+            pageShell.popOverlay();
+            return;
+        }
         if ("settings".equals(currentTab) && settingsSection != null) {
             settingsSection = null;
-            buildUi();
+            installSettingsTab(true);
+            updateHeaderTitle();
             return;
         }
         super.onBackPressed();
@@ -491,6 +692,25 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private void buildUi() {
         selectedRunId = null;
         selectedRunStatus = "";
+        if (pageShell != null) pageShell.clearOverlays();
+        scannerVisible = false;
+        remoteTerminalVisible = false;
+        loadChromePrefs();
+        ensureShell();
+        installChrome();
+        if ("settings".equals(currentTab)) {
+            installSettingsTab(false);
+            pageShell.showTab(PageShell.TAB_SETTINGS, false);
+        } else {
+            currentTab = "home";
+            installHomeTab(false);
+            pageShell.showTab(PageShell.TAB_HOME, false);
+        }
+        updateHeaderTitle();
+        updateTabButtonStyles();
+    }
+
+    private void loadChromePrefs() {
         selectedStatusFilter = prefs.getString(PREF_STATUS_FILTER, "all");
         if (!"running".equals(selectedStatusFilter) && !"failed".equals(selectedStatusFilter)
                 && !"succeeded".equals(selectedStatusFilter) && !"archived".equals(selectedStatusFilter)) {
@@ -504,39 +724,51 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (selectedProjectFilter == null || selectedProjectFilter.trim().isEmpty()) {
             selectedProjectFilter = "all";
         }
-        pairInput = null;
-        pairButton = null;
-        deviceHeartbeatText = null;
-        devicesScrollView = null;
-        devicesContainer = null;
-        runsContainer = null;
-        renameDeviceButton = null;
-        revokeDeviceButton = null;
-        clearDeviceRunsButton = null;
-        homeRunsScrollView = null;
+    }
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), statusBarHeight() + dp(8), dp(18), navigationBarHeight() + dp(2));
-        // Let the bottom bar draw edge-to-edge into the root padding (negative margins).
-        root.setClipToPadding(false);
-        root.setBackgroundColor(appBg());
+    private void ensureShell() {
+        if (pageShell == null) {
+            pageShell = new PageShell(this);
+        }
+        pageShell.chrome.setPadding(dp(18), statusBarHeight() + dp(8), dp(18), 0);
+        pageShell.chrome.setClipToPadding(false);
+        pageShell.chrome.setClipChildren(false);
+        LinearLayout.LayoutParams tabBarLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tabBarLp.setMargins(-dp(18), 0, -dp(18), 0);
+        pageShell.tabBarHost.setLayoutParams(tabBarLp);
+        pageShell.chrome.setBackgroundColor(appBg());
         getWindow().setStatusBarColor(appBg());
-        getWindow().setNavigationBarColor(appBg());
+        getWindow().setNavigationBarColor(cardBg());
+        if (Build.VERSION.SDK_INT >= 26) {
+            View decor = getWindow().getDecorView();
+            int flags = decor.getSystemUiVisibility();
+            if (isDarkTheme()) {
+                flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            } else {
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            }
+            decor.setSystemUiVisibility(flags);
+        }
+        if (!pageShell.isAttached()) {
+            pageShell.attach(this);
+        }
+    }
 
+    private void installChrome() {
         FrameLayout header = new FrameLayout(this);
         header.setMinimumHeight(dp(40));
 
         LinearLayout headerText = new LinearLayout(this);
         headerText.setOrientation(LinearLayout.VERTICAL);
         headerText.setGravity(Gravity.CENTER);
-        TextView title = new TextView(this);
-        title.setText(screenTitle());
-        title.setTextSize(18);
-        title.setTextColor(textPrimary());
-        title.setGravity(Gravity.CENTER);
-        title.setTypeface(null, Typeface.BOLD);
-        headerText.addView(title, matchWrap());
+        headerTitle = new TextView(this);
+        headerTitle.setText(screenTitle());
+        headerTitle.setTextSize(18);
+        headerTitle.setTextColor(textPrimary());
+        headerTitle.setGravity(Gravity.CENTER);
+        headerTitle.setTypeface(null, Typeface.BOLD);
+        headerText.addView(headerTitle, matchWrap());
 
         connectionSubtitleText = new TextView(this);
         connectionSubtitleText.setTextSize(11);
@@ -549,10 +781,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 Gravity.CENTER
         );
         header.addView(headerText, headerTextParams);
-
         updateBadgeButton = null;
-
-        root.addView(header, matchWrap());
+        pageShell.setHeader(header);
 
         statusText = new TextView(this);
         statusText.setText(t("connecting"));
@@ -560,7 +790,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         statusText.setTextColor(textSecondary());
         statusText.setGravity(Gravity.CENTER);
         statusText.setPadding(0, dp(1), 0, dp(4));
-        root.addView(statusText, matchWrap());
+        pageShell.setStatus(statusText);
 
         String rawSavedServerUrl = prefs.getString("server_url", "").trim();
         String savedServerUrl = normalizeServerUrl(rawSavedServerUrl);
@@ -577,27 +807,85 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 statusText.setText(isEnglish() ? "Server changed. Pair again to continue." : "服务器已切换，请重新配对后继续使用。");
             }
         }
-        // Migrate legacy global secrets into the active relay profile before a
-        // user has any chance to scan a QR and switch endpoints.
         activateServerProfile(savedServerUrl);
+        pageShell.setTabBar(bottomTabs());
+    }
+
+    private void installHomeTab(boolean animate) {
+        pairInput = null;
+        pairButton = null;
+        deviceHeartbeatText = null;
+        devicesScrollView = null;
+        devicesContainer = null;
+        runsContainer = null;
+        renameDeviceButton = null;
+        revokeDeviceButton = null;
+        clearDeviceRunsButton = null;
+        runListAdapter = null;
+        lastDevicesSig = "";
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        root.addView(content, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1
-        ));
+        content.setLayoutParams(new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        buildHomeTab(content);
+        pageShell.setTabContent(PageShell.TAB_HOME, content, animate);
+    }
 
+    private void installSettingsTab(boolean animate) {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setLayoutParams(new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        buildSettingsTab(content);
+        pageShell.setTabContent(PageShell.TAB_SETTINGS, content, animate);
+    }
+
+    private void switchMainTab(String tab) {
+        if (tab == null || tab.equals(currentTab)) return;
+        if (pageShell != null && pageShell.hasOverlay()) pageShell.clearOverlays();
+        selectedRunId = null;
+        selectedRunStatus = "";
+        currentTab = "settings".equals(tab) ? "settings" : "home";
+        settingsSection = null;
         if ("settings".equals(currentTab)) {
-            buildSettingsTab(content);
+            if (pageShell.settingsView() == null) installSettingsTab(false);
+            pageShell.showTab(PageShell.TAB_SETTINGS, true);
         } else {
-            currentTab = "home";
-            buildHomeTab(content);
+            if (pageShell.homeView() == null) installHomeTab(false);
+            pageShell.showTab(PageShell.TAB_HOME, true);
+            refreshHome(false);
         }
-        root.addView(bottomTabs());
+        updateHeaderTitle();
+        updateTabButtonStyles();
+    }
 
-        setContentView(root);
+    private void updateHeaderTitle() {
+        if (headerTitle != null) headerTitle.setText(screenTitle());
+    }
+
+    private void updateTabButtonStyles() {
+        boolean home = !"settings".equals(currentTab);
+        styleHomeGlyph(home);
+        styleTabGlyph(tabSettingsIcon, tabSettingsLabel, !home);
+    }
+
+    private void styleHomeGlyph(boolean selected) {
+        if (tabHomeIcon == null) return;
+        tabHomeIcon.setImageResource(selected ? R.drawable.ic_tab_home_filled : R.drawable.ic_tab_home);
+        tabHomeIcon.setColorFilter(selected ? textPrimary() : textSecondary(), PorterDuff.Mode.SRC_IN);
+        if (tabHomeLabel != null) {
+            tabHomeLabel.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
+            tabHomeLabel.setTextColor(selected ? textPrimary() : textSecondary());
+        }
+    }
+
+    private void styleTabGlyph(TextView icon, TextView label, boolean selected) {
+        if (icon != null) icon.setTextColor(selected ? textPrimary() : textSecondary());
+        if (label != null) {
+            label.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
+            label.setTextColor(selected ? textPrimary() : textSecondary());
+        }
     }
 
     private void showStartupError(Throwable throwable) {
@@ -633,6 +921,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         reset.setAllCaps(false);
         styleActionButton(reset);
         reset.setOnClickListener(v -> {
+            if (appCache != null) appCache.clear();
             prefs.edit()
                     .remove(CACHE_RUNS)
                     .remove(CACHE_RUNS_AT)
@@ -680,8 +969,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
         TextView code = actionButton(t("enter_code"));
         code.setTextSize(16);
         code.setOnClickListener(v -> {
+            settingsSection = null;
             currentTab = "settings";
-            buildUi();
+            installSettingsTab(false);
+            if (pageShell != null) pageShell.showTab(PageShell.TAB_SETTINGS, true);
+            updateHeaderTitle();
+            updateTabButtonStyles();
             if (pairInput != null) {
                 pairInput.requestFocus();
             }
@@ -734,15 +1027,22 @@ public class MainActivity extends Activity implements LifecycleOwner {
         controlsParams.setMargins(0, dp(2), 0, dp(10));
         content.addView(controls, controlsParams);
 
-        // The single run list (filtered by selected device + project + status).
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
-        scrollView.setVerticalScrollBarEnabled(false);
-        homeRunsScrollView = scrollView;
-        runsContainer = new LinearLayout(this);
-        runsContainer.setOrientation(LinearLayout.VERTICAL);
-        scrollView.addView(runsContainer);
-        content.addView(scrollView, new LinearLayout.LayoutParams(
+        // RecyclerView keeps only visible cards alive and applies row-level diffs.
+        runsContainer = new RecyclerView(this);
+        runsContainer.setLayoutManager(new LinearLayoutManager(this));
+        runsContainer.setHasFixedSize(false);
+        runsContainer.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        runsContainer.setVerticalScrollBarEnabled(false);
+        runListAdapter = new RunListAdapter();
+        runsContainer.setAdapter(runListAdapter);
+        DefaultItemAnimator animator = new DefaultItemAnimator();
+        animator.setAddDuration(180L);
+        animator.setRemoveDuration(180L);
+        animator.setMoveDuration(200L);
+        animator.setChangeDuration(0L);
+        animator.setSupportsChangeAnimations(false);
+        runsContainer.setItemAnimator(animator);
+        content.addView(runsContainer, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
                 1
@@ -757,12 +1057,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private View homeOverviewCard() {
         monitorDeck = new FrameLayout(this);
-        monitorDeck.setClipChildren(false);
-        monitorDeck.setClipToPadding(false);
-        attachMonitorVerticalSwipe(monitorDeck);
+        monitorDeck.setClipChildren(true);
+        monitorDeck.setClipToPadding(true);
         LinearLayout.LayoutParams params = matchWrap();
         params.setMargins(0, dp(4), 0, 0);
-        params.height = dp(132);
+        params.height = dp(148);
         monitorDeck.setLayoutParams(params);
         updateMonitorDeck(false);
         return monitorDeck;
@@ -799,7 +1098,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         back.setClickable(true);
         back.setOnClickListener(v -> {
             settingsSection = null;
-            buildUi();
+            installSettingsTab(true);
+            updateHeaderTitle();
         });
         LinearLayout.LayoutParams backParams = matchWrap();
         settingsContent.addView(back, backParams);
@@ -838,7 +1138,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void openSettingsSection(String key) {
         settingsSection = key;
-        buildUi();
+        installSettingsTab(true);
+        updateHeaderTitle();
     }
 
     @ExperimentalGetImage
@@ -1635,7 +1936,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         labels.add(isEnglish() ? "All devices" : "全部设备");
         for (Map.Entry<String, String> e : deviceNames.entrySet()) {
             ids.add(e.getKey());
-            boolean online = deviceOnline.getOrDefault(e.getKey(), false);
+            Boolean onlineValue = deviceOnline.get(e.getKey());
+            boolean online = onlineValue != null && onlineValue;
             String label = e.getValue() + (online ? (isEnglish() ? " (online)" : " (在线)") : "");
             labels.add(label);
         }
@@ -1678,7 +1980,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     }
                     buildUi();
                     if (shareDeviceId != null) {
-                        String devName = deviceNames.getOrDefault(shareDeviceId, shareDeviceId);
+                        String devName = deviceNames.get(shareDeviceId);
+                        if (devName == null) devName = shareDeviceId;
                         statusText.setText((isEnglish() ? "Shared space code for device " : "已为设备 ") + devName + (isEnglish() ? " created." : " 生成共享空间码。"));
                     } else {
                         statusText.setText(isEnglish() ? "Shared space code created." : "共享空间码已生成。");
@@ -2259,7 +2562,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 total += 8;
             }
         }
-        return total + directoryBytes(consoleCacheDirectory());
+        return total + (appCache == null ? 0L : appCache.approximateBytes())
+                + directoryBytes(consoleCacheDirectory());
     }
 
     private File consoleCacheDirectory() {
@@ -2441,6 +2745,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         }
         editor.apply();
+        if (appCache != null) appCache.clear();
         removed += clearConsoleCacheFiles();
         knownStatuses.clear();
         return removed;
@@ -2464,29 +2769,18 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private int clearCompletedLocalRuns() {
         SharedPreferences.Editor editor = prefs.edit();
-        Map<String, ?> values = prefs.getAll();
         Set<String> removedIds = new HashSet<>();
         long now = System.currentTimeMillis();
-        for (String key : values.keySet()) {
-            if (!CACHE_RUNS.equals(key) && !key.startsWith(CACHE_RUNS_PREFIX)) {
-                continue;
-            }
-            Object rawValue = values.get(key);
-            if (!(rawValue instanceof String)) {
-                continue;
-            }
-            JSONArray updated = removeCompletedRunsFromJsonArray((String) rawValue, removedIds);
+        for (String key : runSnapshotKeys()) {
+            JSONArray updated = removeCompletedRunsFromJsonArray(cachedSnapshot(key), removedIds);
             if (updated == null) {
                 continue;
             }
-            editor.putString(key, updated.toString());
-            String atKey = cacheAtKeyForRunsKey(key);
-            if (!atKey.isEmpty()) {
-                editor.putLong(atKey, now);
-            }
+            storeSnapshot(key, updated.toString(), now);
         }
         for (String id : removedIds) {
-            editor.remove(CACHE_RUN_PREFIX + id).remove("notified_terminal_" + id);
+            if (appCache != null) appCache.removeRunDetail(id);
+            editor.remove("notified_terminal_" + id);
             deleteConsoleCache(id);
             knownStatuses.remove(id);
         }
@@ -2522,9 +2816,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private JSONArray bestCachedRunsForExport() {
-        String raw = prefs.getString(runsCacheKey(), "");
+        String raw = cachedSnapshot(runsCacheKey());
         if (raw == null || raw.trim().isEmpty()) {
-            raw = prefs.getString(CACHE_RUNS, "");
+            raw = cachedSnapshot(CACHE_RUNS);
         }
         if (raw == null || raw.trim().isEmpty()) {
             return new JSONArray();
@@ -2607,6 +2901,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void clearRunCachesOnly() {
+        if (appCache != null) appCache.clearRunData();
         SharedPreferences.Editor editor = prefs.edit();
         Map<String, ?> values = prefs.getAll();
         for (String key : values.keySet()) {
@@ -2656,6 +2951,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void clearAllPairingAndCache() {
+        if (appCache != null) appCache.clear();
         SharedPreferences.Editor editor = prefs.edit();
         Map<String, ?> values = prefs.getAll();
         for (String key : values.keySet()) {
@@ -2702,7 +2998,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private JSONArray cachedDevicesArray() {
-        String cached = prefs == null ? "" : prefs.getString(CACHE_DEVICES, "");
+        String cached = cachedSnapshot(CACHE_DEVICES);
         if (cached == null || cached.trim().isEmpty()) {
             return new JSONArray();
         }
@@ -2986,13 +3282,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView refreshIconButton() {
         TextView button = new TextView(this);
         button.setText("⟳");
-        button.setTextSize(22);
+        button.setTextSize(18);
         button.setGravity(Gravity.CENTER);
         button.setTypeface(null, Typeface.BOLD);
-        button.setTextColor(color("#111827"));
-        button.setBackground(roundedBg(Color.WHITE, 99, color("#EEF0F4")));
+        button.setTextColor(textPrimary());
+        button.setBackground(roundedBg(cardBg(), 99, cardStroke()));
         button.setClickable(true);
-        button.setElevation(dp(2));
+        button.setFocusable(true);
         return button;
     }
 
@@ -3035,12 +3331,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private LinearLayout bottomTabs() {
-        // Flat full-width bar with a top hairline (mirrors happy-app's TabBar):
-        // surface background, no floating card, active tab shown by color + weight.
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.VERTICAL);
         bar.setBackgroundColor(cardBg());
-        bar.setPadding(0, 0, 0, navigationBarHeight() + dp(2));
+        // Full-bleed strip. Pad only the content above the system nav inset.
+        applyTabBarInsets(bar);
 
         View topLine = new View(this);
         topLine.setBackgroundColor(cardStroke());
@@ -3049,17 +3344,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
-        tabs.setPadding(dp(12), 0, dp(12), 0);
-        tabs.addView(tabButton("home", "⌂", isEnglish() ? "Home" : "主页"),
+        tabs.setPadding(dp(12), dp(2), dp(12), 0);
+        tabs.addView(tabButton("home", null, isEnglish() ? "Home" : "主页"),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         tabs.addView(tabButton("settings", "⚙", t("settings")),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         bar.addView(tabs, matchWrap());
-
-        // Break out of the root's side/bottom padding so the bar spans edge to edge.
-        LinearLayout.LayoutParams params = matchWrap();
-        params.setMargins(-dp(18), dp(6), -dp(18), -(navigationBarHeight() + dp(2)));
-        bar.setLayoutParams(params);
         return bar;
     }
 
@@ -3067,19 +3357,28 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout button = new LinearLayout(this);
         button.setOrientation(LinearLayout.VERTICAL);
         button.setGravity(Gravity.CENTER);
-        button.setPadding(0, dp(8), 0, dp(5));
-        // No press ripple/highlight on the bar — switching only changes the
-        // icon + label color, nothing gray flashes.
+        button.setPadding(0, dp(6), 0, dp(2));
         button.setClickable(true);
         boolean selected = tab.equals(currentTab);
 
-        TextView iconView = new TextView(this);
-        iconView.setText(icon);
-        iconView.setTextSize(20);
-        iconView.setGravity(Gravity.CENTER);
-        iconView.setTypeface(null, Typeface.BOLD);
-        iconView.setTextColor(selected ? textPrimary() : textSecondary());
-        button.addView(iconView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        if ("home".equals(tab)) {
+            ImageView homeIcon = new ImageView(this);
+            homeIcon.setImageResource(selected ? R.drawable.ic_tab_home_filled : R.drawable.ic_tab_home);
+            homeIcon.setColorFilter(selected ? textPrimary() : textSecondary(), PorterDuff.Mode.SRC_IN);
+            homeIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            button.addView(homeIcon, new LinearLayout.LayoutParams(dp(24), dp(24)));
+            tabHomeIcon = homeIcon;
+        } else {
+            TextView iconView = new TextView(this);
+            iconView.setText(icon);
+            iconView.setTextSize(20);
+            iconView.setGravity(Gravity.CENTER);
+            iconView.setTypeface(null, Typeface.BOLD);
+            iconView.setTextColor(selected ? textPrimary() : textSecondary());
+            button.addView(iconView, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            tabSettingsIcon = iconView;
+        }
 
         TextView labelView = new TextView(this);
         labelView.setText(label);
@@ -3087,21 +3386,35 @@ public class MainActivity extends Activity implements LifecycleOwner {
         labelView.setGravity(Gravity.CENTER);
         labelView.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
         labelView.setTextColor(selected ? textPrimary() : textSecondary());
-        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        if ("home".equals(tab)) tabHomeLabel = labelView;
+        else tabSettingsLabel = labelView;
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         labelParams.setMargins(0, dp(3), 0, 0);
         button.addView(labelView, labelParams);
 
-        button.setOnClickListener(v -> {
-            if (!tab.equals(currentTab)) {
-                currentTab = tab;
-                settingsSection = null;
-                buildUi();
-                if ("home".equals(currentTab)) {
-                    refreshHome(false);
-                }
-            }
-        });
+        button.setOnClickListener(v -> switchMainTab(tab));
         return button;
+    }
+
+    private void applyTabBarInsets(View bar) {
+        bar.setPadding(0, 0, 0, dp(8));
+        bar.setOnApplyWindowInsetsListener((v, insets) -> {
+            int bottom = systemNavInset(insets);
+            v.setPadding(0, 0, 0, bottom + dp(8));
+            return insets;
+        });
+        bar.requestApplyInsets();
+    }
+
+    private int systemNavInset(WindowInsets insets) {
+        if (insets == null) {
+            return navigationBarHeight();
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            return insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
+        }
+        return insets.getSystemWindowInsetBottom();
     }
 
     private void refreshRuns() {
@@ -3305,7 +3618,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void loadCachedDevices() {
-        String cached = prefs.getString(CACHE_DEVICES, "");
+        String cached = cachedSnapshot(CACHE_DEVICES);
         if (cached == null || cached.isEmpty()) {
             renderDevices(new JSONArray());
             return;
@@ -3327,7 +3640,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         try {
             forgetLocallyRevokedDevice(id);
             JSONArray devices;
-            String cached = prefs.getString(CACHE_DEVICES, "");
+            String cached = cachedSnapshot(CACHE_DEVICES);
             if (cached == null || cached.isEmpty()) {
                 devices = new JSONArray();
             } else {
@@ -3351,7 +3664,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 }
                 merged.put(device);
             }
-            prefs.edit().putString(CACHE_DEVICES, merged.toString()).apply();
+            storeSnapshot(CACHE_DEVICES, merged.toString(), System.currentTimeMillis());
         } catch (Exception ignored) {
         }
     }
@@ -3359,7 +3672,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private JSONArray mergeCloudDevicesWithCache(JSONArray cloudDevices) {
         Map<String, JSONObject> byId = new HashMap<>();
         try {
-            String cached = prefs.getString(CACHE_DEVICES, "");
+            String cached = cachedSnapshot(CACHE_DEVICES);
             if (cached != null && !cached.isEmpty()) {
                 JSONArray cachedDevices = new JSONArray(cached);
                 for (int i = 0; i < cachedDevices.length(); i++) {
@@ -3388,14 +3701,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
         } catch (Exception ignored) {
             JSONArray fallback = cloudDevices == null ? new JSONArray() : cloudDevices;
-            prefs.edit().putString(CACHE_DEVICES, fallback.toString()).apply();
+            storeSnapshot(CACHE_DEVICES, fallback.toString(), System.currentTimeMillis());
             return fallback;
         }
         JSONArray merged = new JSONArray();
         for (JSONObject device : byId.values()) {
             merged.put(device);
         }
-        prefs.edit().putString(CACHE_DEVICES, merged.toString()).apply();
+        storeSnapshot(CACHE_DEVICES, merged.toString(), System.currentTimeMillis());
         return merged;
     }
 
@@ -3404,7 +3717,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         try {
-            String cached = prefs.getString(CACHE_DEVICES, "");
+            String cached = cachedSnapshot(CACHE_DEVICES);
             if (cached == null || cached.isEmpty()) {
                 return;
             }
@@ -3418,7 +3731,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 }
                 kept.put(device);
             }
-            prefs.edit().putString(CACHE_DEVICES, kept.toString()).apply();
+            storeSnapshot(CACHE_DEVICES, kept.toString(), System.currentTimeMillis());
         } catch (Exception ignored) {
         }
     }
@@ -3557,52 +3870,85 @@ public class MainActivity extends Activity implements LifecycleOwner {
         boolean changed = false;
         for (int i = 0; i < devices.length(); i++) {
             JSONObject device = devices.optJSONObject(i);
-            if (device == null) {
-                continue;
-            }
+            if (device == null) continue;
             String id = device.optString("id", "").trim();
-            JSONObject cpu = device.optJSONObject("cpu");
-            if (id.isEmpty() || cpu == null || !cpu.has("utilization")) {
-                continue;
-            }
-            int util = Math.max(0, Math.min(100, cpu.optInt("utilization", -1)));
-            if (util < 0) {
-                continue;
-            }
+            if (id.isEmpty()) continue;
             long ts = parseTimestamp(device.optString("cpuUpdatedAt", ""));
-            if (ts <= 0L) {
-                ts = parseTimestamp(device.optString("lastSeenAt", ""));
+            if (ts <= 0L) ts = parseTimestamp(device.optString("lastSeenAt", ""));
+            if (ts <= 0L) ts = System.currentTimeMillis();
+            JSONObject cpu = device.optJSONObject("cpu");
+            if (cpu != null && cpu.has("utilization")) {
+                changed |= appendHistoryPoint(editor, cpuHistoryKey(id), ts, cpu.optInt("utilization", -1));
             }
-            if (ts <= 0L) {
-                ts = System.currentTimeMillis();
+            if (cpu != null && cpu.has("memoryUtilization")) {
+                changed |= appendHistoryPoint(editor, MEM_HISTORY_PREFIX + cachePart(id), ts, cpu.optInt("memoryUtilization", -1));
             }
-            String key = cpuHistoryKey(id);
-            JSONArray history = loadCpuHistoryArray(id);
-            JSONObject last = history.length() > 0 ? history.optJSONObject(history.length() - 1) : null;
-            if (last != null && last.optLong("t", 0L) == ts && last.optInt("u", -1) == util) {
-                continue;
-            }
-            JSONArray next = new JSONArray();
-            int start = Math.max(0, history.length() - CPU_HISTORY_MAX_POINTS + 1);
-            for (int h = start; h < history.length(); h++) {
-                JSONObject point = history.optJSONObject(h);
-                if (point != null && point.optLong("t", 0L) != ts) {
-                    next.put(point);
+            for (JSONObject gpu : selectedDeviceGpus(device)) {
+                int index = gpu.optInt("index", -1);
+                if (index < 0) continue;
+                if (gpu.has("utilization")) {
+                    changed |= appendHistoryPoint(editor, GPU_UTIL_HISTORY_PREFIX + cachePart(id) + "_" + index, ts, gpu.optInt("utilization", -1));
+                }
+                int memUsed = gpu.optInt("memoryUsed", -1);
+                int memTotal = gpu.optInt("memoryTotal", -1);
+                if (memUsed >= 0 && memTotal > 0) {
+                    int memPct = Math.max(0, Math.min(100, Math.round(memUsed * 100f / memTotal)));
+                    changed |= appendHistoryPoint(editor, GPU_MEM_HISTORY_PREFIX + cachePart(id) + "_" + index, ts, memPct);
                 }
             }
-            JSONObject point = new JSONObject();
-            try {
-                point.put("t", ts);
-                point.put("u", util);
-            } catch (Exception ignored) {
-            }
-            next.put(point);
-            editor.putString(key, next.toString());
-            changed = true;
         }
         if (changed) {
             editor.apply();
         }
+    }
+
+    private boolean appendHistoryPoint(SharedPreferences.Editor editor, String key, long ts, int util) {
+        if (util < 0 || key == null || key.isEmpty()) return false;
+        util = Math.max(0, Math.min(100, util));
+        JSONArray history = loadHistoryArray(key);
+        JSONObject last = history.length() > 0 ? history.optJSONObject(history.length() - 1) : null;
+        if (last != null && last.optLong("t", 0L) == ts && last.optInt("u", -1) == util) {
+            return false;
+        }
+        JSONArray next = new JSONArray();
+        int start = Math.max(0, history.length() - CPU_HISTORY_MAX_POINTS + 1);
+        for (int h = start; h < history.length(); h++) {
+            JSONObject point = history.optJSONObject(h);
+            if (point != null && point.optLong("t", 0L) != ts) next.put(point);
+        }
+        JSONObject point = new JSONObject();
+        try {
+            point.put("t", ts);
+            point.put("u", util);
+        } catch (Exception ignored) {
+        }
+        next.put(point);
+        editor.putString(key, next.toString());
+        return true;
+    }
+
+    private JSONArray loadHistoryArray(String key) {
+        String raw = prefs.getString(key, "");
+        if (raw == null || raw.isEmpty()) return new JSONArray();
+        try {
+            return new JSONArray(raw);
+        } catch (Exception ignored) {
+            return new JSONArray();
+        }
+    }
+
+    private int[] historyValues(String key) {
+        JSONArray history = loadHistoryArray(key);
+        List<Integer> values = new ArrayList<>();
+        for (int i = 0; i < history.length(); i++) {
+            JSONObject point = history.optJSONObject(i);
+            if (point == null) continue;
+            int value = point.optInt("u", -1);
+            if (value >= 0) values.add(Math.max(0, Math.min(100, value)));
+        }
+        int[] out = new int[values.size()];
+        for (int i = 0; i < values.size(); i++) out[i] = values.get(i);
+        return out;
     }
 
     private String cpuHistoryKey(String deviceId) {
@@ -3676,7 +4022,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return count;
         }
         try {
-            String cached = prefs.getString(CACHE_DEVICES, "");
+            String cached = cachedSnapshot(CACHE_DEVICES);
             if (cached == null || cached.isEmpty()) {
                 return 0;
             }
@@ -3846,36 +4192,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void updateDeviceSummary() {
         updateMonitorDeck(false);
-        if (selectedDeviceId == null || "all".equals(selectedDeviceId)) {
-            if (deviceSummaryText != null) {
-                deviceSummaryText.setText(isEnglish() ? "All active devices" : "全部活跃设备");
-            }
-            if (deviceHeartbeatText != null) {
-                int online = onlineDeviceCount();
-                int total = deviceNames.isEmpty() ? cachedDevicesArray().length() : deviceNames.size();
-                deviceHeartbeatText.setText(isEnglish()
-                        ? online + " online · " + total + " devices"
-                        : online + " 在线 · 共 " + total + " 台设备");
-            }
-            return;
-        }
-        String lastSeen = formatDeviceTimestamp(deviceLastSeen.get(selectedDeviceId));
-        boolean online = Boolean.TRUE.equals(deviceOnline.get(selectedDeviceId));
-        if (deviceSummaryText != null) {
-            deviceSummaryText.setText(selectedDeviceName() + " · " + (online ? (isEnglish() ? "Online" : "在线") : (isEnglish() ? "Offline" : "离线")));
-        }
-        StringBuilder text = new StringBuilder();
-        if (!lastSeen.isEmpty()) {
-            text.append(isEnglish() ? "Heartbeat " : "心跳 ").append(lastSeen);
-        } else {
-            text.append(isEnglish() ? "Waiting for heartbeat" : "等待心跳");
-        }
-        if (selectedDeviceMetricAvailable()) {
-            text.append(isEnglish() ? " · swipe for metrics" : " · 下滑看指标");
-        }
-        if (deviceHeartbeatText != null) {
-            deviceHeartbeatText.setText(text.toString());
-        }
+        refreshMetricDetailIfVisible();
     }
 
     private boolean selectedDeviceMetricAvailable() {
@@ -3932,7 +4249,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
         ));
-        page.animate().alpha(1f).translationY(0f).setDuration(180).start();
+        page.animate().alpha(1f).translationY(0f).setDuration(180).setInterpolator(PageMotion.EASE).start();
         old.animate()
                 .alpha(0f)
                 .translationY(-offset)
@@ -3941,21 +4258,218 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 .start();
     }
 
+    private View buildStatusMonitorCard() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(10), dp(8), dp(10), dp(8));
+        card.setBackground(roundedBg(homeHeroBg(), 22, homeHeroStroke()));
+
+        TextView eyebrow = new TextView(this);
+        eyebrow.setText(isEnglish() ? "DEVICE STATUS" : "设备状态");
+        eyebrow.setTextSize(10);
+        eyebrow.setLetterSpacing(0.06f);
+        eyebrow.setTypeface(null, Typeface.BOLD);
+        eyebrow.setTextColor(textSecondary());
+        card.addView(eyebrow, matchWrap());
+
+        boolean allDevices = selectedDeviceId == null || "all".equals(selectedDeviceId);
+        int cpuUtil = allDevices ? averageOnlineCpuUtil() : deviceCpuUtil(selectedDeviceSnapshot());
+        View cpuRow = liveMeterRow(
+                "CPU",
+                cpuUtil,
+                cpuUtil >= 0 ? cpuUtil + "%" : "—",
+                v -> showMetricDetail("cpu")
+        );
+        LinearLayout.LayoutParams cpuParams = matchWrap();
+        cpuParams.setMargins(0, dp(4), 0, 0);
+        card.addView(cpuRow, cpuParams);
+
+        int memUtil = allDevices ? averageOnlineMemUtil() : deviceMemUtil(selectedDeviceSnapshot());
+        View memRow = liveMeterRow(
+                "MEM",
+                memUtil,
+                memUtil >= 0 ? memUtil + "%" : "—",
+                v -> showMetricDetail("mem")
+        );
+        LinearLayout.LayoutParams memParams = matchWrap();
+        memParams.setMargins(0, dp(4), 0, 0);
+        card.addView(memRow, memParams);
+
+        if (allDevices) {
+            int gpuUtil = averageOnlineGpuUtil();
+            View gpuMeter = liveMeterRow(
+                    "GPU",
+                    gpuUtil,
+                    gpuUtil >= 0 ? gpuUtil + "%" : "—",
+                    v -> showMetricDetail("gpu")
+            );
+            LinearLayout.LayoutParams gpuMeterParams = matchWrap();
+            gpuMeterParams.setMargins(0, dp(4), 0, 0);
+            card.addView(gpuMeter, gpuMeterParams);
+            return card;
+        }
+
+        LinearLayout gpuRow = new LinearLayout(this);
+        gpuRow.setOrientation(LinearLayout.HORIZONTAL);
+        gpuRow.setGravity(Gravity.CENTER_VERTICAL);
+        gpuRow.setMinimumHeight(dp(36));
+        gpuRow.setOnClickListener(v -> showMetricDetail("gpu"));
+        TextView gpuLabel = new TextView(this);
+        gpuLabel.setText("GPU");
+        gpuLabel.setTextSize(11);
+        gpuLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
+        gpuLabel.setTextColor(textSecondary());
+        gpuRow.addView(gpuLabel, new LinearLayout.LayoutParams(dp(44), LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        List<JSONObject> gpus = selectedDeviceGpus(selectedDeviceSnapshot());
+        if (gpus.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("—");
+            empty.setTextSize(12);
+            empty.setTypeface(android.graphics.Typeface.MONOSPACE);
+            empty.setTextColor(textSecondary());
+            gpuRow.addView(empty, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        } else {
+            HorizontalScrollView scroller = new HorizontalScrollView(this);
+            scroller.setHorizontalScrollBarEnabled(false);
+            scroller.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+            LinearLayout strip = new LinearLayout(this);
+            strip.setOrientation(LinearLayout.HORIZONTAL);
+            strip.setGravity(Gravity.CENTER_VERTICAL);
+            strip.setMinimumHeight(dp(36));
+            for (int i = 0; i < gpus.size(); i++) {
+                View chip = gpuStatusChip(gpus.get(i), i);
+                LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(dp(48), LinearLayout.LayoutParams.WRAP_CONTENT);
+                if (i > 0) chipParams.setMargins(dp(6), 0, 0, 0);
+                strip.addView(chip, chipParams);
+            }
+            scroller.addView(strip);
+            gpuRow.addView(scroller, new LinearLayout.LayoutParams(0, dp(36), 1));
+        }
+        LinearLayout.LayoutParams gpuParams = matchWrap();
+        gpuParams.setMargins(0, dp(4), 0, 0);
+        card.addView(gpuRow, gpuParams);
+        return card;
+    }
+
+    private View gpuStatusChip(JSONObject gpu, int fallbackIndex) {
+        int idx = gpu.optInt("index", fallbackIndex);
+        int util = Math.max(0, Math.min(100, gpu.optInt("utilization", 0)));
+        int progress = util;
+        String valueText = util + "%";
+
+        LinearLayout item = new LinearLayout(this);
+        item.setOrientation(LinearLayout.VERTICAL);
+        item.setGravity(Gravity.CENTER_HORIZONTAL);
+        TextView label = new TextView(this);
+        label.setText("G" + idx);
+        label.setTextSize(10);
+        label.setTypeface(android.graphics.Typeface.MONOSPACE);
+        label.setTextColor(textSecondary());
+        label.setGravity(Gravity.CENTER);
+        item.addView(label, matchWrap());
+
+        MeterBarView bar = new MeterBarView(this);
+        bar.setMeter(progress, meterFillColor(progress), meterTrackColor());
+        LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(dp(44), dp(7));
+        barParams.setMargins(0, dp(4), 0, dp(3));
+        item.addView(bar, barParams);
+
+        TextView value = new TextView(this);
+        value.setText(valueText);
+        value.setTextSize(10);
+        value.setTypeface(android.graphics.Typeface.MONOSPACE);
+        value.setTextColor(textPrimary());
+        value.setGravity(Gravity.CENTER);
+        item.addView(value, matchWrap());
+        item.setOnClickListener(v -> showMetricDetail("gpu"));
+        return item;
+    }
+
     private List<String> monitorPages() {
         List<String> pages = new ArrayList<>();
         pages.add("device");
-        if (selectedDeviceId == null || "all".equals(selectedDeviceId)) {
-            return pages;
-        }
-        JSONObject selectedDevice = selectedDeviceSnapshot();
-        if (!selectedDeviceGpus(selectedDevice).isEmpty()) {
-            pages.add("gpu");
-        }
-        JSONObject cpu = selectedDevice == null ? null : selectedDevice.optJSONObject("cpu");
-        if (cpu != null && cpu.has("utilization")) {
-            pages.add("cpu");
-        }
         return pages;
+    }
+
+    private List<JSONObject> onlineDeviceSnapshots() {
+        List<JSONObject> online = new ArrayList<>();
+        JSONArray devices = cachedDevicesArray();
+        for (int i = 0; i < devices.length(); i++) {
+            JSONObject device = devices.optJSONObject(i);
+            if (device == null) continue;
+            String id = device.optString("id", "");
+            boolean isOnline = deviceOnline.containsKey(id)
+                    ? Boolean.TRUE.equals(deviceOnline.get(id))
+                    : device.optBoolean("online", false);
+            if (isOnline) online.add(device);
+        }
+        return online;
+    }
+
+    private int deviceCpuUtil(JSONObject device) {
+        JSONObject cpu = device == null ? null : device.optJSONObject("cpu");
+        if (cpu == null || !cpu.has("utilization")) return -1;
+        return Math.max(0, Math.min(100, cpu.optInt("utilization", 0)));
+    }
+
+    private int deviceMemUtil(JSONObject device) {
+        JSONObject cpu = device == null ? null : device.optJSONObject("cpu");
+        if (cpu == null || !cpu.has("memoryUtilization")) return -1;
+        return Math.max(0, Math.min(100, cpu.optInt("memoryUtilization", 0)));
+    }
+
+    private int averageOnlineMemUtil() {
+        int sum = 0;
+        int count = 0;
+        for (JSONObject device : onlineDeviceSnapshots()) {
+            int util = deviceMemUtil(device);
+            if (util < 0) continue;
+            sum += util;
+            count++;
+        }
+        return count == 0 ? -1 : Math.round(sum / (float) count);
+    }
+
+    private int averageOnlineCpuUtil() {
+        int sum = 0;
+        int count = 0;
+        for (JSONObject device : onlineDeviceSnapshots()) {
+            int util = deviceCpuUtil(device);
+            if (util < 0) continue;
+            sum += util;
+            count++;
+        }
+        return count == 0 ? -1 : Math.round(sum / (float) count);
+    }
+
+    private int averageOnlineGpuUtil() {
+        int sum = 0;
+        int count = 0;
+        for (JSONObject device : onlineDeviceSnapshots()) {
+            for (JSONObject gpu : selectedDeviceGpus(device)) {
+                if (gpu == null || !gpu.has("utilization")) continue;
+                sum += Math.max(0, Math.min(100, gpu.optInt("utilization", 0)));
+                count++;
+            }
+        }
+        return count == 0 ? -1 : Math.round(sum / (float) count);
+    }
+
+    private List<JSONObject> monitorSourceGpus() {
+        JSONObject selected = selectedDeviceSnapshot();
+        if (selected != null) return selectedDeviceGpus(selected);
+        List<JSONObject> gpus = new ArrayList<>();
+        for (JSONObject device : onlineDeviceSnapshots()) {
+            gpus.addAll(selectedDeviceGpus(device));
+        }
+        return gpus;
+    }
+
+    private int monitorSourceCpuUtil() {
+        JSONObject selected = selectedDeviceSnapshot();
+        if (selected != null) return deviceCpuUtil(selected);
+        return averageOnlineCpuUtil();
     }
 
     private JSONObject selectedDeviceSnapshot() {
@@ -3993,7 +4507,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if ("cpu".equals(page)) {
             return buildCpuMonitorPage(pages);
         }
-        return buildDeviceMonitorPage(pages);
+        return buildStatusMonitorCard();
     }
 
     private LinearLayout monitorCardBase(String eyebrowText, String titleText, String subtitleText, List<String> pages) {
@@ -4043,9 +4557,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout right = new LinearLayout(this);
         right.setOrientation(LinearLayout.VERTICAL);
         right.setGravity(Gravity.CENTER);
-        TextView refresh = refreshIconButton();
-        refresh.setOnClickListener(v -> refreshHome(true));
-        right.addView(refresh, new LinearLayout.LayoutParams(dp(44), dp(44)));
         TextView dots = new TextView(this);
         dots.setText(monitorPageDots(pages));
         dots.setTextSize(9f);
@@ -4099,16 +4610,549 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout card = monitorCardBase(isEnglish() ? "COMMAND MONITOR" : "命令运行监控", title, subtitle, pages);
         deviceSummaryText = (TextView) ((ViewGroup) ((ViewGroup) card.getChildAt(0)).getChildAt(0)).getChildAt(1);
         deviceHeartbeatText = (TextView) ((ViewGroup) ((ViewGroup) card.getChildAt(0)).getChildAt(0)).getChildAt(2);
+        JSONObject selectedDevice = selectedDeviceSnapshot();
+        if (selectedDevice != null) {
+            List<JSONObject> gpus = selectedDeviceGpus(selectedDevice);
+            JSONObject cpu = selectedDevice.optJSONObject("cpu");
+            if (!gpus.isEmpty() || (cpu != null && cpu.has("utilization"))) {
+                LinearLayout meters = new LinearLayout(this);
+                meters.setOrientation(LinearLayout.VERTICAL);
+                LinearLayout.LayoutParams meterParams = matchWrap();
+                meterParams.setMargins(0, dp(8), 0, 0);
+                if (cpu != null && cpu.has("utilization")) {
+                    int util = Math.max(0, Math.min(100, cpu.optInt("utilization", 0)));
+                    meters.addView(liveMeterRow("CPU", util, util + "%", null));
+                }
+                for (int i = 0; i < Math.min(gpus.size(), 8); i++) {
+                    JSONObject gpu = gpus.get(i);
+                    int util = Math.max(0, Math.min(100, gpu.optInt("utilization", 0)));
+                    String mem = gpuMemLabel(gpu);
+                    meters.addView(liveMeterRow("GPU " + gpu.optInt("index", i), util, mem, null));
+                }
+                card.addView(meters, meterParams);
+            }
+        }
         return card;
     }
 
+    private String gpuMemLabel(JSONObject gpu) {
+        int used = gpu.optInt("memoryUsed", -1);
+        int total = gpu.optInt("memoryTotal", -1);
+        int util = gpu.optInt("utilization", 0);
+        if (used >= 0 && total > 0) {
+            return util + "% · " + String.format(Locale.US, "%.1f/%.1fG", used / 1024.0, total / 1024.0);
+        }
+        return util + "%";
+    }
+
+    private View liveMeterRow(String label, int percent, String value, View.OnClickListener click) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(1), 0, dp(1));
+        TextView name = new TextView(this);
+        name.setText(label);
+        name.setTextSize(11);
+        name.setTypeface(android.graphics.Typeface.MONOSPACE);
+        name.setTextColor(textSecondary());
+        row.addView(name, new LinearLayout.LayoutParams(dp(44), LinearLayout.LayoutParams.WRAP_CONTENT));
+        MeterBarView bar = new MeterBarView(this);
+        bar.setMeter(percent, meterFillColor(percent), meterTrackColor());
+        row.addView(bar, new LinearLayout.LayoutParams(0, dp(7), 1));
+        TextView detail = new TextView(this);
+        detail.setText(value);
+        detail.setTextSize(12);
+        detail.setTypeface(android.graphics.Typeface.MONOSPACE);
+        detail.setTextColor(textPrimary());
+        detail.setGravity(Gravity.END);
+        detail.setPadding(dp(10), 0, 0, 0);
+        row.addView(detail, new LinearLayout.LayoutParams(dp(48), LinearLayout.LayoutParams.WRAP_CONTENT));
+        if (click != null) {
+            row.setClickable(true);
+            row.setOnClickListener(click);
+        }
+        return row;
+    }
+
+    private void showMetricDetail(String kind) {
+        if (pageShell == null) ensureShell();
+        metricDetailKind = kind;
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setClickable(true);
+        root.setBackgroundColor(appBg());
+        root.setPadding(dp(16), statusBarHeight() + dp(12), dp(16), navigationBarHeight() + dp(14));
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView back = circleIconButton("‹");
+        back.setTextSize(28);
+        back.setOnClickListener(v -> {
+            clearMetricDetailState();
+            if (pageShell != null) pageShell.popOverlay();
+        });
+        top.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        TextView heading = new TextView(this);
+        heading.setText(metricDetailTitle(kind));
+        heading.setTextSize(20);
+        heading.setTypeface(null, Typeface.BOLD);
+        heading.setTextColor(textPrimary());
+        LinearLayout.LayoutParams headingParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        headingParams.setMargins(dp(10), 0, 0, 0);
+        top.addView(heading, headingParams);
+        root.addView(top, matchWrap());
+
+        metricDetailScroll = new ScrollView(this);
+        metricDetailScroll.setFillViewport(false);
+        metricDetailBody = new LinearLayout(this);
+        metricDetailBody.setOrientation(LinearLayout.VERTICAL);
+        metricDetailBody.setPadding(0, dp(12), 0, dp(8));
+        fillMetricDetailBody(metricDetailBody, kind);
+        metricDetailScroll.addView(metricDetailBody, matchWrap());
+        root.addView(metricDetailScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        pageShell.pushOverlay(root);
+    }
+
+    private String metricDetailTitle(String kind) {
+        boolean allDevices = selectedDeviceId == null || "all".equals(selectedDeviceId);
+        if ("mem".equals(kind)) {
+            return allDevices ? (isEnglish() ? "Memory · online avg" : "内存 · 在线平均")
+                    : (isEnglish() ? "Memory · " : "内存 · ") + selectedDeviceName();
+        }
+        if ("gpu".equals(kind)) {
+            return allDevices ? (isEnglish() ? "GPU · online avg" : "GPU · 在线平均")
+                    : "GPU · " + selectedDeviceName();
+        }
+        return allDevices ? (isEnglish() ? "CPU · online avg" : "CPU · 在线平均")
+                : "CPU · " + selectedDeviceName();
+    }
+
+    private void fillMetricDetailBody(LinearLayout body, String kind) {
+        boolean allDevices = selectedDeviceId == null || "all".equals(selectedDeviceId);
+        if ("mem".equals(kind)) {
+            buildMemDetailBody(body, allDevices);
+        } else if ("gpu".equals(kind)) {
+            buildGpuDetailBody(body, allDevices);
+        } else {
+            buildCpuDetailBody(body, allDevices);
+        }
+    }
+
+    private void refreshMetricDetailIfVisible() {
+        if (metricDetailKind == null || metricDetailBody == null) {
+            return;
+        }
+        if (pageShell == null || !pageShell.hasOverlay()) {
+            clearMetricDetailState();
+            return;
+        }
+        final int y = metricDetailScroll == null ? 0 : metricDetailScroll.getScrollY();
+        metricDetailBody.removeAllViews();
+        fillMetricDetailBody(metricDetailBody, metricDetailKind);
+        if (metricDetailScroll != null) {
+            metricDetailScroll.post(() -> metricDetailScroll.scrollTo(0, y));
+        }
+    }
+
+    private void clearMetricDetailState() {
+        metricDetailKind = null;
+        metricDetailBody = null;
+        metricDetailScroll = null;
+    }
+
+    private void buildCpuDetailBody(LinearLayout body, boolean allDevices) {
+        int util = allDevices ? averageOnlineCpuUtil() : deviceCpuUtil(selectedDeviceSnapshot());
+        JSONObject cpu = selectedDeviceSnapshot() == null ? null : selectedDeviceSnapshot().optJSONObject("cpu");
+        int cores = cpu == null ? 0 : cpu.optInt("cores", 0);
+        double load1 = cpu == null ? -1 : cpu.optDouble("load1", -1);
+        StringBuilder meta = new StringBuilder();
+        if (cores > 0) meta.append(cores).append(isEnglish() ? " cores" : " 核");
+        if (load1 >= 0) {
+            if (meta.length() > 0) meta.append("   ");
+            meta.append("load ").append(String.format(Locale.US, "%.2f", load1));
+        }
+        body.addView(nvitopPanel(
+                "CPU",
+                meta.toString(),
+                "CPU-Util",
+                util,
+                util >= 0 ? util + "%" : "—",
+                historyOrAverage(CPU_HISTORY_PREFIX, allDevices)
+        ), panelParams());
+        body.addView(processTable(
+                "PID    CPU    MEM    COMMAND",
+                hostProcesses(false)
+        ));
+        if (allDevices) body.addView(onlineDeviceSummaryList("cpu"));
+    }
+
+    private void buildMemDetailBody(LinearLayout body, boolean allDevices) {
+        JSONObject cpu = selectedDeviceSnapshot() == null ? null : selectedDeviceSnapshot().optJSONObject("cpu");
+        int util = allDevices ? averageOnlineMemUtil() : deviceMemUtil(selectedDeviceSnapshot());
+        int used = cpu == null ? -1 : cpu.optInt("memoryUsed", -1);
+        int total = cpu == null ? -1 : cpu.optInt("memoryTotal", -1);
+        String right = memSizeLabel(used, total);
+        if (right.isEmpty()) right = util >= 0 ? util + "%" : "—";
+        else if (util >= 0) right = util + "%   " + right;
+        body.addView(nvitopPanel(
+                "MEM",
+                allDevices ? (isEnglish() ? "Online average" : "在线平均") : memSizeLabel(used, total),
+                "MEM-Util",
+                util,
+                right,
+                historyOrAverage(MEM_HISTORY_PREFIX, allDevices)
+        ), panelParams());
+        body.addView(processTable(
+                "PID    MEM    CPU    COMMAND",
+                hostProcesses(true)
+        ));
+        if (allDevices) body.addView(onlineDeviceSummaryList("mem"));
+    }
+
+    private void buildGpuDetailBody(LinearLayout body, boolean allDevices) {
+        List<JSONObject> gpus = monitorSourceGpus();
+        if (gpus.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText(isEnglish() ? "No GPU data." : "没有 GPU 数据。");
+            empty.setTextSize(14);
+            empty.setTextColor(textSecondary());
+            body.addView(empty, matchWrap());
+            return;
+        }
+        if (allDevices) {
+            int avg = averageOnlineGpuUtil();
+            body.addView(nvitopPanel(
+                    "GPU",
+                    isEnglish() ? "Online average" : "在线平均",
+                    "GPU-Util",
+                    avg,
+                    avg >= 0 ? avg + "%" : "—",
+                    averageGpuUtilHistory()
+            ), panelParams());
+            body.addView(onlineDeviceSummaryList("gpu"));
+            return;
+        }
+        String deviceId = selectedDeviceId == null ? "" : selectedDeviceId;
+        for (int i = 0; i < gpus.size(); i++) {
+            JSONObject gpu = gpus.get(i);
+            int idx = gpu.optInt("index", i);
+            int util = gpu.has("utilization") ? Math.max(0, Math.min(100, gpu.optInt("utilization", 0))) : -1;
+            int memUsed = gpu.optInt("memoryUsed", -1);
+            int memTotal = gpu.optInt("memoryTotal", -1);
+            int memPct = memUsed >= 0 && memTotal > 0
+                    ? Math.max(0, Math.min(100, Math.round(memUsed * 100f / memTotal))) : -1;
+            int temp = gpu.optInt("temperature", -1);
+            String name = gpu.optString("name", "");
+            String head = "GPU " + idx + (name.isEmpty() ? "" : "  " + name);
+            String meta = temp >= 0 ? temp + "°C" : "";
+            String memRight = memSizeLabel(memUsed, memTotal);
+            if (memPct >= 0 && !memRight.isEmpty()) memRight = memPct + "%   " + memRight;
+            else if (memPct >= 0) memRight = memPct + "%";
+            LinearLayout block = nvitopPanel(head, meta, "GPU-Util", util, util >= 0 ? util + "%" : "—",
+                    deviceId.isEmpty() ? new int[0] : historyValues(GPU_UTIL_HISTORY_PREFIX + cachePart(deviceId) + "_" + idx));
+            LinearLayout.LayoutParams memRowParams = matchWrap();
+            memRowParams.setMargins(0, dp(8), 0, 0);
+            block.addView(detailMeterRow("MEM-Util", memPct, memRight.isEmpty() ? "—" : memRight), memRowParams);
+            block.addView(chartView(historyValues(GPU_MEM_HISTORY_PREFIX + cachePart(deviceId) + "_" + idx)),
+                    chartParams());
+            body.addView(block, panelParams());
+            body.addView(processTable(
+                    "GPU   PID     MEM     COMMAND",
+                    gpuProcesses(gpu, idx)
+            ));
+        }
+    }
+
+    private LinearLayout nvitopPanel(String title, String meta, String meterLabel, int percent, String meterValue, int[] series) {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(12), dp(12), dp(12), dp(12));
+        panel.setBackground(roundedBg(homeHeroBg(), 16, homeHeroStroke()));
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        TextView name = new TextView(this);
+        name.setText(title);
+        name.setTextSize(13);
+        name.setTypeface(android.graphics.Typeface.MONOSPACE, Typeface.BOLD);
+        name.setTextColor(textPrimary());
+        head.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        if (meta != null && !meta.isEmpty()) {
+            TextView extra = new TextView(this);
+            extra.setText(meta);
+            extra.setTextSize(12);
+            extra.setTypeface(android.graphics.Typeface.MONOSPACE);
+            extra.setTextColor(textSecondary());
+            head.addView(extra, matchWrap());
+        }
+        panel.addView(head, matchWrap());
+        LinearLayout.LayoutParams meterParams = matchWrap();
+        meterParams.setMargins(0, dp(10), 0, 0);
+        panel.addView(detailMeterRow(meterLabel, percent, meterValue), meterParams);
+        panel.addView(chartView(series), chartParams());
+        return panel;
+    }
+
+    private View detailMeterRow(String label, int percent, String value) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = new TextView(this);
+        name.setText(label);
+        name.setTextSize(11);
+        name.setTypeface(android.graphics.Typeface.MONOSPACE);
+        name.setTextColor(textSecondary());
+        row.addView(name, new LinearLayout.LayoutParams(dp(78), LinearLayout.LayoutParams.WRAP_CONTENT));
+        MeterBarView bar = new MeterBarView(this);
+        bar.setMeter(percent, meterFillColor(percent), meterTrackColor());
+        row.addView(bar, new LinearLayout.LayoutParams(0, dp(8), 1));
+        TextView detail = new TextView(this);
+        detail.setText(value);
+        detail.setTextSize(11);
+        detail.setTypeface(android.graphics.Typeface.MONOSPACE);
+        detail.setTextColor(textPrimary());
+        detail.setGravity(Gravity.END);
+        detail.setPadding(dp(8), 0, 0, 0);
+        row.addView(detail, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        return row;
+    }
+
+    private View chartView(int[] series) {
+        if (series == null || series.length == 0) {
+            TextView empty = new TextView(this);
+            empty.setText(isEnglish() ? "No history yet. Wait for the next heartbeat." : "还没有历史曲线，等下一次心跳。");
+            empty.setTextSize(11);
+            empty.setTextColor(textSecondary());
+            empty.setPadding(0, dp(10), 0, dp(4));
+            return empty;
+        }
+        return new CpuChartView(this, series, cpuChartLineColor(), cpuChartFillColor(), meterTrackColor());
+    }
+
+    private LinearLayout.LayoutParams chartParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(88));
+        params.setMargins(0, dp(8), 0, 0);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams panelParams() {
+        LinearLayout.LayoutParams params = matchWrap();
+        params.setMargins(0, 0, 0, dp(12));
+        return params;
+    }
+
+    private View processTable(String header, List<String> rows) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(12), dp(10), dp(12), dp(10));
+        box.setBackground(roundedBg(homeHeroBg(), 16, homeHeroStroke()));
+        LinearLayout.LayoutParams boxParams = matchWrap();
+        boxParams.setMargins(0, 0, 0, dp(12));
+        box.setLayoutParams(boxParams);
+        TextView head = new TextView(this);
+        head.setText(header);
+        head.setTextSize(11);
+        head.setTypeface(android.graphics.Typeface.MONOSPACE, Typeface.BOLD);
+        head.setTextColor(textSecondary());
+        box.addView(head, matchWrap());
+        if (rows == null || rows.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText(isEnglish() ? "No process data." : "暂无进程数据");
+            empty.setTextSize(12);
+            empty.setTypeface(android.graphics.Typeface.MONOSPACE);
+            empty.setTextColor(textSecondary());
+            empty.setPadding(0, dp(8), 0, 0);
+            box.addView(empty, matchWrap());
+            return box;
+        }
+        for (String row : rows) {
+            TextView line = new TextView(this);
+            line.setText(row);
+            line.setTextSize(12);
+            line.setTypeface(android.graphics.Typeface.MONOSPACE);
+            line.setTextColor(textPrimary());
+            line.setPadding(0, dp(4), 0, 0);
+            box.addView(line, matchWrap());
+        }
+        return box;
+    }
+
+    private List<String> hostProcesses(boolean byMemory) {
+        List<String> lines = new ArrayList<>();
+        JSONArray processes = null;
+        if (selectedDeviceSnapshot() != null) {
+            JSONObject cpu = selectedDeviceSnapshot().optJSONObject("cpu");
+            processes = cpu == null ? null : cpu.optJSONArray("processes");
+        } else {
+            processes = mergedHostProcesses();
+        }
+        if (processes == null) return lines;
+        List<JSONObject> rows = new ArrayList<>();
+        for (int i = 0; i < processes.length(); i++) {
+            JSONObject item = processes.optJSONObject(i);
+            if (item != null) rows.add(item);
+        }
+        Collections.sort(rows, (a, b) -> {
+            double av = byMemory ? a.optDouble("mem", a.optDouble("memoryUsed", 0)) : a.optDouble("cpu", 0);
+            double bv = byMemory ? b.optDouble("mem", b.optDouble("memoryUsed", 0)) : b.optDouble("cpu", 0);
+            return Double.compare(bv, av);
+        });
+        for (int i = 0; i < Math.min(8, rows.size()); i++) {
+            JSONObject item = rows.get(i);
+            if (byMemory) {
+                lines.add(String.format(Locale.US, "%-6d %5.1f%% %5.1f%%  %s",
+                        item.optInt("pid", 0),
+                        item.optDouble("mem", 0),
+                        item.optDouble("cpu", 0),
+                        item.optString("name", "process")));
+            } else {
+                lines.add(String.format(Locale.US, "%-6d %5.1f%% %5.1f%%  %s",
+                        item.optInt("pid", 0),
+                        item.optDouble("cpu", 0),
+                        item.optDouble("mem", 0),
+                        item.optString("name", "process")));
+            }
+        }
+        return lines;
+    }
+
+    private JSONArray mergedHostProcesses() {
+        JSONArray merged = new JSONArray();
+        for (JSONObject device : onlineDeviceSnapshots()) {
+            JSONObject cpu = device.optJSONObject("cpu");
+            JSONArray processes = cpu == null ? null : cpu.optJSONArray("processes");
+            if (processes == null) continue;
+            for (int i = 0; i < processes.length(); i++) {
+                JSONObject item = processes.optJSONObject(i);
+                if (item != null) merged.put(item);
+            }
+        }
+        return merged;
+    }
+
+    private List<String> gpuProcesses(JSONObject gpu, int index) {
+        List<String> lines = new ArrayList<>();
+        JSONArray processes = gpu.optJSONArray("processes");
+        if (processes == null) return lines;
+        for (int i = 0; i < processes.length(); i++) {
+            JSONObject item = processes.optJSONObject(i);
+            if (item == null) continue;
+            int mem = item.optInt("memoryUsed", -1);
+            String memLabel = mem >= 0 ? String.format(Locale.US, "%4dM", mem) : "   —";
+            lines.add(String.format(Locale.US, "%-4d %-6d %s   %s",
+                    index,
+                    item.optInt("pid", 0),
+                    memLabel,
+                    item.optString("name", "process")));
+        }
+        return lines;
+    }
+
+    private View onlineDeviceSummaryList(String kind) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        TextView label = new TextView(this);
+        label.setText(isEnglish() ? "Online devices" : "在线设备");
+        label.setTextSize(12);
+        label.setTextColor(textSecondary());
+        box.addView(label, matchWrap());
+        for (JSONObject device : onlineDeviceSnapshots()) {
+            String id = device.optString("id", "");
+            String name = device.optString("name", id);
+            int value;
+            if ("mem".equals(kind)) value = deviceMemUtil(device);
+            else if ("gpu".equals(kind)) {
+                int sum = 0;
+                int n = 0;
+                for (JSONObject gpu : selectedDeviceGpus(device)) {
+                    if (gpu == null || !gpu.has("utilization")) continue;
+                    sum += Math.max(0, Math.min(100, gpu.optInt("utilization", 0)));
+                    n++;
+                }
+                value = n == 0 ? -1 : Math.round(sum / (float) n);
+            } else value = deviceCpuUtil(device);
+            TextView row = new TextView(this);
+            row.setText(name + "   " + (value >= 0 ? value + "%" : "—"));
+            row.setTextSize(14);
+            row.setTextColor(textPrimary());
+            row.setPadding(0, dp(8), 0, dp(8));
+            row.setOnClickListener(v -> {
+                selectedDeviceId = id;
+                prefs.edit().putString("selected_device_id", selectedDeviceId).apply();
+                if (pageShell != null) pageShell.clearOverlays();
+                loadCachedDevices();
+                updateDeviceSummary();
+                showMetricDetail(kind);
+            });
+            box.addView(row, matchWrap());
+        }
+        LinearLayout.LayoutParams params = matchWrap();
+        params.setMargins(0, dp(4), 0, 0);
+        box.setLayoutParams(params);
+        return box;
+    }
+
+    private int[] historyOrAverage(String prefix, boolean allDevices) {
+        if (!allDevices && selectedDeviceId != null) {
+            return historyValues(prefix + cachePart(selectedDeviceId));
+        }
+        List<int[]> series = new ArrayList<>();
+        for (JSONObject device : onlineDeviceSnapshots()) {
+            series.add(historyValues(prefix + cachePart(device.optString("id", ""))));
+        }
+        return averageSeries(series);
+    }
+
+    private int[] averageGpuUtilHistory() {
+        List<int[]> series = new ArrayList<>();
+        for (JSONObject device : onlineDeviceSnapshots()) {
+            String id = device.optString("id", "");
+            for (JSONObject gpu : selectedDeviceGpus(device)) {
+                series.add(historyValues(GPU_UTIL_HISTORY_PREFIX + cachePart(id) + "_" + gpu.optInt("index", 0)));
+            }
+        }
+        return averageSeries(series);
+    }
+
+    private int[] averageSeries(List<int[]> series) {
+        int max = 0;
+        for (int[] item : series) {
+            if (item != null) max = Math.max(max, item.length);
+        }
+        if (max == 0) return new int[0];
+        int[] out = new int[max];
+        for (int i = 0; i < max; i++) {
+            int sum = 0;
+            int count = 0;
+            for (int[] item : series) {
+                if (item == null || item.length == 0) continue;
+                int idx = i - (max - item.length);
+                if (idx >= 0 && idx < item.length) {
+                    sum += item[idx];
+                    count++;
+                }
+            }
+            out[i] = count == 0 ? 0 : Math.round(sum / (float) count);
+        }
+        return out;
+    }
+
+    private String memSizeLabel(int usedMb, int totalMb) {
+        if (usedMb < 0 || totalMb <= 0) return "";
+        return String.format(Locale.US, "%.1f / %.1f GiB", usedMb / 1024.0, totalMb / 1024.0);
+    }
+
     private View buildGpuMonitorPage(List<String> pages) {
-        JSONObject selectedDevice = selectedDeviceSnapshot();
-        List<JSONObject> deviceGpus = selectedDeviceGpus(selectedDevice);
+        List<JSONObject> deviceGpus = monitorSourceGpus();
+        boolean allDevices = selectedDeviceId == null || "all".equals(selectedDeviceId);
         LinearLayout card = monitorCardBase(
                 isEnglish() ? "GPU STATUS" : "GPU 状态",
                 gpuMetricName(),
-                selectedDeviceName() + (isEnglish() ? " · swipe sideways for metric" : " · 左右滑切换指标"),
+                allDevices
+                        ? (isEnglish() ? "Online average · swipe sideways" : "在线平均 · 左右滑切换指标")
+                        : (isEnglish() ? "Swipe sideways for metric" : "左右滑切换指标"),
                 pages
         );
         attachGpuSwipe(card);
@@ -4184,15 +5228,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
         label.setGravity(Gravity.CENTER);
         item.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        bar.setMax(100);
-        bar.setProgress(progress);
-        LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(dp(40), dp(6));
-        barLp.setMargins(dp(1), dp(1), dp(1), dp(1));
-        bar.setLayoutParams(barLp);
-        bar.setProgressTintList(ColorStateList.valueOf(barColor));
-        bar.setProgressBackgroundTintList(ColorStateList.valueOf(gpuTrackColor()));
-        item.addView(bar);
+        MeterBarView bar = new MeterBarView(this);
+        bar.setMeter(progress, meterFillColor(progress), meterTrackColor());
+        LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(dp(40), dp(7));
+        barLp.setMargins(dp(1), dp(2), dp(1), dp(2));
+        item.addView(bar, barLp);
 
         TextView pct = new TextView(this);
         pct.setText(valueText);
@@ -4204,13 +5244,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private View buildCpuMonitorPage(List<String> pages) {
-        JSONObject selectedDevice = selectedDeviceSnapshot();
-        JSONObject cpu = selectedDevice == null ? null : selectedDevice.optJSONObject("cpu");
-        int util = cpu == null ? 0 : Math.max(0, Math.min(100, cpu.optInt("utilization", 0)));
+        int util = Math.max(0, monitorSourceCpuUtil());
+        boolean allDevices = selectedDeviceId == null || "all".equals(selectedDeviceId);
+        JSONObject cpu = allDevices ? null : (selectedDeviceSnapshot() == null ? null : selectedDeviceSnapshot().optJSONObject("cpu"));
         LinearLayout card = monitorCardBase(
                 isEnglish() ? "CPU HISTORY" : "CPU 利用率",
                 util + "%",
-                selectedDeviceName() + (isEnglish() ? " · recent samples" : " · 最近采样"),
+                allDevices
+                        ? (isEnglish() ? "Online average" : "在线设备平均")
+                        : (isEnglish() ? "Recent samples" : "最近采样"),
                 pages
         );
         if (cpu != null) {
@@ -4223,13 +5265,22 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private int gpuBarColor(int value, boolean isTemp) {
         if (isTemp) {
-            if (value >= 80) return color("#EF4444");
-            if (value >= 65) return color("#EAB308");
-            return color("#22C55E");
+            if (value >= 80) return color("#E11D48");
+            if (value >= 65) return color("#D97706");
+            return meterFillColor(value);
         }
-        if (value >= 95) return color("#EF4444");
-        if (value >= 75) return color("#EAB308");
-        return color("#22C55E");
+        return meterFillColor(value);
+    }
+
+    private int meterFillColor(int percent) {
+        if (percent < 0) return meterTrackColor();
+        if (percent >= 90) return isDarkTheme() ? color("#FB7185") : color("#E11D48");
+        if (percent >= 70) return isDarkTheme() ? color("#FBBF24") : color("#D97706");
+        return isDarkTheme() ? color("#5EEAD4") : color("#0F766E");
+    }
+
+    private int meterTrackColor() {
+        return isDarkTheme() ? color("#2A2B32") : color("#EEF1F4");
     }
 
     private View buildCpuMetricPanel(JSONObject cpu) {
@@ -4304,19 +5355,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 return false;
             }
         });
-        target.setClickable(true);
         target.setOnTouchListener((v, ev) -> {
-            if (ev.getAction() == android.view.MotionEvent.ACTION_DOWN) {
-                v.getParent().requestDisallowInterceptTouchEvent(true);
-            } else if (ev.getAction() == android.view.MotionEvent.ACTION_UP
-                    || ev.getAction() == android.view.MotionEvent.ACTION_CANCEL) {
-                v.getParent().requestDisallowInterceptTouchEvent(false);
-            }
             boolean handled = monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(ev);
-            if (handled && ev.getAction() == android.view.MotionEvent.ACTION_UP) {
-                v.performClick();
-            }
-            return handled || ev.getAction() == android.view.MotionEvent.ACTION_DOWN;
+            return handled;
         });
     }
 
@@ -4438,7 +5479,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     selectedStatusFilter = values[which];
                     prefs.edit().putString(PREF_STATUS_FILTER, selectedStatusFilter).apply();
                     dialog.dismiss();
-                    buildUi();
+                    installHomeTab(false);
                     refreshRuns();
                 })
                 .setNegativeButton(t("cancel"), null)
@@ -4464,7 +5505,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     selectedProjectFilter = values.get(which);
                     prefs.edit().putString(PREF_PROJECT_FILTER, selectedProjectFilter).apply();
                     dialog.dismiss();
-                    buildUi();
+                    installHomeTab(false);
                     refreshRuns();
                 })
                 .setNegativeButton(t("cancel"), null)
@@ -4475,8 +5516,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private List<String> availableProjectFilters() {
         Set<String> projects = new HashSet<>();
-        collectProjectsFromCachedRuns(projects, prefs.getString(CACHE_RUNS, ""));
-        collectProjectsFromCachedRuns(projects, prefs.getString(runsCacheKey(), ""));
+        collectProjectsFromCachedRuns(projects, cachedSnapshot(CACHE_RUNS));
+        collectProjectsFromCachedRuns(projects, cachedSnapshot(runsCacheKey()));
         if (selectedProjectFilter != null && !"all".equals(selectedProjectFilter) && !"__none__".equals(selectedProjectFilter)) {
             projects.add(selectedProjectFilter);
         }
@@ -4587,7 +5628,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     if (deviceId.equals(pairedId)) {
                         prefs.edit().putString("paired_device_name", finalSavedName).apply();
                     }
-                    buildUi();
+                    installHomeTab(false);
                     statusText.setText(isEnglish() ? "Renamed to " + finalSavedName + "." : "已重命名为 " + finalSavedName + "。");
                     refreshDevices();
                     refreshRuns();
@@ -4633,7 +5674,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     rememberLocallyRevokedDevices(revokedIds);
                     removeDevicesFromCache(revokedIds);
                     statusText.setText(isEnglish() ? "Revoked " + label + "." : "已撤销 " + label + "。");
-                    buildUi();
+                    installHomeTab(false);
                     refreshDevices();
                     refreshRuns();
                 });
@@ -4690,78 +5731,35 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 }
             }
         }
-        // Skip the expensive full-list rebuild when nothing visible changed
-        // (avoids re-inflating every run card on each poll).
-        String runsSig = runsLayoutSignature(visibleRuns);
-        if (runsContainer != null && runsContainer.getChildCount() > 0 && runsSig.equals(lastRunsSig)) {
-            if (updateRunCardsInPlace(visibleRuns)) {
-                if (!fromCache) {
-                    firstLoad = false;
-                }
-                return;
-            }
-        }
-        if (runsContainer == null) {
+        if (runsContainer == null || runListAdapter == null) {
             return;
         }
-        lastRunsSig = runsSig;
-        runsContainer.removeAllViews();
-
+        List<JSONObject> rows = new ArrayList<>();
         for (int i = 0; i < visibleRuns.length(); i++) {
             JSONObject run = visibleRuns.optJSONObject(i);
             if (run == null) {
                 continue;
             }
             try {
-                runsContainer.addView(runView(run));
-            } catch (Throwable throwable) {
-                runsContainer.addView(runRenderErrorView(run, throwable));
+                JSONObject row = new JSONObject(run.toString());
+                row.put("__pinned", isRunPinned(row.optString("id", "")));
+                rows.add(row);
+            } catch (Exception ignored) {
+                rows.add(run);
             }
         }
-        if (visibleRuns.length() == 0) {
-            runsContainer.addView(emptyState(
-                    isEnglish() ? "No runs yet" : "还没有运行记录",
-                    isEnglish() ? "Try: hao echo hello" : "试试：hao echo hello",
-                    "▶"
-            ), matchWrap());
+        if (rows.isEmpty()) {
+            JSONObject empty = new JSONObject();
+            try {
+                empty.put("id", "__empty__");
+            } catch (Exception ignored) {
+            }
+            rows.add(empty);
         }
+        runListAdapter.submitList(rows);
         if (!fromCache) {
             firstLoad = false;
         }
-    }
-
-    private String runsLayoutSignature(JSONArray runs) {
-        StringBuilder sb = new StringBuilder();
-        Set<String> pinned = pinnedRunIds();
-        for (int i = 0; i < runs.length(); i++) {
-            JSONObject r = runs.optJSONObject(i);
-            if (r == null) {
-                continue;
-            }
-            sb.append(r.optString("id", "")).append('|')
-              .append(pinned.contains(r.optString("id", "")) ? 'P' : '-').append(';');
-        }
-        return sb.toString();
-    }
-
-    private boolean updateRunCardsInPlace(JSONArray runs) {
-        if (runsContainer == null || runs == null || runsContainer.getChildCount() != runs.length()) {
-            return false;
-        }
-        for (int i = 0; i < runs.length(); i++) {
-            JSONObject run = runs.optJSONObject(i);
-            View child = runsContainer.getChildAt(i);
-            String id = run == null ? "" : run.optString("id", "");
-            if (id.isEmpty() || child == null || !runViewTag(id).equals(child.getTag())) {
-                return false;
-            }
-        }
-        for (int i = 0; i < runs.length(); i++) {
-            JSONObject run = runs.optJSONObject(i);
-            View child = runsContainer.getChildAt(i);
-            updateRunCardInPlace(child, run);
-        }
-        return true;
     }
 
     private void updateRunCardInPlace(View root, JSONObject run) {
@@ -4794,6 +5792,73 @@ public class MainActivity extends Activity implements LifecycleOwner {
             output.setText(hasOutput ? displayText(latest) : (isEnglish() ? "(no output)" : "（暂无输出）"));
             output.setTextColor(hasOutput ? textPrimary() : textSecondary());
         }
+        bindRunProgress(
+                taggedView(root, TAG_RUN_PROGRESS_ROW),
+                taggedView(root, TAG_RUN_PROGRESS) instanceof ProgressBar
+                        ? (ProgressBar) taggedView(root, TAG_RUN_PROGRESS) : null,
+                taggedTextView(root, TAG_RUN_PROGRESS_LABEL),
+                run
+        );
+    }
+
+    private String runContentKey(JSONObject run) {
+        if (run == null) return "";
+        return run.optString("id", "") + "|"
+                + run.optString("status", "") + "|"
+                + run.optString("updatedAt", "") + "|"
+                + latestOutputLine(run) + "|"
+                + run.optBoolean("__pinned", false) + "|"
+                + run.opt("progress") + "|"
+                + run.opt("lastLoss") + "|"
+                + run.opt("etaSeconds") + "|"
+                + run.opt("exitCode");
+    }
+
+    private void bindRunProgress(View row, ProgressBar bar, TextView label, JSONObject run) {
+        Double progress = runProgressValue(run);
+        if (row == null) return;
+        if (progress == null) {
+            row.setVisibility(View.GONE);
+            return;
+        }
+        row.setVisibility(View.VISIBLE);
+        int value = (int) Math.round(Math.max(0, Math.min(100, progress)));
+        if (bar != null) bar.setProgress(value);
+        if (label != null) {
+            String extra = "";
+            if (run != null && run.has("lastLoss")) {
+                extra = "  loss " + run.optDouble("lastLoss");
+            }
+            label.setText(value + "%" + extra);
+        }
+    }
+
+    private Double runProgressValue(JSONObject run) {
+        if (run != null && run.has("progress") && !run.isNull("progress")) {
+            double value = run.optDouble("progress", -1);
+            if (value >= 0) return Math.max(0, Math.min(100, value));
+        }
+        return parseProgressFromLine(latestOutputLine(run));
+    }
+
+    private Double parseProgressFromLine(String line) {
+        if (line == null || line.isEmpty()) return null;
+        java.util.regex.Matcher percent = java.util.regex.Pattern.compile("(\\d+(?:\\.\\d+)?)%").matcher(line);
+        if (percent.find()) {
+            try {
+                return Math.max(0, Math.min(100, Double.parseDouble(percent.group(1))));
+            } catch (Exception ignored) {
+            }
+        }
+        java.util.regex.Matcher epoch = java.util.regex.Pattern.compile("(?i)epoch\\s*(\\d+)\\s*/\\s*(\\d+)").matcher(line);
+        if (epoch.find()) {
+            try {
+                double total = Double.parseDouble(epoch.group(2));
+                if (total > 0) return Math.max(0, Math.min(100, Double.parseDouble(epoch.group(1)) * 100.0 / total));
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 
     private TextView taggedTextView(View root, String tag) {
@@ -4924,21 +5989,94 @@ public class MainActivity extends Activity implements LifecycleOwner {
         return "failed".equals(status) || "cancelled".equals(status);
     }
 
+    private void migrateLegacyCaches() {
+        if (appCache == null || prefs == null) return;
+        Map<String, ?> values = prefs.getAll();
+        SharedPreferences.Editor cleanup = prefs.edit();
+        for (Map.Entry<String, ?> entry : values.entrySet()) {
+            String key = entry.getKey();
+            Object raw = entry.getValue();
+            if (!(raw instanceof String)) continue;
+            String payload = (String) raw;
+            if (CACHE_DEVICES.equals(key) || CACHE_RUNS.equals(key) || key.startsWith(CACHE_RUNS_PREFIX)) {
+                long updatedAt = prefs.getLong(cacheAtKeyForRunsKey(key), System.currentTimeMillis());
+                appCache.putSnapshot(key, payload, updatedAt);
+                cleanup.remove(key);
+                String atKey = cacheAtKeyForRunsKey(key);
+                if (!atKey.isEmpty()) cleanup.remove(atKey);
+            } else if (key.startsWith(CACHE_RUN_PREFIX)) {
+                appCache.putRunDetail(key.substring(CACHE_RUN_PREFIX.length()), payload, System.currentTimeMillis());
+                cleanup.remove(key);
+            }
+        }
+        cleanup.apply();
+    }
+
+    private String cachedSnapshot(String key) {
+        if (key == null || key.isEmpty()) return "";
+        String value = appCache == null ? "" : appCache.getSnapshot(key);
+        if (!value.isEmpty()) return value;
+        return prefs == null ? "" : prefs.getString(key, "");
+    }
+
+    private long cachedSnapshotUpdatedAt(String cacheKey, String legacyAtKey) {
+        long value = appCache == null ? 0L : appCache.getSnapshotUpdatedAt(cacheKey);
+        return value > 0L || prefs == null ? value : prefs.getLong(legacyAtKey, 0L);
+    }
+
+    private void storeSnapshot(String key, String payload, long updatedAt) {
+        if (appCache != null) {
+            appCache.putSnapshot(key, payload, updatedAt);
+        } else if (prefs != null) {
+            prefs.edit().putString(key, payload).apply();
+        }
+    }
+
+    private String cachedRunDetail(String runId) {
+        String value = appCache == null ? "" : appCache.getRunDetail(runId);
+        if (!value.isEmpty()) return value;
+        return prefs == null ? "" : prefs.getString(CACHE_RUN_PREFIX + runId, "");
+    }
+
+    private void storeRunDetail(String runId, String payload) {
+        if (appCache != null) {
+            appCache.putRunDetail(runId, payload, System.currentTimeMillis());
+        } else if (prefs != null) {
+            prefs.edit().putString(CACHE_RUN_PREFIX + runId, payload).apply();
+        }
+    }
+
+    private List<String> runSnapshotKeys() {
+        Set<String> keys = new HashSet<>();
+        if (appCache != null) {
+            keys.addAll(appCache.snapshotKeys(CACHE_RUNS_PREFIX));
+            if (!appCache.getSnapshot(CACHE_RUNS).isEmpty()) keys.add(CACHE_RUNS);
+        }
+        if (prefs != null) {
+            for (String key : prefs.getAll().keySet()) {
+                if (CACHE_RUNS.equals(key) || key.startsWith(CACHE_RUNS_PREFIX)) keys.add(key);
+            }
+        }
+        return new ArrayList<>(keys);
+    }
+
     private void loadCachedRuns() {
         String cacheKey = runsCacheKey();
         String cacheAtKey = runsCacheAtKey();
-        String cached = prefs.getString(cacheKey, "");
+        String cached = cachedSnapshot(cacheKey);
         if (cached == null || cached.isEmpty()) {
             // No cache yet for this exact filter combination (e.g. just chose a new project).
             // Fall back to the full cached runs so client-side filter can apply immediately.
             // This makes project/status filter selection instant from local data,
             // without waiting for a network refresh to populate the specific cache.
-            cached = prefs.getString(CACHE_RUNS, "");
+            cached = cachedSnapshot(CACHE_RUNS);
+            cacheKey = CACHE_RUNS;
             cacheAtKey = CACHE_RUNS_AT;
             if (cached == null || cached.isEmpty()) {
                 // try the current device/status specific if exists
                 String broadKey = CACHE_RUNS_PREFIX + cachePart(selectedDeviceId) + "_" + cachePart(selectedStatusFilter) + "_all";
-                cached = prefs.getString(broadKey, "");
+                cached = cachedSnapshot(broadKey);
+                cacheKey = broadKey;
                 // cacheAtKey would be approximate
             }
         }
@@ -4953,7 +6091,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         try {
             renderRuns(new JSONArray(cached), true);
-            long savedAt = prefs.getLong(cacheAtKey, 0L);
+            long savedAt = cachedSnapshotUpdatedAt(cacheKey, cacheAtKey);
             if (savedAt > 0L && statusText != null) {
                 statusText.setText(isEnglish() ? "Saved results. Tap refresh for latest." : "正在显示保存结果。点刷新获取最新内容。");
             }
@@ -4962,28 +6100,24 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private boolean hasCachedRuns() {
-        String cached = prefs.getString(runsCacheKey(), "");
+        String cached = cachedSnapshot(runsCacheKey());
         if (cached != null && !cached.isEmpty()) {
             return true;
         }
         return "all".equals(selectedDeviceId)
                 && "all".equals(selectedStatusFilter)
                 && "all".equals(selectedProjectFilter)
-                && !prefs.getString(CACHE_RUNS, "").isEmpty();
+                && !cachedSnapshot(CACHE_RUNS).isEmpty();
     }
 
     private void saveRunsCache(JSONArray runs) {
         runs = applyPendingRunDeletes(runs);
         mergeDevicesFromRuns(runs);
         long now = System.currentTimeMillis();
-        SharedPreferences.Editor editor = prefs.edit()
-                .putString(runsCacheKey(), runs.toString())
-                .putLong(runsCacheAtKey(), now);
+        storeSnapshot(runsCacheKey(), runs.toString(), now);
         if ("all".equals(selectedDeviceId) && "all".equals(selectedStatusFilter) && "all".equals(selectedProjectFilter)) {
-            editor.putString(CACHE_RUNS, runs.toString())
-                    .putLong(CACHE_RUNS_AT, now);
+            storeSnapshot(CACHE_RUNS, runs.toString(), now);
         }
-        editor.apply();
     }
 
     private JSONArray attachCachedConsolePreviews(JSONArray runs) {
@@ -5032,7 +6166,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         try {
             Map<String, JSONObject> mergedById = new HashMap<>();
-            String cached = prefs.getString(CACHE_DEVICES, "");
+            String cached = cachedSnapshot(CACHE_DEVICES);
             if (cached != null && !cached.isEmpty()) {
                 JSONArray cachedDevices = new JSONArray(cached);
                 for (int i = 0; i < cachedDevices.length(); i++) {
@@ -5098,22 +6232,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
             for (JSONObject device : mergedById.values()) {
                 merged.put(device);
             }
-            prefs.edit().putString(CACHE_DEVICES, merged.toString()).apply();
+            storeSnapshot(CACHE_DEVICES, merged.toString(), System.currentTimeMillis());
         } catch (Exception ignored) {
         }
     }
 
     private void mergeDevicesFromCachedRuns() {
-        Map<String, ?> values = prefs.getAll();
-        for (String key : values.keySet()) {
-            if (!CACHE_RUNS.equals(key) && !key.startsWith(CACHE_RUNS_PREFIX)) {
-                continue;
-            }
-            Object rawValue = values.get(key);
-            if (!(rawValue instanceof String)) {
-                continue;
-            }
-            String cached = (String) rawValue;
+        for (String key : runSnapshotKeys()) {
+            String cached = cachedSnapshot(key);
             if (cached.isEmpty()) {
                 continue;
             }
@@ -5227,6 +6353,26 @@ public class MainActivity extends Activity implements LifecycleOwner {
         meta.setPadding(0, dp(3), 0, 0);
         card.addView(meta, matchWrap());
 
+        LinearLayout progressRow = new LinearLayout(this);
+        progressRow.setTag(TAG_RUN_PROGRESS_ROW);
+        progressRow.setOrientation(LinearLayout.HORIZONTAL);
+        progressRow.setGravity(Gravity.CENTER_VERTICAL);
+        progressRow.setPadding(0, dp(8), 0, 0);
+        ProgressBar progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progressBar.setTag(TAG_RUN_PROGRESS);
+        progressBar.setMax(100);
+        LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(0, dp(7), 1);
+        progressRow.addView(progressBar, barParams);
+        TextView progressLabel = new TextView(this);
+        progressLabel.setTag(TAG_RUN_PROGRESS_LABEL);
+        progressLabel.setTextSize(11);
+        progressLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
+        progressLabel.setTextColor(textSecondary());
+        progressLabel.setPadding(dp(8), 0, 0, 0);
+        progressRow.addView(progressLabel, matchWrap());
+        card.addView(progressRow, matchWrap());
+        bindRunProgress(progressRow, progressBar, progressLabel, run);
+
         String latest = latestOutputLine(run);
         boolean hasOutput = !latest.isEmpty();
         TextView output = new TextView(this);
@@ -5243,6 +6389,102 @@ public class MainActivity extends Activity implements LifecycleOwner {
         card.addView(output, outputParams);
 
         return swipeableRunCard(card, runId);
+    }
+
+    private final class RunListAdapter extends ListAdapter<JSONObject, RunListViewHolder> {
+        RunListAdapter() {
+            super(new DiffUtil.ItemCallback<JSONObject>() {
+                @Override
+                public boolean areItemsTheSame(JSONObject oldItem, JSONObject newItem) {
+                    return oldItem.optString("id", "").equals(newItem.optString("id", ""));
+                }
+
+                @Override
+                public boolean areContentsTheSame(JSONObject oldItem, JSONObject newItem) {
+                    return runContentKey(oldItem).equals(runContentKey(newItem));
+                }
+
+                @Override
+                public Object getChangePayload(JSONObject oldItem, JSONObject newItem) {
+                    return oldItem.optBoolean("__pinned", false)
+                            == newItem.optBoolean("__pinned", false)
+                            ? Boolean.TRUE
+                            : null;
+                }
+            });
+            setHasStableIds(true);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return getItem(position).optString("id", "").hashCode();
+        }
+
+        @Override
+        public RunListViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            FrameLayout host = new FrameLayout(MainActivity.this);
+            host.setClipChildren(false);
+            host.setClipToPadding(false);
+            host.setLayoutParams(new RecyclerView.LayoutParams(
+                    RecyclerView.LayoutParams.MATCH_PARENT,
+                    RecyclerView.LayoutParams.WRAP_CONTENT));
+            return new RunListViewHolder(host);
+        }
+
+        @Override
+        public void onBindViewHolder(RunListViewHolder holder, int position) {
+            JSONObject run = getItem(position);
+            if ("__empty__".equals(run.optString("id", ""))) {
+                holder.host.removeAllViews();
+                holder.host.addView(emptyState(
+                        isEnglish() ? "No runs yet" : "还没有运行记录",
+                        isEnglish() ? "Try: hao echo hello" : "试试：hao echo hello",
+                        "▶"), new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT));
+                return;
+            }
+            if (holder.host.getChildCount() == 0 || taggedView(holder.host, TAG_RUN_COMMAND) == null) {
+                holder.host.removeAllViews();
+                View content;
+                try {
+                    content = runView(run);
+                } catch (Throwable throwable) {
+                    content = runRenderErrorView(run, throwable);
+                }
+                holder.host.addView(content, new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT));
+                return;
+            }
+            View row = holder.host.getChildAt(0);
+            row.setTag(run.optString("id", ""));
+            updateRunCardInPlace(holder.host, run);
+        }
+
+        @Override
+        public void onBindViewHolder(
+                RunListViewHolder holder,
+                int position,
+                java.util.List<Object> payloads) {
+            JSONObject run = getItem(position);
+            if (!payloads.isEmpty()
+                    && holder.host.getChildCount() > 0
+                    && !"__empty__".equals(run.optString("id", ""))) {
+                updateRunCardInPlace(holder.host, run);
+                return;
+            }
+            super.onBindViewHolder(holder, position, payloads);
+        }
+    }
+
+    private static final class RunListViewHolder extends RecyclerView.ViewHolder {
+        final FrameLayout host;
+
+        RunListViewHolder(FrameLayout host) {
+            super(host);
+            this.host = host;
+        }
     }
 
     private String runMetaText(JSONObject run) {
@@ -5291,104 +6533,56 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private View swipeableRunCard(View card, String runId) {
-        final int leftActionWidth = dp(88);
-        final int rightActionsWidth = dp(152);
-        HorizontalScrollView scroller = new HorizontalScrollView(this);
-        scroller.setHorizontalScrollBarEnabled(false);
-        scroller.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        scroller.setFillViewport(false);
-        scroller.setBackgroundColor(Color.TRANSPARENT);
-        scroller.setTag(runViewTag(runId));
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-
-        LinearLayout leftActions = new LinearLayout(this);
-        leftActions.setOrientation(LinearLayout.HORIZONTAL);
-        leftActions.setGravity(Gravity.CENTER);
-        leftActions.setPadding(0, 0, dp(8), 0);
+        final SwipeActionRow[] holder = new SwipeActionRow[1];
         boolean pinned = isRunPinned(runId);
-        TextView pin = swipeActionButton(pinned ? "↓" : "↑", pinned ? (isEnglish() ? "Unpin" : "取消") : (isEnglish() ? "Pin" : "置顶"), pinActionBg(), pinActionText());
-        pin.setOnClickListener(v -> {
-            setRunPinned(runId, !pinned);
-            if (statusText != null) {
-                statusText.setText(pinned
-                        ? (isEnglish() ? "Run unpinned." : "已取消置顶。")
-                        : (isEnglish() ? "Run pinned." : "已置顶。"));
-            }
-            scroller.postDelayed(() -> scroller.smoothScrollTo(leftActionWidth, 0), 80);
-        });
-        leftActions.addView(pin, new LinearLayout.LayoutParams(dp(76), dp(86)));
-        row.addView(leftActions, new LinearLayout.LayoutParams(leftActionWidth, LinearLayout.LayoutParams.WRAP_CONTENT));
-        row.addView(card);
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.CENTER);
-        actions.setPadding(0, 0, 0, 0);
-
         boolean archived = isRunArchived(runId);
-        TextView archive = swipeActionButton(archived ? "↩" : "◇", archived ? (isEnglish() ? "Restore" : "恢复") : (isEnglish() ? "Archive" : "归档"), archiveActionBg(), archiveActionText());
-        archive.setOnClickListener(v -> {
-            setRunArchived(runId, !archived);
-            if (statusText != null) {
-                statusText.setText(archived
-                        ? (isEnglish() ? "Run restored." : "已恢复。")
-                        : (isEnglish() ? "Run archived." : "已归档。"));
-            }
-            scroller.postDelayed(() -> scroller.smoothScrollTo(leftActionWidth, 0), 80);
-        });
-        LinearLayout.LayoutParams archiveParams = new LinearLayout.LayoutParams(dp(72), dp(86));
-        archiveParams.setMargins(dp(8), 0, 0, 0);
-        actions.addView(archive, archiveParams);
-
-        TextView delete = swipeActionButton("⌫", t("delete"), deleteActionBg(), Color.WHITE);
-        delete.setOnClickListener(v -> {
-            scroller.postDelayed(() -> scroller.smoothScrollTo(leftActionWidth, 0), 80);
-            deleteRun(runId);
-        });
-        LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(dp(72), dp(86));
-        deleteParams.setMargins(dp(8), 0, 0, 0);
-        actions.addView(delete, deleteParams);
-
-        row.addView(actions, new LinearLayout.LayoutParams(rightActionsWidth, LinearLayout.LayoutParams.WRAP_CONTENT));
-        scroller.addView(row, new HorizontalScrollView.LayoutParams(
-                HorizontalScrollView.LayoutParams.WRAP_CONTENT,
-                HorizontalScrollView.LayoutParams.WRAP_CONTENT
-        ));
-        scroller.post(() -> scroller.scrollTo(leftActionWidth, 0));
-        final int[] gestureStartScrollX = new int[]{leftActionWidth};
-        scroller.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                gestureStartScrollX[0] = scroller.getScrollX();
-            }
-            if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
-                scroller.postDelayed(() -> {
-                    int scrollX = scroller.getScrollX();
-                    int leftOpen = leftActionWidth - dp(38);
-                    int rightOpen = leftActionWidth + dp(92);
-                    int target = leftActionWidth;
-                    boolean startedLeftOpen = gestureStartScrollX[0] < leftActionWidth / 2;
-                    boolean startedRightOpen = gestureStartScrollX[0] > leftActionWidth + rightActionsWidth / 2;
-                    if (startedLeftOpen && scrollX > leftActionWidth) {
-                        target = leftActionWidth;
-                    } else if (startedRightOpen && scrollX < leftActionWidth) {
-                        target = leftActionWidth;
-                    } else if (scrollX < leftOpen) {
-                        target = 0;
-                    } else if (scrollX > rightOpen) {
-                        target = leftActionWidth + rightActionsWidth;
+        SwipeActionRow row = new SwipeActionRow(
+                this,
+                card,
+                pinned ? (isEnglish() ? "Unpin" : "取消置顶") : (isEnglish() ? "Pin" : "置顶"),
+                archived ? (isEnglish() ? "Restore" : "恢复") : (isEnglish() ? "Archive" : "归档"),
+                t("delete"),
+                pinActionBg(),
+                archiveActionBg(),
+                deleteActionBg(),
+                new SwipeActionRow.Actions() {
+                    @Override
+                    public void onPin() {
+                        String id = holder[0] == null ? runId : String.valueOf(holder[0].getTag());
+                        boolean nowPinned = isRunPinned(id);
+                        setRunPinned(id, !nowPinned);
+                        if (statusText != null) {
+                            statusText.setText(nowPinned
+                                    ? (isEnglish() ? "Run unpinned." : "已取消置顶。")
+                                    : (isEnglish() ? "Run pinned." : "已置顶。"));
+                        }
                     }
-                    scroller.smoothScrollTo(target, 0);
-                }, 40);
-            }
-            return false;
-        });
+
+                    @Override
+                    public void onArchive() {
+                        String id = holder[0] == null ? runId : String.valueOf(holder[0].getTag());
+                        boolean nowArchived = isRunArchived(id);
+                        setRunArchived(id, !nowArchived);
+                        if (statusText != null) {
+                            statusText.setText(nowArchived
+                                    ? (isEnglish() ? "Run restored." : "已恢复。")
+                                    : (isEnglish() ? "Run archived." : "已归档。"));
+                        }
+                    }
+
+                    @Override
+                    public void onDelete() {
+                        String id = holder[0] == null ? runId : String.valueOf(holder[0].getTag());
+                        deleteRun(id);
+                    }
+                }
+        );
+        holder[0] = row;
+        row.setTag(runId);
         LinearLayout.LayoutParams params = matchWrap();
         params.setMargins(0, 0, 0, dp(11));
-        scroller.setLayoutParams(params);
-        return scroller;
+        row.setLayoutParams(params);
+        return row;
     }
 
     private void openRunDetail(String id) {
@@ -5622,7 +6816,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             a.put(s);
         }
         prefs.edit().putString(PREF_PINNED_RUNS, a.toString()).apply();
-        lastRunsSig = "";
         loadCachedRuns();
         refreshRuns();
     }
@@ -5640,7 +6833,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             a.put(s);
         }
         prefs.edit().putString(PREF_PINNED_RUNS, a.toString()).apply();
-        lastRunsSig = "";
     }
 
     private void setRunArchived(String id, boolean archived) {
@@ -5666,8 +6858,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
         consoleAutoScroll = true;
         consoleSearchVisible = false;
         consoleRenderLimit = CONSOLE_RENDER_INITIAL_CHARS;
+        lastRenderedConsoleText = "";
+        lastRenderedConsoleLength = 0;
+        consoleRenderScheduled = false;
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        root.setClickable(true);
         root.setPadding(dp(16), statusBarHeight() + dp(12), dp(16), navigationBarHeight() + dp(14));
         root.setBackgroundColor(appBg());
 
@@ -5950,7 +7146,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 1
         ));
 
-        setContentView(root);
+        if (pageShell == null) ensureShell();
+        pageShell.pushOverlay(root);
         updateConsoleAutoScrollButton();
         updateConsoleMoreButton();
     }
@@ -6275,9 +7472,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
         remoteTerminalVisible = true;
         remoteTerminalSourceRunId = selectedRunId == null ? "" : selectedRunId;
         remoteTerminalDeviceId = currentRunDeviceId;
+        String fallbackDeviceName = deviceNames.get(currentRunDeviceId);
+        if (fallbackDeviceName == null) fallbackDeviceName = currentRunDeviceId;
         remoteTerminalDeviceName = currentRunDetail == null
-                ? deviceNames.getOrDefault(currentRunDeviceId, currentRunDeviceId)
-                : currentRunDetail.optString("deviceName", deviceNames.getOrDefault(currentRunDeviceId, currentRunDeviceId));
+                ? fallbackDeviceName
+                : currentRunDetail.optString("deviceName", fallbackDeviceName);
         remoteTerminalCwd = currentRunDetail == null ? "" : currentRunDetail.optString("cwd", "").trim();
         remoteTerminalProject = currentRunDetail == null
                 ? "Remote terminal"
@@ -6295,6 +7494,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private void buildRemoteTerminalUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        root.setClickable(true);
         root.setPadding(dp(16), statusBarHeight() + dp(12), dp(16), navigationBarHeight() + dp(14));
         root.setBackgroundColor(appBg());
 
@@ -6434,7 +7634,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 0,
                 1
         ));
-        setContentView(root);
+        if (pageShell == null) ensureShell();
+        pageShell.pushOverlay(root);
         remoteTerminalInput.requestFocus();
     }
 
@@ -6679,22 +7880,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
         handler.removeCallbacks(remoteTerminalPollRunnable);
         remoteTerminalVisible = false;
         remoteTerminalActiveRunId = "";
-        String sourceRunId = remoteTerminalSourceRunId;
         remoteTerminalSourceRunId = "";
-        if (sourceRunId == null || sourceRunId.isEmpty()) {
-            returnToList();
+        if (pageShell != null && pageShell.hasOverlay()) {
+            pageShell.popOverlay();
             return;
         }
-        selectedRunId = sourceRunId;
-        selectedRunStatus = "";
-        consoleOutputSyncedLength = 0;
-        outputChunkSyncedCount = 0;
-        consoleIncrementalUsesChunks = false;
-        currentConsoleOutput = "";
-        currentConsoleStoredBytes = 0L;
-        buildConsoleUi();
-        loadCachedRunDetail(sourceRunId);
-        refreshRunDetail(sourceRunId, true);
+        returnToList();
     }
 
     private String remoteActionFailureMessage(Exception error, String feature) {
@@ -6727,7 +7918,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 final boolean incremental = payload.optBoolean("incremental", false);
                 final JSONObject run = decryptRun(payload.getJSONObject("run"), incremental ? null : payload.optJSONArray("outputChunks"));
                 if (!incremental) {
-                    prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, consoleOutput(run)).toString()).apply();
+                    storeRunDetail(id, localRunSnapshot(run, consoleOutput(run)).toString());
                 }
                 handler.post(() -> {
                     if (id.equals(selectedRunId)) {
@@ -6796,7 +7987,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (id == null || id.trim().isEmpty()) {
             return null;
         }
-        String cached = prefs.getString(CACHE_RUN_PREFIX + id, "");
+        String cached = cachedRunDetail(id);
         if (cached == null || cached.isEmpty()) {
             return null;
         }
@@ -6947,9 +8138,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     }
                 }
                 int length = Math.max(localLength, remoteLength);
-                prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunMetadataSnapshot(run, localChunks, length).toString()).apply();
+                storeRunDetail(id, localRunMetadataSnapshot(run, localChunks, length).toString());
             } else {
-                prefs.edit().putString(CACHE_RUN_PREFIX + id, localRunSnapshot(run, consoleOutput(run)).toString()).apply();
+                storeRunDetail(id, localRunSnapshot(run, consoleOutput(run)).toString());
             }
         } catch (Exception e) {
             Log.w(TAG, "local output sync failed for " + id, e);
@@ -7017,9 +8208,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         try {
             JSONObject base = currentRunDetail == null ? new JSONObject(run.toString()) : new JSONObject(currentRunDetail.toString());
-            prefs.edit()
-                    .putString(CACHE_RUN_PREFIX + id, localRunMetadataSnapshot(base, outputChunkSyncedCount, consoleOutputSyncedLength).toString())
-                    .apply();
+            storeRunDetail(id, localRunMetadataSnapshot(base, outputChunkSyncedCount, consoleOutputSyncedLength).toString());
         } catch (Exception ignored) {
         }
     }
@@ -7135,12 +8324,36 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void renderConsoleText() {
+        if (detailConsole == null || consoleRenderScheduled) {
+            return;
+        }
+        consoleRenderScheduled = true;
+        // Training processes can emit hundreds of writes per second. Render at
+        // most once per frame group while still persisting every byte to disk.
+        handler.postDelayed(consoleRenderRunnable, 72L);
+    }
+
+    private void renderConsoleTextNow() {
         if (detailConsole == null) {
             return;
         }
         String query = consoleSearchInput == null ? "" : consoleSearchInput.getText().toString().trim();
         if (query.isEmpty()) {
-            detailConsole.setText(currentConsoleOutput == null || currentConsoleOutput.isEmpty() ? (isEnglish() ? "No output yet." : "还没有输出。") : displayConsoleOutput());
+            String rendered = currentConsoleOutput == null || currentConsoleOutput.isEmpty()
+                    ? (isEnglish() ? "No output yet." : "还没有输出。")
+                    : displayConsoleOutput();
+            if (lastRenderedConsoleLength > 0
+                    && lastRenderedConsoleLength <= rendered.length()
+                    && rendered.startsWith(lastRenderedConsoleText)
+                    && lastRenderedConsoleText.length() == lastRenderedConsoleLength) {
+                if (rendered.length() > lastRenderedConsoleLength) {
+                    detailConsole.append(rendered.substring(lastRenderedConsoleLength));
+                }
+            } else if (detailConsole.getText() == null || !rendered.contentEquals(detailConsole.getText())) {
+                detailConsole.setText(rendered);
+            }
+            lastRenderedConsoleText = rendered;
+            lastRenderedConsoleLength = rendered.length();
             if (statusText != null) {
                 statusText.setText(consoleRenderStatusText());
             }
@@ -7164,6 +8377,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
         } else {
             detailConsole.setText(matches.toString());
         }
+        lastRenderedConsoleText = detailConsole.getText().toString();
+        lastRenderedConsoleLength = lastRenderedConsoleText.length();
         if (statusText != null) {
             String suffix = isConsoleRenderClipped()
                     ? (isEnglish() ? " in shown output. Scroll to top to load older output." : "（当前显示范围）。滑到顶部可加载更早输出。")
@@ -7324,7 +8539,21 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private void returnToList() {
         selectedRunId = null;
         selectedRunStatus = "";
-        buildUi();
+        lastRenderedConsoleText = "";
+        lastRenderedConsoleLength = 0;
+        if (pageShell != null && pageShell.hasOverlay()) {
+            pageShell.popOverlay();
+            refreshRuns();
+            return;
+        }
+        currentTab = "home";
+        if (pageShell != null && pageShell.homeView() != null) {
+            pageShell.showTab(PageShell.TAB_HOME, true);
+            updateHeaderTitle();
+            updateTabButtonStyles();
+        } else {
+            buildUi();
+        }
         refreshRuns();
     }
 
@@ -7340,7 +8569,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
             selectedRunId = null;
             selectedRunStatus = "";
         }
-        lastRunsSig = "";
         loadCachedRuns();
         statusText.setText(isEnglish()
                 ? "Deleted locally. Cloud delete will sync when online."
@@ -7478,55 +8706,28 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void removeRunFromCaches(String id) {
         deleteConsoleCache(id);
-        SharedPreferences.Editor editor = prefs.edit()
-                .remove(CACHE_RUN_PREFIX + id)
-                .remove("notified_terminal_" + id);
+        if (appCache != null) appCache.removeRunDetail(id);
+        SharedPreferences.Editor editor = prefs.edit().remove("notified_terminal_" + id);
         long now = System.currentTimeMillis();
-        Map<String, ?> values = prefs.getAll();
-        for (String key : values.keySet()) {
-            if (!CACHE_RUNS.equals(key) && !key.startsWith(CACHE_RUNS_PREFIX)) {
-                continue;
-            }
-            Object rawValue = values.get(key);
-            if (!(rawValue instanceof String)) {
-                continue;
-            }
-            JSONArray updated = removeRunFromJsonArray((String) rawValue, id);
+        for (String key : runSnapshotKeys()) {
+            JSONArray updated = removeRunFromJsonArray(cachedSnapshot(key), id);
             if (updated == null) {
                 continue;
             }
-            editor.putString(key, updated.toString());
-            String atKey = cacheAtKeyForRunsKey(key);
-            if (!atKey.isEmpty()) {
-                editor.putLong(atKey, now);
-            }
+            storeSnapshot(key, updated.toString(), now);
         }
         editor.apply();
     }
 
     private void removeDeviceRunsFromCaches(String deviceId) {
-        SharedPreferences.Editor editor = prefs.edit();
         long now = System.currentTimeMillis();
-        Map<String, ?> values = prefs.getAll();
-        for (String key : values.keySet()) {
-            if (!CACHE_RUNS.equals(key) && !key.startsWith(CACHE_RUNS_PREFIX)) {
-                continue;
-            }
-            Object rawValue = values.get(key);
-            if (!(rawValue instanceof String)) {
-                continue;
-            }
-            JSONArray updated = removeDeviceRunsFromJsonArray((String) rawValue, deviceId);
+        for (String key : runSnapshotKeys()) {
+            JSONArray updated = removeDeviceRunsFromJsonArray(cachedSnapshot(key), deviceId);
             if (updated == null) {
                 continue;
             }
-            editor.putString(key, updated.toString());
-            String atKey = cacheAtKeyForRunsKey(key);
-            if (!atKey.isEmpty()) {
-                editor.putLong(atKey, now);
-            }
+            storeSnapshot(key, updated.toString(), now);
         }
-        editor.apply();
     }
 
     private JSONArray removeDeviceRunsFromJsonArray(String raw, String deviceId) {
@@ -7540,7 +8741,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     removed = true;
                     String id = run.optString("id", "");
                     if (!id.isEmpty()) {
-                        prefs.edit().remove(CACHE_RUN_PREFIX + id).remove("notified_terminal_" + id).apply();
+                        if (appCache != null) appCache.removeRunDetail(id);
+                        prefs.edit().remove("notified_terminal_" + id).apply();
                         deleteConsoleCache(id);
                     }
                     continue;
@@ -8168,6 +9370,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                             .putString("paired_server_url", finalServer)
                             .putString("server_url", finalServer)
                             .apply();
+                    startRealtimeSyncIfPossible();
                     if (!finalDeviceId.isEmpty()) {
                         selectedDeviceId = finalDeviceId;
                         prefs.edit().putString("selected_device_id", selectedDeviceId).apply();
@@ -8316,6 +9519,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        root.setClickable(true);
         root.setPadding(dp(18), statusBarHeight() + dp(18), dp(18), navigationBarHeight() + dp(18));
         root.setBackgroundColor(appBg());
 
@@ -8358,14 +9562,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
         manualButton.setOnClickListener(v -> closeScanner());
         root.addView(manualButton, matchWrap());
 
-        setContentView(root);
+        if (pageShell == null) ensureShell();
+        pageShell.pushOverlay(root);
         startScannerCamera();
     }
 
     private void closeScanner() {
         stopScannerCamera();
         scannerVisible = false;
-        buildUi();
+        if (pageShell != null && pageShell.hasOverlay()) {
+            pageShell.popOverlay();
+        } else {
+            buildUi();
+        }
         refreshRuns();
     }
 
@@ -8441,7 +9650,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                             handler.post(() -> {
                                 stopScannerCamera();
                                 scannerVisible = false;
-                                buildUi();
+                                if (pageShell != null && pageShell.hasOverlay()) {
+                                    pageShell.popOverlay();
+                                }
                                 handlePairText(text);
                             });
                             return;
@@ -10064,11 +11275,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (dialog == null) return;
         Window w = dialog.getWindow();
         if (w != null) {
-            // Give the popup a nice rounded card look with our theme's surface color and subtle border for "质感"
             w.setBackgroundDrawable(roundedBg(cardBg(), 16, cardStroke()));
-            // Slight dim for depth
-            w.setDimAmount(0.5f);
+            w.setWindowAnimations(R.style.AppDialogAnimation);
+            w.setDimAmount(0f);
         }
+        final boolean[] leaving = {false};
 
         // Ensure text is readable in dark mode (title, message, list items, buttons)
         dialog.setOnShowListener(dlg -> {
@@ -10101,7 +11312,72 @@ public class MainActivity extends Activity implements LifecycleOwner {
             if (neg != null) neg.setTextColor(textPrimary());
             Button neu = dialog.getButton(DialogInterface.BUTTON_NEUTRAL);
             if (neu != null) neu.setTextColor(textPrimary());
+
+            if (w != null) {
+                View decor = w.getDecorView();
+                // Some OEMs ignore windowAnimationStyle. If the card is already
+                // fully visible, play the fade/scale here so it still dissolves in.
+                if (decor != null && decor.getAlpha() >= 0.99f && decor.getScaleX() >= 0.99f) {
+                    PageMotion.cancel(decor);
+                    decor.setAlpha(0f);
+                    decor.setScaleX(0.94f);
+                    decor.setScaleY(0.94f);
+                    decor.animate()
+                            .alpha(1f)
+                            .scaleX(1f)
+                            .scaleY(1f)
+                            .setDuration(PageMotion.DIALOG_IN_MS)
+                            .setInterpolator(PageMotion.EASE)
+                            .start();
+                }
+                fadeDialogDim(w, 0f, PageMotion.DIALOG_DIM, PageMotion.DIALOG_IN_MS);
+            }
         });
+        dialog.setOnKeyListener((d, keyCode, event) -> {
+            if (keyCode == android.view.KeyEvent.KEYCODE_BACK
+                    && event.getAction() == android.view.KeyEvent.ACTION_UP) {
+                fadeOutDialog(dialog, w, leaving);
+                return true;
+            }
+            return false;
+        });
+    }
+
+    private void fadeDialogDim(Window window, float from, float to, long durationMs) {
+        if (window == null) return;
+        ValueAnimator animator = ValueAnimator.ofFloat(from, to);
+        animator.setDuration(durationMs);
+        animator.setInterpolator(PageMotion.EASE);
+        animator.addUpdateListener(animation -> {
+            try {
+                window.setDimAmount((Float) animation.getAnimatedValue());
+            } catch (Exception ignored) {
+            }
+        });
+        animator.start();
+    }
+
+    private void fadeOutDialog(AlertDialog dialog, Window window, boolean[] leaving) {
+        if (dialog == null || !dialog.isShowing()) return;
+        if (leaving[0]) return;
+        leaving[0] = true;
+        fadeDialogDim(window, PageMotion.DIALOG_DIM, 0f, PageMotion.DIALOG_OUT_MS);
+        View decor = window == null ? null : window.getDecorView();
+        if (decor == null) {
+            dialog.dismiss();
+            return;
+        }
+        PageMotion.cancel(decor);
+        decor.animate()
+                .alpha(0f)
+                .scaleX(0.96f)
+                .scaleY(0.96f)
+                .setDuration(PageMotion.DIALOG_OUT_MS)
+                .setInterpolator(PageMotion.EASE)
+                .withEndAction(() -> {
+                    if (dialog.isShowing()) dialog.dismiss();
+                })
+                .start();
     }
 
     private AlertDialog.Builder dialogBuilder() {
@@ -10431,49 +11707,65 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 return;
             }
             float padX = Math.max(8f, w * 0.025f);
-            float padY = Math.max(6f, h * 0.14f);
+            float padY = Math.max(6f, h * 0.12f);
             float left = padX;
             float right = w - padX;
             float top = padY;
             float bottom = h - padY;
 
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(fillColor);
-            paint.setAlpha(80);
+            paint.setColor(gridColor);
+            paint.setAlpha(70);
             canvas.drawRoundRect(left, top, right, bottom, 10f, 10f, paint);
             paint.setAlpha(255);
 
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(1f, h * 0.025f));
+            paint.setStrokeWidth(Math.max(1f, h * 0.02f));
             paint.setColor(gridColor);
-            paint.setAlpha(95);
             canvas.drawLine(left, top + (bottom - top) * 0.5f, right, top + (bottom - top) * 0.5f, paint);
-            paint.setAlpha(255);
+            canvas.drawLine(left, top + (bottom - top) * 0.25f, right, top + (bottom - top) * 0.25f, paint);
 
             if (values.length == 0) {
                 return;
             }
+            float span = right - left;
+            Path area = new Path();
+            Path line = new Path();
+            float firstY = valueY(values[0], top, bottom);
+            area.moveTo(left, bottom);
+            area.lineTo(left, firstY);
+            line.moveTo(left, firstY);
+            float lastX = left;
+            float lastY = firstY;
+            if (values.length == 1) {
+                area.lineTo(right, firstY);
+                line.lineTo(right, firstY);
+                lastX = right;
+            } else {
+                for (int i = 1; i < values.length; i++) {
+                    float x = left + span * i / (values.length - 1);
+                    float y = valueY(values[i], top, bottom);
+                    area.lineTo(x, y);
+                    line.lineTo(x, y);
+                    lastX = x;
+                    lastY = y;
+                }
+            }
+            area.lineTo(lastX, bottom);
+            area.close();
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(fillColor);
+            canvas.drawPath(area, paint);
+
+            paint.setStyle(Paint.Style.STROKE);
             paint.setColor(lineColor);
-            paint.setStrokeWidth(Math.max(2.4f, h * 0.065f));
+            paint.setStrokeWidth(Math.max(2.4f, h * 0.055f));
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeJoin(Paint.Join.ROUND);
-            if (values.length == 1) {
-                float y = valueY(values[0], top, bottom);
-                canvas.drawLine(left, y, right, y, paint);
-                canvas.drawCircle(right, y, Math.max(3f, h * 0.075f), paint);
-                return;
-            }
-            float span = right - left;
-            float prevX = left;
-            float prevY = valueY(values[0], top, bottom);
-            for (int i = 1; i < values.length; i++) {
-                float x = left + span * i / (values.length - 1);
-                float y = valueY(values[i], top, bottom);
-                canvas.drawLine(prevX, prevY, x, y, paint);
-                prevX = x;
-                prevY = y;
-            }
-            canvas.drawCircle(prevX, prevY, Math.max(3f, h * 0.075f), paint);
+            canvas.drawPath(line, paint);
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawCircle(lastX, lastY, Math.max(3f, h * 0.07f), paint);
         }
 
         private float valueY(int raw, float top, float bottom) {

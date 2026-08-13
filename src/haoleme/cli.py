@@ -1280,7 +1280,79 @@ def _collect_nvidia_gpu_stats() -> list:
             "memoryTotal": _parse_int(parts[4]),
             "temperature": _parse_int(parts[5]),
         })
+    processes_by_uuid = _collect_nvidia_compute_apps()
+    if processes_by_uuid:
+        uuid_by_index = _collect_nvidia_gpu_uuids()
+        for gpu in gpus:
+            uuid = uuid_by_index.get(gpu.get("index"))
+            gpu["processes"] = list(processes_by_uuid.get(uuid, []))[:16]
     return gpus
+
+
+def _parse_nvidia_compute_apps(text: str) -> dict[str, list[dict]]:
+    """Map GPU UUID -> compute apps. Lines: uuid, pid, used_memory_mib, name."""
+    by_uuid: dict[str, list[dict]] = {}
+    for line in text.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 4:
+            continue
+        uuid = parts[0]
+        pid = _parse_int(parts[1])
+        if not uuid or pid is None:
+            continue
+        name = Path(parts[3]).name[:80] if parts[3] else "process"
+        by_uuid.setdefault(uuid, []).append({
+            "pid": pid,
+            "name": name,
+            "memoryUsed": _parse_int(parts[2]),
+        })
+    return by_uuid
+
+
+def _collect_nvidia_compute_apps() -> dict[str, list[dict]]:
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return {}
+    try:
+        proc = subprocess.run(
+            [
+                nvidia_smi,
+                "--query-compute-apps=gpu_uuid,pid,used_gpu_memory,process_name",
+                "--format=csv,noheader,nounits",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    return _parse_nvidia_compute_apps(proc.stdout.decode("utf-8", errors="replace"))
+
+
+def _collect_nvidia_gpu_uuids() -> dict[int | None, str]:
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return {}
+    try:
+        proc = subprocess.run(
+            [nvidia_smi, "--query-gpu=index,uuid", "--format=csv,noheader,nounits"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    mapping: dict[int | None, str] = {}
+    for line in proc.stdout.decode("utf-8", errors="replace").strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
+            continue
+        mapping[_parse_int(parts[0])] = parts[1]
+    return mapping
 
 
 def _windows_powershell() -> str | None:
@@ -1465,7 +1537,172 @@ def collect_cpu_stats() -> dict:
         cpu["utilization"] = int(utilization)
     if load1 is not None:
         cpu["load1"] = round(float(load1), 2)
+    cpu.update(collect_memory_stats())
+    processes = collect_host_processes()
+    if processes:
+        cpu["processes"] = processes
     return cpu
+
+
+def collect_host_processes(limit: int = 8) -> list[dict]:
+    """Top host processes by CPU, then fill with memory hogs. Best effort."""
+    rows = _posix_process_rows()
+    if not rows:
+        return []
+    by_cpu = sorted(rows, key=lambda item: item.get("cpu") or 0, reverse=True)
+    by_mem = sorted(rows, key=lambda item: item.get("memoryUsed") or 0, reverse=True)
+    picked: list[dict] = []
+    seen: set[int] = set()
+    for item in by_cpu[:limit] + by_mem[:limit]:
+        pid = int(item.get("pid") or 0)
+        if pid <= 0 or pid in seen:
+            continue
+        seen.add(pid)
+        picked.append(item)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def _posix_process_rows() -> list[dict]:
+    if os.name == "nt":
+        return []
+    try:
+        proc = subprocess.run(
+            ["ps", "-axo", "pid=,pcpu=,pmem=,rss=,comm="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    return _parse_posix_ps(proc.stdout.decode("utf-8", errors="replace"))
+
+
+def _parse_posix_ps(text: str) -> list[dict]:
+    rows: list[dict] = []
+    for line in text.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 5:
+            continue
+        pid = _parse_int(parts[0])
+        if pid is None:
+            continue
+        try:
+            cpu = max(0.0, min(100.0, float(parts[1])))
+            mem = max(0.0, min(100.0, float(parts[2])))
+            rss_kb = max(0, int(float(parts[3])))
+        except (TypeError, ValueError):
+            continue
+        name = Path(parts[4].strip()).name[:80] or "process"
+        rows.append({
+            "pid": pid,
+            "name": name,
+            "cpu": round(cpu, 1),
+            "mem": round(mem, 1),
+            "memoryUsed": rss_kb // 1024,
+        })
+    return rows
+
+
+def collect_memory_stats() -> dict:
+    """Snapshot host RAM utilization. Best effort and dependency-free."""
+    stats = _linux_memory_stats()
+    if stats is None and sys.platform == "darwin":
+        stats = _darwin_memory_stats()
+    if stats is None and os.name == "nt":
+        stats = _windows_memory_stats()
+    return stats or {}
+
+
+def _parse_linux_meminfo(text: str) -> dict | None:
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, rest = line.split(":", 1)
+        parts = rest.strip().split()
+        parsed = _parse_int(parts[0]) if parts else None
+        if parsed is not None:
+            values[key.strip()] = parsed
+    total = values.get("MemTotal")
+    if not total or total <= 0:
+        return None
+    available = values.get("MemAvailable")
+    if available is None:
+        available = values.get("MemFree", 0) + values.get("Cached", 0) + values.get("Buffers", 0)
+    used = max(0, total - max(0, available))
+    return {
+        "memoryUsed": used // 1024,
+        "memoryTotal": total // 1024,
+        "memoryUtilization": int(round(min(100.0, used * 100.0 / total))),
+    }
+
+
+def _linux_memory_stats() -> dict | None:
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            return _parse_linux_meminfo(fh.read())
+    except Exception:
+        return None
+
+
+def _parse_darwin_vm_stat(text: str, total_bytes: int) -> dict | None:
+    if total_bytes <= 0:
+        return None
+    page_size = 4096
+    match = re.search(r"page size of (\d+) bytes", text, re.IGNORECASE)
+    if match:
+        page_size = max(1, int(match.group(1)))
+    pages: dict[str, int] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, rest = line.split(":", 1)
+        parsed = _parse_int(rest.replace(".", "").strip())
+        if parsed is not None:
+            pages[key.strip().lower()] = parsed
+    free_pages = pages.get("pages free", 0) + pages.get("pages speculative", 0)
+    available_pages = free_pages + pages.get("pages inactive", 0) + pages.get("pages purgeable", 0)
+    available_bytes = max(0, available_pages * page_size)
+    used = max(0, total_bytes - available_bytes)
+    return {
+        "memoryUsed": used // (1024 * 1024),
+        "memoryTotal": total_bytes // (1024 * 1024),
+        "memoryUtilization": int(round(min(100.0, used * 100.0 / total_bytes))),
+    }
+
+
+def _darwin_memory_stats() -> dict | None:
+    try:
+        total_raw = subprocess.check_output(["sysctl", "-n", "hw.memsize"], timeout=2)
+        total_bytes = int(total_raw.decode("utf-8", errors="replace").strip())
+        vm_raw = subprocess.check_output(["vm_stat"], timeout=2)
+    except Exception:
+        return None
+    return _parse_darwin_vm_stat(vm_raw.decode("utf-8", errors="replace"), total_bytes)
+
+
+def _windows_memory_stats() -> dict | None:
+    payload = _windows_json_command(
+        "$os=Get-CimInstance Win32_OperatingSystem; "
+        "[PSCustomObject]@{ total=$os.TotalVisibleMemorySize; free=$os.FreePhysicalMemory } "
+        "| ConvertTo-Json -Compress"
+    )
+    if not isinstance(payload, dict):
+        return None
+    total = _parse_int(payload.get("total"))
+    free = _parse_int(payload.get("free"))
+    if not total or total <= 0 or free is None:
+        return None
+    used = max(0, total - max(0, free))
+    return {
+        "memoryUsed": used // 1024,
+        "memoryTotal": total // 1024,
+        "memoryUtilization": int(round(min(100.0, used * 100.0 / total))),
+    }
 
 
 def launch_remote_command(

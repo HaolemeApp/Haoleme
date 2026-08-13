@@ -11,7 +11,7 @@
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="好了么"
+        android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
@@ -41,7 +41,7 @@
             android:enabled="true"
             android:exported="true"
             android:icon="@mipmap/ic_launcher"
-            android:label="好了么"
+            android:label="@string/app_name"
             android:roundIcon="@mipmap/ic_launcher_round"
             android:targetActivity=".MainActivity">
             <intent-filter>
@@ -54,7 +54,7 @@
             android:enabled="false"
             android:exported="true"
             android:icon="@mipmap/ic_launcher"
-            android:label="Haoleme"
+            android:label="@string/app_name_en"
             android:roundIcon="@mipmap/ic_launcher_round"
             android:targetActivity=".MainActivity">
             <intent-filter>

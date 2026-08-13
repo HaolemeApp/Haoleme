@@ -79,6 +79,51 @@ class CloudServerDeviceTest(unittest.TestCase):
             finally:
                 server.server_close()
 
+    def test_realtime_revision_is_scoped_and_wakes_waiters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = HaolemeCloudServer(("127.0.0.1", 0), Path(tmp) / "cloud.db", 22)
+            try:
+                self.assertEqual(server.current_stream_revision("account-a"), 0)
+                self.assertEqual(server.notify_stream("account-a", "runs"), 1)
+                self.assertEqual(server.wait_for_stream_event("account-a", 0, 0), (1, "runs", {}))
+                self.assertEqual(server.notify_stream("account-a", "run_patch", {"runId": "r1", "status": "running"}), 2)
+                self.assertEqual(server.wait_for_stream_event("account-a", 1, 0)[:2], (2, "run_patch"))
+                self.assertEqual(server.wait_for_stream_event("account-a", 1, 0)[2]["runId"], "r1")
+                self.assertEqual(server.notify_stream("account-a", "runs"), 3)
+                self.assertEqual(server.notify_stream("account-a", "devices"), 4)
+                self.assertEqual(server.wait_for_stream_event("account-a", 2, 0)[:2], (4, "refresh"))
+                self.assertEqual(server.current_stream_revision("account-b"), 0)
+                self.assertEqual(server.notify_stream("account-a", "hb", {"deviceId": "dev-1"}), 5)
+                self.assertEqual(server.wait_for_stream_event("account-a", 4, 0), (5, "hb", {"deviceId": "dev-1"}))
+            finally:
+                server.server_close()
+
+    def test_realtime_stream_sends_initial_reconciliation_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 22)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            token = "app-token-for-realtime-stream-test"
+            account_key = token_hash(token)
+            store_app_token(db_path, account_key, "app_stream", "Test App", "android", token, iso_now())
+            try:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_address[1]}/api/stream?since=0",
+                    headers={"Authorization": "Bearer " + token, "Accept": "text/event-stream"},
+                )
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    self.assertEqual(response.status, 200)
+                    line = response.readline().decode("utf-8")
+                    self.assertTrue(line.startswith("data: "))
+                    event = json.loads(line[6:])
+                    self.assertEqual(event["type"], "refresh")
+                    self.assertEqual(event["revision"], 0)
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
     def test_renamed_device_is_not_overwritten_by_later_sync(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "cloud.db"
@@ -342,6 +387,26 @@ class CloudServerDeviceTest(unittest.TestCase):
             record_device_heartbeat(db_path, account_key, device_id, "GPU box", "2026-06-23T01:01:00Z")
             self.assertEqual(list_devices(db_path, account_key)[0]["gpus"][0]["utilization"], 37)
             self.assertEqual(list_devices(db_path, account_key)[0]["cpu"]["utilization"], 42)
+
+    def test_sanitize_keeps_process_snapshots(self):
+        gpus = sanitize_gpus([{
+            "index": 0,
+            "name": "A100",
+            "utilization": 20,
+            "processes": [
+                {"pid": "12", "name": "/opt/venv/bin/python", "memoryUsed": "1024"},
+                {"pid": -1, "name": "bad"},
+            ],
+        }])
+        self.assertEqual(gpus[0]["processes"], [
+            {"pid": 12, "name": "/opt/venv/bin/python", "memoryUsed": 1024},
+        ])
+        cpu = sanitize_cpu({
+            "utilization": 10,
+            "processes": [{"pid": 99, "name": "train", "cpu": 12.3, "mem": 4.1, "memoryUsed": 256}],
+        })
+        self.assertEqual(cpu["processes"][0]["pid"], 99)
+        self.assertEqual(cpu["processes"][0]["cpu"], 12.3)
 
     def test_device_token_is_write_scoped_hashed_and_revocable(self):
         with tempfile.TemporaryDirectory() as tmp:
