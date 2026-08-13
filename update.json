@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 179,
-    "versionName": "0.9.44",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.44/Haoleme-0.9.44.apk",
+    "versionCode": 180,
+    "versionName": "0.9.45",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.45/Haoleme-0.9.45.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.44/Haoleme-0.9.44.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.44.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.45/Haoleme-0.9.45.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.45.apk"
     ],
-    "sha256": "1e2572cfefaade0b73c203355aba6f783be85cb7a46d7d9b92b9662a46aa3856",
+    "sha256": "dcb4aa7ff057512424c5a63f96aa7f3208ae6bf17dd076867d3fa94d8293b956",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "修复手机终端短命令完成后不显示输出的问题，并自动补回此前遗漏的本地终端输出。"
+    "notes": "页面切换更顺滑；设备状态与 nvtop 式详情；置顶不再浮层误触；控制台从右侧滑入；训练卡片显示 loss 和预估进度。"
   },
   "python": {
     "version": "0.5.3",
