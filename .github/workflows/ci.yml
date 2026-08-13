@@ -10,12 +10,11 @@ permissions:
 
 jobs:
   python:
-    name: Python ${{ matrix.python-version }} (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Python ${{ matrix.python-version }} (ubuntu-latest)
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +24,25 @@ jobs:
           cache: pip
       - run: python -m pip install -e .
       - run: python -m unittest discover -s tests -p "test_*.py"
+
+  windows:
+    name: Windows CLI ${{ matrix.python-version }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install -e .
+      - name: Test Windows heartbeat and metrics
+        run: python -m unittest tests.test_cli.CliPairingTest.test_windows_process_running_parses_tasklist_csv tests.test_cli.CliPairingTest.test_windows_process_running_returns_false_when_missing tests.test_cli.CliPairingTest.test_windows_heartbeat_pid_recognizes_daemon_command tests.test_cli.CliPairingTest.test_collect_cpu_stats_uses_windows_cim_utilization tests.test_cli.CliPairingTest.test_windows_memory_stats_accepts_numeric_powershell_json tests.test_cli.CliPairingTest.test_metric_failure_does_not_suppress_heartbeat_payload tests.test_cli.CliPairingTest.test_parse_windows_gpu_payload_supports_amd_adapter
 
   android:
     name: Android

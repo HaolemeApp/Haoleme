@@ -790,6 +790,17 @@ class CliPairingTest(unittest.TestCase):
         with patch("haoleme.cli.os.name", "nt"), patch("haoleme.cli.subprocess.run", return_value=result):
             self.assertFalse(is_process_running(4321))
 
+    def test_windows_heartbeat_pid_recognizes_daemon_command(self):
+        with patch("haoleme.cli.os.name", "nt"), patch(
+            "haoleme.cli.is_process_running", return_value=True
+        ), patch(
+            "haoleme.cli.subprocess.check_output",
+            return_value='"C:\\Python311\\python.exe" -m haoleme heartbeat run',
+        ) as check_output:
+            self.assertTrue(is_heartbeat_process_running(4321))
+
+        self.assertIn("Get-CimInstance Win32_Process", check_output.call_args.args[0][-1])
+
     def test_windows_terminate_process_uses_taskkill(self):
         result = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
         with patch("haoleme.cli.subprocess.run", return_value=result) as run:
