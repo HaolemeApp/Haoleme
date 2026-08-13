@@ -15,7 +15,7 @@
   "python": {
     "version": "0.5.3",
     "packageUrl": "haoleme",
-    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/cli-v0.5.3/haoleme-0.5.3-py3-none-any.whl",
+    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.0/haoleme-0.5.3-py3-none-any.whl",
     "notes": "Login now restarts heartbeat so memory and process snapshots start uploading immediately. / 登录后自动重启心跳，内存和进程快照无需再手动重启即可上报。"
   }
 }
