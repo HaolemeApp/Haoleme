@@ -792,7 +792,7 @@ def cloud_login_command(argv: Sequence[str]) -> int:
     print()
     print("Use the same Server and Token in the Android app.")
     print("Future hao commands will sync to cloud automatically.")
-    _started, message = start_heartbeat_daemon()
+    _started, message = restart_heartbeat_daemon()
     print(f"Heartbeat: {message}")
     return 0
 
@@ -935,7 +935,7 @@ def pairing_login_command(argv: Sequence[str]) -> int:
             print(f"Device: {device_name}")
             print("Encryption: enabled" if encryption_key else "Encryption: not enabled for this pairing")
             print("Future hao commands will sync to this server automatically.")
-            _started, message = start_heartbeat_daemon()
+            _started, message = restart_heartbeat_daemon()
             print(f"Heartbeat: {message}")
             return 0
     except KeyboardInterrupt:
@@ -1172,6 +1172,12 @@ def write_heartbeat_state(**fields: object) -> None:
             path.chmod(0o600)
         except OSError:
             pass
+
+
+def restart_heartbeat_daemon() -> tuple[bool, str]:
+    """Replace any running heartbeat so login always starts sending current metrics."""
+    stop_heartbeat_daemon()
+    return start_heartbeat_daemon()
 
 
 def start_heartbeat_daemon() -> tuple[bool, str]:
@@ -2743,8 +2749,7 @@ def update_command(argv: Sequence[str]) -> int:
     except Exception:
         installed = latest
     print(f"Installed haoleme {installed}.")
-    stop_heartbeat_daemon()
-    started, message = start_heartbeat_daemon()
+    started, message = restart_heartbeat_daemon()
     print(f"Heartbeat: {message}" if started else f"Heartbeat not restarted: {message}")
     if compare_versions(installed, latest) < 0:
         print("hao update warning: installed version still looks older than latest.", file=sys.stderr)

@@ -19,10 +19,12 @@ import android.database.Cursor;
 import android.graphics.Canvas;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PorterDuff;
 import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.media.Image;
@@ -206,6 +208,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String TAG_RUN_PROGRESS = "run_progress";
     private static final String TAG_RUN_PROGRESS_ROW = "run_progress_row";
     private static final String TAG_RUN_PROGRESS_LABEL = "run_progress_label";
+    private static final String TAG_RUN_LOSS = "run_loss";
+    private static final String TAG_RUN_ETA = "run_eta";
+    private static final String TAG_RUN_ETA_BAR = "run_eta_bar";
     private static final int CONSOLE_RENDER_INITIAL_CHARS = 60000;
     private static final int CONSOLE_RENDER_STEP_CHARS = 60000;
     private static final int CONSOLE_HISTORY_DEFAULT_CHARS = 100_000_000;
@@ -643,7 +648,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             break;
         }
         if (found) {
-            runListAdapter.submitList(current);
+            runListAdapter.submitList(orderPinnedRunList(current));
         } else {
             scheduleRealtimeRefresh("runs");
         }
@@ -677,12 +682,20 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         if (pageShell != null && pageShell.hasOverlay()) {
             clearMetricDetailState();
+            if (settingsSection != null) {
+                settingsSection = null;
+                updateHeaderTitle();
+            }
             pageShell.popOverlay();
             return;
         }
         if ("settings".equals(currentTab) && settingsSection != null) {
             settingsSection = null;
-            installSettingsTab(true);
+            if (pageShell != null && pageShell.hasOverlay()) {
+                pageShell.popOverlay();
+            } else {
+                installSettingsTab(true);
+            }
             updateHeaderTitle();
             return;
         }
@@ -1082,43 +1095,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 1
         ));
 
-        if (settingsSection == null) {
-            buildSettingsHome(settingsContent);
-            return;
-        }
-
-        // Second level: a clean back link (the top header already shows the
-        // section title), then the section rows.
-        TextView back = new TextView(this);
-        back.setText("‹  " + t("settings"));
-        back.setTextSize(15);
-        back.setTextColor(color("#2563EB"));
-        back.setGravity(Gravity.CENTER_VERTICAL);
-        back.setPadding(dp(2), dp(6), dp(12), dp(10));
-        back.setClickable(true);
-        back.setOnClickListener(v -> {
-            settingsSection = null;
-            installSettingsTab(true);
-            updateHeaderTitle();
-        });
-        LinearLayout.LayoutParams backParams = matchWrap();
-        settingsContent.addView(back, backParams);
-
-        switch (settingsSection) {
-            case "pair":
-                buildPairSection(settingsContent);
-                break;
-            case "notifications":
-                buildNotificationsSection(settingsContent);
-                break;
-            case "storage":
-                buildStorageSection(settingsContent);
-                break;
-            default:
-                settingsSection = null;
-                buildSettingsHome(settingsContent);
-                break;
-        }
+        buildSettingsHome(settingsContent);
     }
 
     private String settingsSectionTitle(String key) {
@@ -1138,7 +1115,57 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void openSettingsSection(String key) {
         settingsSection = key;
-        installSettingsTab(true);
+        if (pageShell == null) ensureShell();
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setClickable(true);
+        root.setBackgroundColor(appBg());
+        root.setPadding(dp(16), statusBarHeight() + dp(12), dp(16), navigationBarHeight() + dp(14));
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView back = circleIconButton("‹");
+        back.setTextSize(28);
+        back.setOnClickListener(v -> {
+            settingsSection = null;
+            if (pageShell != null) pageShell.popOverlay();
+            updateHeaderTitle();
+        });
+        top.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        TextView title = new TextView(this);
+        title.setText(settingsSectionTitle(key));
+        title.setTextSize(22);
+        title.setTypeface(null, Typeface.BOLD);
+        title.setTextColor(textPrimary());
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        titleParams.setMargins(dp(12), 0, 0, 0);
+        top.addView(title, titleParams);
+        root.addView(top, matchWrap());
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, dp(12), 0, dp(8));
+        switch (key) {
+            case "pair":
+                buildPairSection(body);
+                break;
+            case "notifications":
+                buildNotificationsSection(body);
+                break;
+            case "storage":
+                buildStorageSection(body);
+                break;
+            default:
+                settingsSection = null;
+                break;
+        }
+        scroll.addView(body, matchWrap());
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        pageShell.pushOverlay(root);
         updateHeaderTitle();
     }
 
@@ -3366,7 +3393,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             homeIcon.setImageResource(selected ? R.drawable.ic_tab_home_filled : R.drawable.ic_tab_home);
             homeIcon.setColorFilter(selected ? textPrimary() : textSecondary(), PorterDuff.Mode.SRC_IN);
             homeIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            button.addView(homeIcon, new LinearLayout.LayoutParams(dp(24), dp(24)));
+            button.addView(homeIcon, new LinearLayout.LayoutParams(dp(20), dp(20)));
             tabHomeIcon = homeIcon;
         } else {
             TextView iconView = new TextView(this);
@@ -4932,7 +4959,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private LinearLayout.LayoutParams chartParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(88));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(120));
         params.setMargins(0, dp(8), 0, 0);
         return params;
     }
@@ -5792,13 +5819,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
             output.setText(hasOutput ? displayText(latest) : (isEnglish() ? "(no output)" : "（暂无输出）"));
             output.setTextColor(hasOutput ? textPrimary() : textSecondary());
         }
-        bindRunProgress(
-                taggedView(root, TAG_RUN_PROGRESS_ROW),
-                taggedView(root, TAG_RUN_PROGRESS) instanceof ProgressBar
-                        ? (ProgressBar) taggedView(root, TAG_RUN_PROGRESS) : null,
-                taggedTextView(root, TAG_RUN_PROGRESS_LABEL),
+        bindRunTrainingChrome(
+                taggedTextView(root, TAG_RUN_LOSS),
+                taggedTextView(root, TAG_RUN_ETA),
+                taggedView(root, TAG_RUN_ETA_BAR) instanceof MeterBarView
+                        ? (MeterBarView) taggedView(root, TAG_RUN_ETA_BAR) : null,
                 run
         );
+        View oldProgress = taggedView(root, TAG_RUN_PROGRESS_ROW);
+        if (oldProgress != null) oldProgress.setVisibility(View.GONE);
     }
 
     private String runContentKey(JSONObject run) {
@@ -5814,23 +5843,111 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 + run.opt("exitCode");
     }
 
-    private void bindRunProgress(View row, ProgressBar bar, TextView label, JSONObject run) {
-        Double progress = runProgressValue(run);
-        if (row == null) return;
-        if (progress == null) {
-            row.setVisibility(View.GONE);
-            return;
-        }
-        row.setVisibility(View.VISIBLE);
-        int value = (int) Math.round(Math.max(0, Math.min(100, progress)));
-        if (bar != null) bar.setProgress(value);
-        if (label != null) {
-            String extra = "";
-            if (run != null && run.has("lastLoss")) {
-                extra = "  loss " + run.optDouble("lastLoss");
+    private void bindRunTrainingChrome(TextView lossView, TextView etaView, MeterBarView etaBar, JSONObject run) {
+        Double loss = runLossValue(run);
+        if (lossView != null) {
+            if (loss == null) {
+                lossView.setVisibility(View.GONE);
+            } else {
+                lossView.setVisibility(View.VISIBLE);
+                lossView.setText(formatLoss(loss));
             }
-            label.setText(value + "%" + extra);
         }
+        Double progress = runProgressValue(run);
+        Integer eta = runEtaSeconds(run);
+        if (etaView != null) {
+            if (eta == null && progress == null) {
+                etaView.setVisibility(View.GONE);
+            } else {
+                etaView.setVisibility(View.VISIBLE);
+                StringBuilder text = new StringBuilder();
+                if (progress != null) {
+                    text.append(Math.round(progress)).append('%');
+                }
+                if (eta != null) {
+                    if (text.length() > 0) text.append(' ');
+                    text.append(formatEta(eta));
+                }
+                etaView.setText(text.toString());
+            }
+        }
+        if (etaBar != null) {
+            if (progress == null) {
+                etaBar.setVisibility(View.GONE);
+            } else {
+                etaBar.setVisibility(View.VISIBLE);
+                int value = (int) Math.round(Math.max(0, Math.min(100, progress)));
+                etaBar.setMeter(value, meterFillColor(value), meterTrackColor());
+            }
+        }
+    }
+
+    private Double runLossValue(JSONObject run) {
+        if (run != null && run.has("lastLoss") && !run.isNull("lastLoss")) {
+            return run.optDouble("lastLoss");
+        }
+        return parseLossFromLine(latestOutputLine(run));
+    }
+
+    private Double parseLossFromLine(String line) {
+        if (line == null || line.isEmpty()) return null;
+        java.util.regex.Matcher match = java.util.regex.Pattern
+                .compile("(?i)\\bloss\\s*[:=]\\s*([0-9]*\\.?[0-9]+(?:[eE][+-]?\\d+)?)")
+                .matcher(line);
+        if (!match.find()) return null;
+        try {
+            return Double.parseDouble(match.group(1));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String formatLoss(double loss) {
+        if (loss != 0 && Math.abs(loss) < 0.01) {
+            return String.format(Locale.US, "loss %.2e", loss);
+        }
+        return String.format(Locale.US, "loss %.3f", loss);
+    }
+
+    private Integer runEtaSeconds(JSONObject run) {
+        if (run != null && run.has("etaSeconds") && !run.isNull("etaSeconds")) {
+            return Math.max(0, run.optInt("etaSeconds", 0));
+        }
+        return parseEtaFromLine(latestOutputLine(run));
+    }
+
+    private Integer parseEtaFromLine(String line) {
+        if (line == null || line.isEmpty()) return null;
+        java.util.regex.Matcher match = java.util.regex.Pattern
+                .compile("<\\s*(\\d+:\\d+(?::\\d+)?)")
+                .matcher(line);
+        if (!match.find()) return null;
+        String[] parts = match.group(1).split(":");
+        try {
+            int total = 0;
+            for (String part : parts) {
+                total = total * 60 + Integer.parseInt(part);
+            }
+            return total;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String formatEta(int seconds) {
+        if (seconds < 60) {
+            return isEnglish() ? "~" + seconds + "s" : "约" + seconds + "秒";
+        }
+        if (seconds < 3600) {
+            int minutes = Math.max(1, Math.round(seconds / 60f));
+            return isEnglish() ? "~" + minutes + "m" : "约" + minutes + "分钟";
+        }
+        int hours = seconds / 3600;
+        int minutes = Math.round((seconds % 3600) / 60f);
+        if (minutes <= 0) {
+            return isEnglish() ? "~" + hours + "h" : "约" + hours + "小时";
+        }
+        return isEnglish() ? "~" + hours + "h" + minutes + "m" : "约" + hours + "小时" + minutes + "分";
     }
 
     private Double runProgressValue(JSONObject run) {
@@ -5930,34 +6047,42 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private JSONArray orderPinnedRuns(JSONArray runs) {
-        List<String> pinnedOrder = pinnedRunIdList();
-        if (pinnedOrder.isEmpty()) {
-            return runs;
-        }
-        Map<String, JSONObject> pinnedById = new HashMap<>();
-        JSONArray ordered = new JSONArray();
-        JSONArray rest = new JSONArray();
+        List<JSONObject> items = new ArrayList<>();
         for (int i = 0; i < runs.length(); i++) {
             JSONObject run = runs.optJSONObject(i);
-            if (run == null) {
+            if (run != null) items.add(run);
+        }
+        List<JSONObject> ordered = orderPinnedRunList(items);
+        JSONArray out = new JSONArray();
+        for (JSONObject run : ordered) {
+            out.put(run);
+        }
+        return out;
+    }
+
+    private List<JSONObject> orderPinnedRunList(List<JSONObject> runs) {
+        if (runs == null || runs.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<String> ids = new ArrayList<>();
+        Map<String, JSONObject> byId = new HashMap<>();
+        List<JSONObject> unlabeled = new ArrayList<>();
+        for (JSONObject run : runs) {
+            if (run == null) continue;
+            String id = run.optString("id", "");
+            if (id.isEmpty() || "__empty__".equals(id)) {
+                unlabeled.add(run);
                 continue;
             }
-            String id = run.optString("id", "");
-            if (!id.isEmpty() && pinnedOrder.contains(id)) {
-                pinnedById.put(id, run);
-            } else {
-                rest.put(run);
-            }
+            ids.add(id);
+            byId.put(id, run);
         }
-        for (String id : pinnedOrder) {
-            JSONObject run = pinnedById.get(id);
-            if (run != null) {
-                ordered.put(run);
-            }
+        List<JSONObject> ordered = new ArrayList<>();
+        for (String id : RunListOrder.orderIds(ids, pinnedRunIdList())) {
+            JSONObject run = byId.get(id);
+            if (run != null) ordered.add(run);
         }
-        for (int i = 0; i < rest.length(); i++) {
-            ordered.put(rest.optJSONObject(i));
-        }
+        ordered.addAll(unlabeled);
         return ordered;
     }
 
@@ -6289,12 +6414,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         card.setClickable(true);
         card.setOnClickListener(v -> openRunDetail(runId));
 
-        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
-                Math.max(dp(280), getResources().getDisplayMetrics().widthPixels - dp(36)),
+        card.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        cardParams.setMargins(0, 0, dp(10), 0);
-        card.setLayoutParams(cardParams);
+        ));
 
         String status = run.optString("status", "unknown");
         LinearLayout topLine = new LinearLayout(this);
@@ -6342,36 +6465,41 @@ public class MainActivity extends Activity implements LifecycleOwner {
             pinnedParams.setMargins(0, 0, dp(6), 0);
             topLine.addView(pinnedBadge, pinnedParams);
         }
+        TextView lossView = new TextView(this);
+        lossView.setTag(TAG_RUN_LOSS);
+        lossView.setTextSize(11);
+        lossView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        lossView.setTextColor(textSecondary());
+        lossView.setPadding(0, 0, dp(6), 0);
+        topLine.addView(lossView, matchWrap());
         topLine.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         card.addView(topLine, matchWrap());
 
+        LinearLayout metaRow = new LinearLayout(this);
+        metaRow.setOrientation(LinearLayout.HORIZONTAL);
+        metaRow.setGravity(Gravity.CENTER_VERTICAL);
+        metaRow.setPadding(0, dp(3), 0, 0);
         TextView meta = new TextView(this);
         meta.setTag(TAG_RUN_META);
         meta.setText(runMetaText(run));
         meta.setTextSize(11);
         meta.setTextColor(textSecondary());
-        meta.setPadding(0, dp(3), 0, 0);
-        card.addView(meta, matchWrap());
-
-        LinearLayout progressRow = new LinearLayout(this);
-        progressRow.setTag(TAG_RUN_PROGRESS_ROW);
-        progressRow.setOrientation(LinearLayout.HORIZONTAL);
-        progressRow.setGravity(Gravity.CENTER_VERTICAL);
-        progressRow.setPadding(0, dp(8), 0, 0);
-        ProgressBar progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progressBar.setTag(TAG_RUN_PROGRESS);
-        progressBar.setMax(100);
-        LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(0, dp(7), 1);
-        progressRow.addView(progressBar, barParams);
-        TextView progressLabel = new TextView(this);
-        progressLabel.setTag(TAG_RUN_PROGRESS_LABEL);
-        progressLabel.setTextSize(11);
-        progressLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
-        progressLabel.setTextColor(textSecondary());
-        progressLabel.setPadding(dp(8), 0, 0, 0);
-        progressRow.addView(progressLabel, matchWrap());
-        card.addView(progressRow, matchWrap());
-        bindRunProgress(progressRow, progressBar, progressLabel, run);
+        meta.setSingleLine(true);
+        meta.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        metaRow.addView(meta, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        TextView eta = new TextView(this);
+        eta.setTag(TAG_RUN_ETA);
+        eta.setTextSize(10);
+        eta.setTypeface(android.graphics.Typeface.MONOSPACE);
+        eta.setTextColor(textSecondary());
+        eta.setPadding(dp(6), 0, dp(6), 0);
+        metaRow.addView(eta, matchWrap());
+        MeterBarView etaBar = new MeterBarView(this);
+        etaBar.setTag(TAG_RUN_ETA_BAR);
+        LinearLayout.LayoutParams etaBarParams = new LinearLayout.LayoutParams(dp(64), dp(6));
+        metaRow.addView(etaBar, etaBarParams);
+        card.addView(metaRow, matchWrap());
+        bindRunTrainingChrome(lossView, eta, etaBar, run);
 
         String latest = latestOutputLine(run);
         boolean hasOutput = !latest.isEmpty();
@@ -6452,13 +6580,31 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 } catch (Throwable throwable) {
                     content = runRenderErrorView(run, throwable);
                 }
+                holder.host.setTag(run.optString("id", "") + "|" + run.optBoolean("__pinned", false));
+                holder.host.addView(content, new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT));
+                return;
+            }
+            String runId = run.optString("id", "");
+            boolean pinned = run.optBoolean("__pinned", false);
+            String bindKey = runId + "|" + pinned;
+            if (!bindKey.equals(String.valueOf(holder.host.getTag()))) {
+                holder.host.removeAllViews();
+                View content;
+                try {
+                    content = runView(run);
+                } catch (Throwable throwable) {
+                    content = runRenderErrorView(run, throwable);
+                }
+                holder.host.setTag(bindKey);
                 holder.host.addView(content, new FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         FrameLayout.LayoutParams.WRAP_CONTENT));
                 return;
             }
             View row = holder.host.getChildAt(0);
-            row.setTag(run.optString("id", ""));
+            row.setTag(runId);
             updateRunCardInPlace(holder.host, run);
         }
 
@@ -6545,6 +6691,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 pinActionBg(),
                 archiveActionBg(),
                 deleteActionBg(),
+                pinActionText(),
+                archiveActionText(),
+                Color.WHITE,
                 new SwipeActionRow.Actions() {
                     @Override
                     public void onPin() {
@@ -6816,8 +6965,37 @@ public class MainActivity extends Activity implements LifecycleOwner {
             a.put(s);
         }
         prefs.edit().putString(PREF_PINNED_RUNS, a.toString()).apply();
-        loadCachedRuns();
-        refreshRuns();
+        if (runListAdapter == null) {
+            return;
+        }
+        List<JSONObject> rows = new ArrayList<>();
+        for (JSONObject run : runListAdapter.getCurrentList()) {
+            if (run == null) continue;
+            String runId = run.optString("id", "");
+            if ("__empty__".equals(runId)) continue;
+            try {
+                JSONObject next = new JSONObject(run.toString());
+                next.put("__pinned", isRunPinned(runId));
+                rows.add(next);
+            } catch (Exception ignored) {
+                rows.add(run);
+            }
+        }
+        rows = orderPinnedRunList(rows);
+        if (rows.isEmpty()) {
+            JSONObject empty = new JSONObject();
+            try {
+                empty.put("id", "__empty__");
+            } catch (Exception ignored) {
+            }
+            rows.add(empty);
+        }
+        final boolean scrollTop = pinned;
+        runListAdapter.submitList(rows, () -> {
+            if (scrollTop && runsContainer != null) {
+                runsContainer.scrollToPosition(0);
+            }
+        });
     }
 
     private void removePinnedRun(String id) {
@@ -11144,19 +11322,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private int archiveActionBg() {
-        return isDarkTheme() ? color("#2B2F3A") : color("#EEF2F8");
+        return isDarkTheme() ? color("#64748B") : color("#475569");
     }
 
     private int archiveActionText() {
-        return isDarkTheme() ? color("#E5E7EB") : color("#344054");
+        return Color.WHITE;
     }
 
     private int pinActionBg() {
-        return isDarkTheme() ? color("#173A31") : color("#E8F7F0");
+        return isDarkTheme() ? color("#22C55E") : color("#16A34A");
     }
 
     private int pinActionText() {
-        return isDarkTheme() ? color("#A7F3D0") : color("#087443");
+        return Color.WHITE;
     }
 
     private int deleteActionBg() {
@@ -11683,19 +11861,31 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private static class CpuChartView extends View {
+        private static final int SLOT_COUNT = 36;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final int[] values;
+        private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path area = new Path();
+        private final Path line = new Path();
+        private int[] values;
         private final int lineColor;
-        private final int fillColor;
         private final int gridColor;
+        private final float density;
 
         CpuChartView(Context context, int[] values, int lineColor, int fillColor, int gridColor) {
             super(context);
             this.values = values == null ? new int[0] : values;
             this.lineColor = lineColor;
-            this.fillColor = fillColor;
             this.gridColor = gridColor;
+            this.density = context.getResources().getDisplayMetrics().density;
+            textPaint.setColor(gridColor);
+            textPaint.setTextSize(9f * density);
+            textPaint.setTextAlign(Paint.Align.RIGHT);
             setWillNotDraw(false);
+        }
+
+        void setSeries(int[] next) {
+            this.values = next == null ? new int[0] : next;
+            invalidate();
         }
 
         @Override
@@ -11706,66 +11896,91 @@ public class MainActivity extends Activity implements LifecycleOwner {
             if (w <= 0 || h <= 0) {
                 return;
             }
-            float padX = Math.max(8f, w * 0.025f);
-            float padY = Math.max(6f, h * 0.12f);
-            float left = padX;
-            float right = w - padX;
-            float top = padY;
-            float bottom = h - padY;
+            float labelW = 22f * density;
+            float pad = 6f * density;
+            float left = pad;
+            float right = w - pad - labelW;
+            float top = pad;
+            float bottom = h - pad;
+            if (right - left < 8f || bottom - top < 8f) {
+                return;
+            }
 
+            paint.setShader(null);
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(gridColor);
-            paint.setAlpha(70);
-            canvas.drawRoundRect(left, top, right, bottom, 10f, 10f, paint);
-            paint.setAlpha(255);
-
+            paint.setColor(Color.argb(38, Color.red(lineColor), Color.green(lineColor), Color.blue(lineColor)));
+            canvas.drawRoundRect(left, top, right, bottom, 8f, 8f, paint);
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(1f, h * 0.02f));
+            paint.setStrokeWidth(Math.max(1f, density));
             paint.setColor(gridColor);
-            canvas.drawLine(left, top + (bottom - top) * 0.5f, right, top + (bottom - top) * 0.5f, paint);
-            canvas.drawLine(left, top + (bottom - top) * 0.25f, right, top + (bottom - top) * 0.25f, paint);
+            canvas.drawRoundRect(left, top, right, bottom, 8f, 8f, paint);
+
+            paint.setStrokeWidth(Math.max(1f, 0.7f * density));
+            textPaint.setAlpha(170);
+            for (int step = 0; step <= 4; step++) {
+                float y = bottom - (bottom - top) * step / 4f;
+                paint.setColor(gridColor);
+                paint.setAlpha(step == 0 || step == 4 ? 70 : 45);
+                canvas.drawLine(left + 1f, y, right - 1f, y, paint);
+                if (step == 0 || step == 2 || step == 4) {
+                    canvas.drawText(String.valueOf(step * 25), w - pad, y + textPaint.getTextSize() * 0.35f, textPaint);
+                }
+            }
+            paint.setAlpha(255);
+            textPaint.setAlpha(255);
 
             if (values.length == 0) {
                 return;
             }
-            float span = right - left;
-            Path area = new Path();
-            Path line = new Path();
-            float firstY = valueY(values[0], top, bottom);
-            area.moveTo(left, bottom);
-            area.lineTo(left, firstY);
-            line.moveTo(left, firstY);
-            float lastX = left;
-            float lastY = firstY;
+            float plotW = right - left;
+            float slot = SLOT_COUNT <= 1 ? plotW : plotW / (SLOT_COUNT - 1);
+            float firstX;
             if (values.length == 1) {
-                area.lineTo(right, firstY);
-                line.lineTo(right, firstY);
+                firstX = right - Math.max(slot * 2f, 16f * density);
+            } else {
+                firstX = right - slot * (values.length - 1);
+            }
+            firstX = Math.max(left, firstX);
+
+            area.reset();
+            line.reset();
+            float firstY = valueY(values[0], top, bottom);
+            area.moveTo(firstX, bottom);
+            area.lineTo(firstX, firstY);
+            line.moveTo(firstX, firstY);
+            float lastX = firstX;
+            if (values.length == 1) {
                 lastX = right;
+                area.lineTo(lastX, firstY);
+                line.lineTo(lastX, firstY);
             } else {
                 for (int i = 1; i < values.length; i++) {
-                    float x = left + span * i / (values.length - 1);
+                    float x = firstX + (right - firstX) * i / (values.length - 1);
                     float y = valueY(values[i], top, bottom);
                     area.lineTo(x, y);
                     line.lineTo(x, y);
                     lastX = x;
-                    lastY = y;
                 }
             }
             area.lineTo(lastX, bottom);
             area.close();
 
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(fillColor);
+            paint.setShader(new LinearGradient(
+                    0f, top, 0f, bottom,
+                    Color.argb(150, Color.red(lineColor), Color.green(lineColor), Color.blue(lineColor)),
+                    Color.argb(20, Color.red(lineColor), Color.green(lineColor), Color.blue(lineColor)),
+                    Shader.TileMode.CLAMP
+            ));
             canvas.drawPath(area, paint);
+            paint.setShader(null);
 
             paint.setStyle(Paint.Style.STROKE);
             paint.setColor(lineColor);
-            paint.setStrokeWidth(Math.max(2.4f, h * 0.055f));
+            paint.setStrokeWidth(Math.max(1.5f * density, 2f));
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeJoin(Paint.Join.ROUND);
             canvas.drawPath(line, paint);
-            paint.setStyle(Paint.Style.FILL);
-            canvas.drawCircle(lastX, lastY, Math.max(3f, h * 0.07f), paint);
         }
 
         private float valueY(int raw, float top, float bottom) {

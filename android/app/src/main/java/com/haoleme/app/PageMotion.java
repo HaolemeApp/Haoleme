@@ -63,11 +63,15 @@ final class PageMotion {
         if (view == null) return;
         cancel(view);
         view.setVisibility(View.VISIBLE);
-        view.setAlpha(0f);
-        view.setTranslationY(dp(view, 12));
+        view.setAlpha(1f);
+        view.setTranslationY(0f);
+        float width = view.getWidth();
+        if (width <= 0f) {
+            width = view.getResources().getDisplayMetrics().widthPixels;
+        }
+        view.setTranslationX(width);
         view.animate()
-                .alpha(1f)
-                .translationY(0f)
+                .translationX(0f)
                 .setDuration(PUSH_MS)
                 .setInterpolator(EASE)
                 .start();
@@ -79,13 +83,17 @@ final class PageMotion {
             return;
         }
         cancel(view);
+        float width = view.getWidth();
+        if (width <= 0f) {
+            width = view.getResources().getDisplayMetrics().widthPixels;
+        }
         ViewPropertyAnimator animator = view.animate()
-                .alpha(0f)
-                .translationY(dp(view, 8))
+                .translationX(width)
                 .setDuration(POP_MS)
                 .setInterpolator(EASE);
         animator.withEndAction(() -> {
             view.setVisibility(View.GONE);
+            view.setTranslationX(0f);
             if (after != null) after.run();
         });
         animator.start();

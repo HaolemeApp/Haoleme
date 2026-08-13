@@ -51,6 +51,7 @@ from haoleme.cli import (
     version_command,
     qr_matrix_to_terminal_lines,
     read_heartbeat_state,
+    restart_heartbeat_daemon,
     reconcile_orphaned_running_runs,
     remote_terminal_shell_command,
     reusable_login_device_id,
@@ -964,6 +965,16 @@ class CliPairingTest(unittest.TestCase):
                 self.assertEqual(heartbeat_state_path(), Path(tmp) / "heartbeat.json")
                 self.assertEqual(state["lastOkAt"], "2026-06-20T00:00:00Z")
                 self.assertEqual(state["pendingRuns"], 3)
+
+    def test_restart_heartbeat_stops_then_starts(self):
+        with patch("haoleme.cli.stop_heartbeat_daemon", return_value=(True, "stopped")) as stop, patch(
+            "haoleme.cli.start_heartbeat_daemon", return_value=(True, "started (pid 9)")
+        ) as start:
+            started, message = restart_heartbeat_daemon()
+        self.assertTrue(started)
+        self.assertIn("started", message)
+        stop.assert_called_once()
+        start.assert_called_once()
 
     def test_stream_output_records_even_when_terminal_is_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
