@@ -16,7 +16,7 @@
 <p align="center">
   <a href="https://haolemeapp.github.io/">Website</a>
   ·
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.45/Haoleme-0.9.45.apk">Download APK</a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.46/Haoleme-0.9.46.apk">Download APK</a>
   ·
   <a href="#quick-start">Quick Start</a>
   ·
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.45/Haoleme-0.9.45.apk"><img src="https://img.shields.io/badge/APK-v0.9.45-3DDC84?logo=android&logoColor=white" alt="Android APK 0.9.45"></a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.46/Haoleme-0.9.46.apk"><img src="https://img.shields.io/badge/APK-v0.9.46-3DDC84?logo=android&logoColor=white" alt="Android APK 0.9.46"></a>
   <a href="https://pypi.org/project/haoleme/"><img src="https://img.shields.io/pypi/v/haoleme?label=CLI&logo=pypi&logoColor=white&color=F0B429" alt="Haoleme CLI on PyPI"></a>
   <a href="https://github.com/HaolemeApp/Haoleme/issues"><img src="https://img.shields.io/github/issues-search/HaolemeApp/Haoleme?query=is%3Aissue&label=issues&logo=github&color=E85D75" alt="Total GitHub Issues"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-8B5CF6" alt="License: AGPL-3.0-or-later"></a>
@@ -65,7 +65,7 @@ The home screen shows active and completed runs in one place. Settings covers pa
 
 ### 1. Download the App
 
-[Download Android APK 0.9.45](https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.45/Haoleme-0.9.45.apk)
+[Download Android APK 0.9.46](https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.46/Haoleme-0.9.46.apk)
 
 ### 2. Install the CLI
 

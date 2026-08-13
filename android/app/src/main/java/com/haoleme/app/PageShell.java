@@ -79,6 +79,13 @@ final class PageShell {
         return settingsView;
     }
 
+    void clearTabContent() {
+        PageMotion.cancel(tabHost);
+        tabHost.removeAllViews();
+        homeView = null;
+        settingsView = null;
+    }
+
     void setHeader(View header) {
         replace(headerHost, header);
     }

@@ -265,6 +265,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView detailConsole;
     private JSONObject currentRunDetail;
     private TextView consoleAutoScrollButton;
+    private TextView newRunHintButton;
     private TextView consoleInterruptButton;
     private TextView consoleRerunButton;
     private TextView consoleShutdownButton;
@@ -280,6 +281,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private ScrollView remoteTerminalScroll;
     private boolean consoleSearchVisible = false;
     private boolean consoleAutoScroll = true;
+    private boolean consoleUserTouching = false;
+    private boolean consoleAutoScrollAfterRender = false;
     private int consoleRenderLimit = CONSOLE_RENDER_INITIAL_CHARS;
     private final long notificationSessionStartedAt = System.currentTimeMillis();
     private boolean firstLoad = true;
@@ -352,6 +355,11 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private boolean realtimeRefreshScheduled = false;
     private boolean realtimeRunsDirty = false;
     private boolean realtimeDevicesDirty = false;
+    private boolean cloudRunBaselineReady = false;
+    private int pendingNewRunCount = 0;
+    private final Set<String> pendingNewRunIds = new HashSet<>();
+    private long lastNewRunAutoRevealAt = 0L;
+    private String lastRunListScope = "";
     private String lastRenderedConsoleText = "";
     private int lastRenderedConsoleLength = 0;
     private boolean consoleRenderScheduled = false;
@@ -554,7 +562,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         if (realtimeRefreshScheduled) return;
         realtimeRefreshScheduled = true;
-        handler.postDelayed(realtimeRefreshRunnable, 240L);
+        // Coalesce bursts from a newly started process. Existing run patches are
+        // still applied immediately, while list insertions arrive as one calm update.
+        handler.postDelayed(realtimeRefreshRunnable, 650L);
     }
 
     private void applyRealtimeEvent(String type, JSONObject payload) {
@@ -835,6 +845,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         revokeDeviceButton = null;
         clearDeviceRunsButton = null;
         runListAdapter = null;
+        newRunHintButton = null;
         lastDevicesSig = "";
 
         LinearLayout content = new LinearLayout(this);
@@ -1040,6 +1051,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
         controlsParams.setMargins(0, dp(2), 0, dp(10));
         content.addView(controls, controlsParams);
 
+        newRunHintButton = filterPill("↑", isEnglish() ? "New" : "新任务", "");
+        newRunHintButton.setVisibility(View.GONE);
+        newRunHintButton.setGravity(Gravity.CENTER);
+        newRunHintButton.setOnClickListener(v -> revealNewRuns());
+        LinearLayout.LayoutParams hintParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(36));
+        hintParams.setMargins(dp(58), -dp(2), dp(58), dp(8));
+        content.addView(newRunHintButton, hintParams);
+
         // RecyclerView keeps only visible cards alive and applies row-level diffs.
         runsContainer = new RecyclerView(this);
         runsContainer.setLayoutManager(new LinearLayoutManager(this));
@@ -1048,6 +1069,15 @@ public class MainActivity extends Activity implements LifecycleOwner {
         runsContainer.setVerticalScrollBarEnabled(false);
         runListAdapter = new RunListAdapter();
         runsContainer.setAdapter(runListAdapter);
+        runsContainer.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
+                LinearLayoutManager manager = (LinearLayoutManager) recyclerView.getLayoutManager();
+                if (manager != null && manager.findFirstVisibleItemPosition() == 0) {
+                    clearNewRunHint();
+                }
+            }
+        });
         DefaultItemAnimator animator = new DefaultItemAnimator();
         animator.setAddDuration(180L);
         animator.setRemoveDuration(180L);
@@ -1862,7 +1892,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
         android.graphics.drawable.StateListDrawable content = new android.graphics.drawable.StateListDrawable();
         content.addState(new int[]{android.R.attr.state_pressed}, new android.graphics.drawable.ColorDrawable(pressHighlight()));
         content.addState(new int[0], new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
-        return new android.graphics.drawable.RippleDrawable(ripple, content, new android.graphics.drawable.ColorDrawable(Color.WHITE));
+        return new android.graphics.drawable.RippleDrawable(
+                ripple,
+                content,
+                new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
     }
 
     private void showThemeDialog() {
@@ -1875,6 +1908,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
                     prefs.edit().putString(PREF_THEME_MODE, values[which]).apply();
                     dialog.dismiss();
+                    if (pageShell != null) pageShell.clearTabContent();
                     buildUi();
                 })
                 .setNegativeButton(t("cancel"), null)
@@ -1894,6 +1928,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                     prefs.edit().putString(PREF_LANGUAGE_MODE, values[which]).apply();
                     dialog.dismiss();
                     updateLauncherAlias();
+                    if (pageShell != null) pageShell.clearTabContent();
                     buildUi();
                     if (statusText != null) {
                         statusText.setText(t("language_updated"));
@@ -4397,7 +4432,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         item.addView(label, matchWrap());
 
         MeterBarView bar = new MeterBarView(this);
-        bar.setMeter(progress, meterFillColor(progress), meterTrackColor());
+        setUtilizationMeter(bar, progress);
         LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(dp(44), dp(7));
         barParams.setMargins(0, dp(4), 0, dp(3));
         item.addView(bar, barParams);
@@ -4684,7 +4719,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         name.setTextColor(textSecondary());
         row.addView(name, new LinearLayout.LayoutParams(dp(44), LinearLayout.LayoutParams.WRAP_CONTENT));
         MeterBarView bar = new MeterBarView(this);
-        bar.setMeter(percent, meterFillColor(percent), meterTrackColor());
+        setUtilizationMeter(bar, percent);
         row.addView(bar, new LinearLayout.LayoutParams(0, dp(7), 1));
         TextView detail = new TextView(this);
         detail.setText(value);
@@ -4932,7 +4967,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         name.setTextColor(textSecondary());
         row.addView(name, new LinearLayout.LayoutParams(dp(78), LinearLayout.LayoutParams.WRAP_CONTENT));
         MeterBarView bar = new MeterBarView(this);
-        bar.setMeter(percent, meterFillColor(percent), meterTrackColor());
+        setUtilizationMeter(bar, percent);
         row.addView(bar, new LinearLayout.LayoutParams(0, dp(8), 1));
         TextView detail = new TextView(this);
         detail.setText(value);
@@ -5256,7 +5291,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         item.addView(label, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         MeterBarView bar = new MeterBarView(this);
-        bar.setMeter(progress, meterFillColor(progress), meterTrackColor());
+        setUtilizationMeter(bar, progress);
         LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(dp(40), dp(7));
         barLp.setMargins(dp(1), dp(2), dp(1), dp(2));
         item.addView(bar, barLp);
@@ -5304,6 +5339,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (percent >= 90) return isDarkTheme() ? color("#FB7185") : color("#E11D48");
         if (percent >= 70) return isDarkTheme() ? color("#FBBF24") : color("#D97706");
         return isDarkTheme() ? color("#5EEAD4") : color("#0F766E");
+    }
+
+    private void setUtilizationMeter(MeterBarView bar, int percent) {
+        if (bar == null) return;
+        bar.setGradientMeter(
+                percent,
+                meterTrackColor(),
+                isDarkTheme() ? color("#34D399") : color("#10B981"),
+                isDarkTheme() ? color("#FBBF24") : color("#F59E0B"),
+                isDarkTheme() ? color("#FB7185") : color("#EF4444"));
     }
 
     private int meterTrackColor() {
@@ -5717,6 +5762,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void renderRuns(JSONArray runs, boolean fromCache) {
         JSONArray visibleRuns = filterRuns(runs);
+        String listScope = selectedDeviceId + "|" + selectedStatusFilter + "|" + selectedProjectFilter;
+        if (!listScope.equals(lastRunListScope)) {
+            lastRunListScope = listScope;
+            cloudRunBaselineReady = false;
+            clearNewRunHint();
+        }
         // Track whether anything is actively running so the poll loop can speed up.
         boolean active = false;
         for (int i = 0; i < runs.length(); i++) {
@@ -5761,6 +5812,24 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (runsContainer == null || runListAdapter == null) {
             return;
         }
+        Set<String> previousRunIds = new HashSet<>();
+        for (JSONObject current : runListAdapter.getCurrentList()) {
+            if (current == null) continue;
+            String id = current.optString("id", "");
+            if (!id.isEmpty() && !"__empty__".equals(id)) previousRunIds.add(id);
+        }
+        Set<String> discoveredRunIds = new HashSet<>();
+        if (!fromCache && cloudRunBaselineReady) {
+            for (int i = 0; i < visibleRuns.length(); i++) {
+                JSONObject run = visibleRuns.optJSONObject(i);
+                String id = run == null ? "" : run.optString("id", "");
+                if (!id.isEmpty() && !previousRunIds.contains(id) && !pendingNewRunIds.contains(id)) {
+                    discoveredRunIds.add(id);
+                }
+            }
+        }
+        LinearLayoutManager manager = (LinearLayoutManager) runsContainer.getLayoutManager();
+        boolean userIsNearTop = manager == null || manager.findFirstVisibleItemPosition() <= 1;
         List<JSONObject> rows = new ArrayList<>();
         for (int i = 0; i < visibleRuns.length(); i++) {
             JSONObject run = visibleRuns.optJSONObject(i);
@@ -5783,9 +5852,52 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
             rows.add(empty);
         }
-        runListAdapter.submitList(rows);
+        final Set<String> discoveredRuns = discoveredRunIds;
+        final long now = System.currentTimeMillis();
+        final boolean revealQuietly = !discoveredRuns.isEmpty()
+                && userIsNearTop
+                && now - lastNewRunAutoRevealAt >= 8000L;
+        runListAdapter.submitList(rows, () -> {
+            if (revealQuietly && runsContainer != null) {
+                lastNewRunAutoRevealAt = now;
+                clearNewRunHint();
+                runsContainer.scrollToPosition(0);
+            } else if (!discoveredRuns.isEmpty()) {
+                showNewRunHint(discoveredRuns);
+            }
+        });
         if (!fromCache) {
+            cloudRunBaselineReady = true;
             firstLoad = false;
+        }
+    }
+
+    private void showNewRunHint(Set<String> runIds) {
+        if (runIds == null || runIds.isEmpty() || newRunHintButton == null) return;
+        pendingNewRunIds.addAll(runIds);
+        pendingNewRunCount = pendingNewRunIds.size();
+        String label = isEnglish()
+                ? "↑  " + pendingNewRunCount + (pendingNewRunCount == 1 ? " new run" : " new runs") + "  ·  View"
+                : "↑  " + pendingNewRunCount + " 个新任务  ·  查看";
+        newRunHintButton.setText(label);
+        if (newRunHintButton.getVisibility() != View.VISIBLE) {
+            newRunHintButton.setAlpha(0f);
+            newRunHintButton.setVisibility(View.VISIBLE);
+            newRunHintButton.animate().alpha(1f).setDuration(180L).start();
+        }
+    }
+
+    private void revealNewRuns() {
+        clearNewRunHint();
+        if (runsContainer != null) runsContainer.smoothScrollToPosition(0);
+    }
+
+    private void clearNewRunHint() {
+        pendingNewRunCount = 0;
+        pendingNewRunIds.clear();
+        if (newRunHintButton != null) {
+            newRunHintButton.animate().cancel();
+            newRunHintButton.setVisibility(View.GONE);
         }
     }
 
@@ -7034,6 +7146,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void buildConsoleUi() {
         consoleAutoScroll = true;
+        consoleUserTouching = false;
+        consoleAutoScrollAfterRender = false;
         consoleSearchVisible = false;
         consoleRenderLimit = CONSOLE_RENDER_INITIAL_CHARS;
         lastRenderedConsoleText = "";
@@ -7248,9 +7362,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         consoleAutoScrollButton.setOnClickListener(v -> {
             consoleAutoScroll = !consoleAutoScroll;
             updateConsoleAutoScrollButton();
-            if (consoleAutoScroll && consoleVerticalScroll != null) {
-                consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_DOWN));
-            }
+            if (consoleAutoScroll) scrollConsoleToBottom();
         });
         terminalHeader.addView(consoleAutoScrollButton, new LinearLayout.LayoutParams(dp(104), dp(34)));
         terminalFrame.addView(terminalHeader, matchWrap());
@@ -7266,10 +7378,27 @@ public class MainActivity extends Activity implements LifecycleOwner {
             if (child == null) {
                 return;
             }
-            int distanceFromBottom = child.getBottom() - (consoleVerticalScroll.getHeight() + consoleVerticalScroll.getScrollY());
-            consoleAutoScroll = distanceFromBottom < dp(32);
-            updateConsoleAutoScrollButton();
+            if (consoleUserTouching) {
+                int distanceFromBottom = child.getBottom() - (consoleVerticalScroll.getHeight() + consoleVerticalScroll.getScrollY());
+                consoleAutoScroll = distanceFromBottom < dp(32);
+                updateConsoleAutoScrollButton();
+            }
             updateConsoleMoreButton();
+        });
+        consoleVerticalScroll.setOnTouchListener((view, event) -> {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+                consoleUserTouching = true;
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                View child = consoleVerticalScroll == null ? null : consoleVerticalScroll.getChildAt(0);
+                if (child != null) {
+                    int distance = child.getBottom() - (consoleVerticalScroll.getHeight() + consoleVerticalScroll.getScrollY());
+                    consoleAutoScroll = distance < dp(32);
+                }
+                consoleUserTouching = false;
+                updateConsoleAutoScrollButton();
+            }
+            return false;
         });
         HorizontalScrollView horizontalScroll = new HorizontalScrollView(this);
         LinearLayout consoleContent = new LinearLayout(this);
@@ -8371,9 +8500,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         renderConsoleText();
         maybeNotify(run);
-        if (("running".equals(status) || "created".equals(status)) && consoleAutoScroll && consoleVerticalScroll != null) {
-            consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_DOWN));
-        }
         if (statusText != null && !isConsoleRenderClipped() && (consoleSearchInput == null || consoleSearchInput.getText().toString().trim().isEmpty())) {
             statusText.setText(isEnglish() ? "Console updated." : "控制台已更新。");
         }
@@ -8481,9 +8607,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         currentRunDetail = run;
         renderConsoleText();
-        if (("running".equals(status) || "created".equals(status)) && consoleAutoScroll && consoleVerticalScroll != null) {
-            consoleVerticalScroll.post(() -> consoleVerticalScroll.fullScroll(View.FOCUS_DOWN));
-        }
         if (statusText != null && !isConsoleRenderClipped() && (consoleSearchInput == null || consoleSearchInput.getText().toString().trim().isEmpty())) {
             statusText.setText(fromCache ? (isEnglish() ? "Saved console." : "已保存控制台。") : (isEnglish() ? "Console updated." : "控制台已更新。"));
         }
@@ -8502,9 +8625,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void renderConsoleText() {
-        if (detailConsole == null || consoleRenderScheduled) {
+        if (detailConsole == null) {
             return;
         }
+        String query = consoleSearchInput == null ? "" : consoleSearchInput.getText().toString().trim();
+        if (consoleAutoScroll && query.isEmpty()) consoleAutoScrollAfterRender = true;
+        if (consoleRenderScheduled) return;
         consoleRenderScheduled = true;
         // Training processes can emit hundreds of writes per second. Render at
         // most once per frame group while still persisting every byte to disk.
@@ -8536,8 +8662,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 statusText.setText(consoleRenderStatusText());
             }
             updateConsoleMoreButton();
+            boolean shouldScroll = consoleAutoScrollAfterRender && consoleAutoScroll;
+            consoleAutoScrollAfterRender = false;
+            if (shouldScroll) scrollConsoleToBottom();
             return;
         }
+
+        consoleAutoScrollAfterRender = false;
 
         String lowerQuery = query.toLowerCase(Locale.US);
         String searchable = renderTerminalText(consoleWindowRaw());
@@ -8564,6 +8695,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
             statusText.setText(isEnglish() ? count + " matching line(s)" + suffix : count + " 行匹配" + suffix);
         }
         updateConsoleMoreButton();
+    }
+
+    private void scrollConsoleToBottom() {
+        if (consoleVerticalScroll == null || !consoleAutoScroll || consoleUserTouching) return;
+        consoleVerticalScroll.post(() -> {
+            if (consoleVerticalScroll == null || !consoleAutoScroll || consoleUserTouching) return;
+            consoleVerticalScroll.fullScroll(View.FOCUS_DOWN);
+            consoleVerticalScroll.postOnAnimation(() -> {
+                if (consoleVerticalScroll != null && consoleAutoScroll && !consoleUserTouching) {
+                    consoleVerticalScroll.fullScroll(View.FOCUS_DOWN);
+                }
+            });
+        });
     }
 
     private String renderTerminalText(String value) {

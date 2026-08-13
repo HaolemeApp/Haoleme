@@ -1,16 +1,16 @@
 {
   "android": {
-    "versionCode": 180,
-    "versionName": "0.9.45",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.45/Haoleme-0.9.45.apk",
+    "versionCode": 181,
+    "versionName": "0.9.46",
+    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.46/Haoleme-0.9.46.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.45/Haoleme-0.9.45.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-0.9.45.apk"
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v0.9.46/Haoleme-0.9.46.apk",
+      "https://api.haoleme.cloud/downloads/Haoleme-0.9.46.apk"
     ],
-    "sha256": "dcb4aa7ff057512424c5a63f96aa7f3208ae6bf17dd076867d3fa94d8293b956",
+    "sha256": "56509676ebe9994c6a762c32b62a60878eba55efd780f7f43080d9165f93d86e",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "页面切换更顺滑；设备状态与 nvtop 式详情；置顶不再浮层误触；控制台从右侧滑入；训练卡片显示 loss 和预估进度。"
+    "notes": "设备利用率使用绿黄红渐变；修复控制台实时输出不自动跟随；新任务低打扰自动出现；修复切换暗色主题后卡片仍为白色。"
   },
   "python": {
     "version": "0.5.3",
