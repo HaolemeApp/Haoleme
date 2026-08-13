@@ -13,9 +13,9 @@
     "notes": "稳定版更新：模型训练卡片可显示命令、耗时、loss、Epoch 和进度条；修复训练指标挤压命令与时间、进度停在首轮的问题。训练进度监控仍在开发中，展示可能继续调整。"
   },
   "python": {
-    "version": "0.5.4",
+    "version": "0.5.5",
     "packageUrl": "haoleme",
-    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/haoleme-0.5.4-py3-none-any.whl",
-    "notes": "Training progress now follows the latest Epoch in the output tail instead of freezing on the first one. / 训练进度会跟随输出尾部的最新 Epoch，不再停留在第一轮。"
+    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/haoleme-0.5.5-py3-none-any.whl",
+    "notes": "Fixed Windows heartbeat, CPU and memory metrics, and device presence reliability. / 修复 Windows 心跳、CPU 与内存指标，以及设备在线状态不稳定的问题。"
   }
 }
