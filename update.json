@@ -13,9 +13,9 @@
     "notes": "修复手机终端短命令完成后不显示输出的问题，并自动补回此前遗漏的本地终端输出。"
   },
   "python": {
-    "version": "0.5.1",
+    "version": "0.5.2",
     "packageUrl": "haoleme",
-    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/cli-v0.5.1/haoleme-0.5.1-py3-none-any.whl",
-    "notes": "Delivers stop, rerun, shutdown, and terminal actions through one immediate device connection while preserving console synchronization behavior. / 停止、重新运行、完成后关机和终端操作共用一条即时设备连接，同时保持原有控制台同步逻辑。"
+    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/cli-v0.5.2/haoleme-0.5.2-py3-none-any.whl",
+    "notes": "Heartbeat reports memory utilization plus host and GPU process snapshots; cloud keeps those fields and parsed training progress. / 心跳上报内存利用率和主机/GPU 进程快照，云端保留这些字段并同步训练进度。"
   }
 }
