@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 183,
-    "versionName": "1.0.1",
-    "apkUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk",
+    "versionCode": 184,
+    "versionName": "1.0.2",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-1.0.2.apk",
     "apkUrls": [
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk",
-      "https://api.haoleme.cloud/downloads/Haoleme-1.0.1.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-1.0.2.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/Haoleme-1.0.2.apk"
     ],
-    "sha256": "26b06b3f91d27330530daaf6bef6edea1e1c25eb184579e6bde20d85f286fd29",
+    "sha256": "b7b94db5eaa5e7551e29022f82588281059cf4d8cebd243f28602908f25b807f",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "稳定版更新：模型训练卡片可显示命令、耗时、loss、Epoch 和进度条；修复训练指标挤压命令与时间、进度停在首轮的问题。训练进度监控仍在开发中，展示可能继续调整。"
+    "notes": "Realtime WebSocket sync, smoother page transitions, device autostart controls, and reliable language switching. / 新增 WebSocket 实时同步、优化页面切换、设备自启动控制及语言切换稳定性。"
   },
   "python": {
-    "version": "0.5.5",
+    "version": "0.5.6",
     "packageUrl": "haoleme",
-    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/haoleme-0.5.5-py3-none-any.whl",
-    "notes": "Fixed Windows heartbeat, CPU and memory metrics, and device presence reliability. / 修复 Windows 心跳、CPU 与内存指标，以及设备在线状态不稳定的问题。"
+    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/update.whl",
+    "notes": "Added realtime control waiting, WebSocket gateway support, and lightweight cloud health checks. / 新增实时控制等待、WebSocket 网关支持与轻量云端健康检查。"
   }
 }

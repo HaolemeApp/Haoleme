@@ -16,7 +16,7 @@
 <p align="center">
   <a href="https://haoleme.cloud/">Website</a>
   ·
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk">Download APK</a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/Haoleme-1.0.2.apk">Download APK</a>
   ·
   <a href="#quick-start">Quick Start</a>
   ·
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk"><img src="https://img.shields.io/badge/APK-v1.0.1-3DDC84?logo=android&logoColor=white" alt="Android APK 1.0.1"></a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/Haoleme-1.0.2.apk"><img src="https://img.shields.io/badge/APK-v1.0.2-3DDC84?logo=android&logoColor=white" alt="Android APK 1.0.2"></a>
   <a href="https://pypi.org/project/haoleme/"><img src="https://img.shields.io/pypi/v/haoleme?label=CLI&logo=pypi&logoColor=white&color=F0B429" alt="Haoleme CLI on PyPI"></a>
   <a href="https://github.com/HaolemeApp/Haoleme/issues"><img src="https://img.shields.io/github/issues-search/HaolemeApp/Haoleme?query=is%3Aissue&label=issues&logo=github&color=E85D75" alt="Total GitHub Issues"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-8B5CF6" alt="License: AGPL-3.0-or-later"></a>
@@ -35,7 +35,7 @@
 </p>
 
 > [!NOTE]
-> **Haoleme v1.0.1 is a stable release.** Model-training progress monitoring is available as a feature in development, so its recognition and presentation may continue to evolve.
+> **Haoleme v1.0.2 is a stable release.** It adds realtime WebSocket sync while preserving SSE and HTTP fallbacks. Model-training progress monitoring remains a feature in development.
 > [View the release](https://github.com/HaolemeApp/Haoleme/releases/latest) or install it directly over an existing version.
 
 ## Why Haoleme
@@ -57,7 +57,7 @@ It is built for model training, evaluations, remote scripts, batch jobs, crawler
 
 ### 1. Download the Android app
 
-[Download Haoleme v1.0.1](https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk)
+[Download Haoleme v1.0.2](https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/Haoleme-1.0.2.apk)
 
 ### 2. Install the CLI
 
