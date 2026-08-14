@@ -1018,7 +1018,7 @@ class CliPairingTest(unittest.TestCase):
     def test_heartbeat_state_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
-            with patch("haoleme.cli.default_config_path", return_value=config_path):
+            with patch("haoleme.cloud.default_config_path", return_value=config_path):
                 write_heartbeat_state(lastOkAt="2026-06-20T00:00:00Z", pendingRuns=3, lastError="")
 
                 state = read_heartbeat_state()

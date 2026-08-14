@@ -25,7 +25,7 @@ from socket import gethostname
 
 from . import __version__
 from ._compat import remove_prefix, shlex_join, unlink_missing
-from .cloud import DEFAULT_CLOUD_URL, CloudClient, CloudConfig, CloudSyncer, InterruptWatcher, PairingClient, default_config_path, describe_cloud_error, generate_account_token, generate_device_id, get_or_create_machine_id, next_output_chunk
+from .cloud import DEFAULT_CLOUD_URL, CloudClient, CloudConfig, CloudSyncer, DeviceSocket, InterruptWatcher, PairingClient, default_config_path, describe_cloud_error, generate_account_token, generate_device_id, get_or_create_machine_id, heartbeat_state_path, next_output_chunk, read_heartbeat_state, write_heartbeat_state
 from .crypto import decrypt_account_key, decrypt_action_payload, generate_pair_keypair
 from .server import serve
 from .store import RunRecord, RunStore, default_db_path
@@ -1004,6 +1004,7 @@ def heartbeat_command(argv: Sequence[str]) -> int:
                 print(f"Last err:  {state.get('lastError')}")
             if state.get("lastMetricsError"):
                 print(f"Metrics:   {state.get('lastMetricsError')}")
+            print(f"Socket:    {'websocket' if state.get('wsConnected') else 'http'}")
         return 0
     print("Heartbeat: stopped")
     state = read_heartbeat_state()
@@ -1147,10 +1148,6 @@ def heartbeat_log_path() -> Path:
     return default_config_path().with_name("heartbeat.log")
 
 
-def heartbeat_state_path() -> Path:
-    return default_config_path().with_name("heartbeat.json")
-
-
 def heartbeat_start_lock_path() -> Path:
     return default_config_path().with_name("heartbeat-start.lock")
 
@@ -1290,29 +1287,6 @@ def terminate_windows_process(pid: int) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0 or not is_windows_process_running(pid)
-
-
-def read_heartbeat_state() -> dict[str, object]:
-    try:
-        raw = heartbeat_state_path().read_text(encoding="utf-8")
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def write_heartbeat_state(**fields: object) -> None:
-    state = read_heartbeat_state()
-    state.update(fields)
-    state["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    path = heartbeat_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    if os.name == "posix":
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
 
 
 def restart_heartbeat_daemon() -> tuple[bool, str]:
@@ -1975,6 +1949,21 @@ def request_system_shutdown() -> None:
     raise RuntimeError("; ".join(item for item in errors if item) or "system shutdown was rejected")
 
 
+def _apply_device_socket_controls(actions: object, interrupts: object) -> None:
+    config = CloudConfig.load()
+    if config is None:
+        return
+    client = CloudClient(config, timeout=8.0)
+    store = RunStore()
+    for message in apply_remote_actions(store, client, actions):
+        print(message, flush=True)
+    interrupted = apply_interrupt_items(store, client, interrupts)
+    if interrupted:
+        print(f"Applied {interrupted} remote stop request(s).", flush=True)
+    for message in apply_scheduled_shutdowns(store, client):
+        print(message, flush=True)
+
+
 def apply_remote_actions(
     store: RunStore,
     client: CloudClient,
@@ -2123,10 +2112,11 @@ def uses_private_relay(config: CloudConfig) -> bool:
 
 
 class RemoteActionWatcher:
-    def __init__(self) -> None:
+    def __init__(self, skip_when: Callable[[], bool] | None = None) -> None:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_error = ""
+        self.skip_when = skip_when
 
     def start(self) -> None:
         config = CloudConfig.load()
@@ -2143,6 +2133,10 @@ class RemoteActionWatcher:
     def _loop(self) -> None:
         failures = 0
         while not self._stop.is_set():
+            if self.skip_when is not None and self.skip_when():
+                self.last_error = ""
+                self._stop.wait(1.0)
+                continue
             config = CloudConfig.load()
             if config is None:
                 self._stop.wait(5)
@@ -2180,8 +2174,23 @@ def heartbeat_run_foreground() -> int:
     pid_path = heartbeat_pid_path()
     pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
     previous_sighup = ignore_sighup()
-    action_watcher = RemoteActionWatcher()
+    device_socket = DeviceSocket(
+        config,
+        store_factory=RunStore,
+        metrics_fn=collect_heartbeat_metrics,
+        autostart_fn=is_autostart_enabled,
+        on_actions=_apply_device_socket_controls,
+        on_heartbeat_ok=lambda: write_heartbeat_state(
+            haolemeVersion=__version__,
+            lastOkAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            lastError="",
+            wsConnected=True,
+        ),
+        on_error=lambda error: write_heartbeat_state(lastError=error, wsConnected=False),
+    )
+    action_watcher = RemoteActionWatcher(skip_when=lambda: device_socket.connected)
     action_watcher.start()
+    device_socket.start()
     write_heartbeat_state(haolemeVersion=__version__)
     delay = heartbeat_initial_delay(config)
     print(f"好了么 heartbeat started. First heartbeat in {delay}s, then every {HEARTBEAT_INTERVAL_SECONDS}s.", flush=True)
@@ -2199,9 +2208,10 @@ def heartbeat_run_foreground() -> int:
                 continue
             loop_started = time.monotonic()
             heartbeat_due = loop_started >= next_heartbeat_at
+            ws_up = device_socket.connected
             client = CloudClient(config, timeout=8.0)
             store = RunStore()
-            if heartbeat_due:
+            if heartbeat_due and not ws_up:
                 try:
                     # Presence must never wait behind a large pending-output
                     # backlog. Send it first, then spend a bounded amount of
@@ -2223,6 +2233,7 @@ def heartbeat_run_foreground() -> int:
                         lastError="",
                         lastMetricsError=metrics_error,
                         pendingRuns=store.count_unsynced_runs(),
+                        wsConnected=False,
                     )
                     print(f"Heartbeat ok: {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
                     if metrics_error:
@@ -2236,6 +2247,9 @@ def heartbeat_run_foreground() -> int:
                 next_heartbeat_at = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
                 if not last_heartbeat_ok:
                     next_maintenance_at = next_heartbeat_at
+            elif heartbeat_due:
+                next_heartbeat_at = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
+                last_heartbeat_ok = True
 
             active = bool(store.list_active_runs(limit=1))
             pending = store.count_unsynced_runs()
@@ -2254,7 +2268,7 @@ def heartbeat_run_foreground() -> int:
                     # and terminal delivery. Fall back to the legacy active-run
                     # poll only while that watcher cannot reach its endpoint.
                     if active:
-                        if action_watcher.last_error:
+                        if action_watcher.last_error and not ws_up:
                             control_messages, interrupted = apply_cloud_controls(
                                 store,
                                 client,
@@ -2264,23 +2278,28 @@ def heartbeat_run_foreground() -> int:
                                 print(message, flush=True)
                             if interrupted:
                                 print(f"Applied {interrupted} cloud interrupt(s).", flush=True)
-                        recovered = reconcile_orphaned_running_runs(store, client, deadline=maintenance_deadline)
+                        recovered = reconcile_orphaned_running_runs(
+                            store,
+                            None if ws_up else client,
+                            deadline=maintenance_deadline,
+                        )
                         if recovered:
                             print(f"Recovered {recovered} orphaned run(s).", flush=True)
-                    synced = sync_pending_runs(
-                        store,
-                        client,
-                        limit=HEARTBEAT_SYNC_RUN_LIMIT,
-                        deadline=maintenance_deadline,
-                        max_chunks_per_run=HEARTBEAT_SYNC_MAX_CHUNKS_PER_RUN,
-                        include_active=False,
-                    )
-                    if synced:
-                        print(f"Synced {synced} pending run(s).", flush=True)
-                        write_heartbeat_state(
-                            lastSyncAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                            lastSyncedRuns=synced,
+                    if not ws_up:
+                        synced = sync_pending_runs(
+                            store,
+                            client,
+                            limit=HEARTBEAT_SYNC_RUN_LIMIT,
+                            deadline=maintenance_deadline,
+                            max_chunks_per_run=HEARTBEAT_SYNC_MAX_CHUNKS_PER_RUN,
+                            include_active=False,
                         )
+                        if synced:
+                            print(f"Synced {synced} pending run(s).", flush=True)
+                            write_heartbeat_state(
+                                lastSyncAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                lastSyncedRuns=synced,
+                            )
                     maintenance_failures = 0
                     next_maintenance_at = time.monotonic() + HEARTBEAT_ACTIVE_POLL_SECONDS
                     write_heartbeat_state(lastMaintenanceError="")
@@ -2301,13 +2320,14 @@ def heartbeat_run_foreground() -> int:
             wake_at = next_heartbeat_at
             if active:
                 wake_at = min(wake_at, now + HEARTBEAT_ACTIVE_POLL_SECONDS)
-            if pending > 0:
+            if pending > 0 and not ws_up:
                 wake_at = min(wake_at, max(now + 0.2, next_maintenance_at))
             time.sleep(max(0.2, wake_at - now))
     except KeyboardInterrupt:
         print("好了么 heartbeat stopped.", flush=True)
         return 130
     finally:
+        device_socket.stop()
         action_watcher.stop()
         if read_heartbeat_pid() == os.getpid():
             unlink_missing(pid_path)

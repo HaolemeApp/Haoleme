@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import haoleme.cloud as cloud_module
-from haoleme.cloud import CloudClient, CloudConfig, CloudSyncer, DEFAULT_CLOUD_URL, OUTPUT_CHUNK_BYTES, generate_account_token, get_or_create_machine_id, next_output_chunk, normalize_cloud_url
+from haoleme.cloud import CloudClient, CloudConfig, CloudSyncer, DEFAULT_CLOUD_URL, OUTPUT_CHUNK_BYTES, compute_device_sync_ops, device_websocket_url, device_ws_connected, generate_account_token, get_or_create_machine_id, heartbeat_state_path, next_output_chunk, normalize_cloud_url, run_sync_fingerprint, write_heartbeat_state
 from haoleme.crypto import generate_account_key
 from haoleme.store import RunRecord, RunStore
 
@@ -312,6 +312,77 @@ class SuccessfulChunkClient:
         if text:
             self.chunks.append({"text": text, "start": output_start, "end": output_end})
         return {"ok": True, "outputLength": output_end or 0}
+
+
+class DeviceSocketSyncTest(unittest.TestCase):
+    def test_device_websocket_url_uses_wss_for_https(self):
+        self.assertEqual(device_websocket_url("https://api.haoleme.cloud"), "wss://api.haoleme.cloud/ws/device")
+        self.assertEqual(device_websocket_url("http://127.0.0.1:8000"), "ws://127.0.0.1:8000/ws/device")
+
+    def test_compute_device_sync_ops_upserts_then_appends(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            store.create_run("run-1", ["echo"], "/tmp")
+            store.mark_running("run-1", 9)
+            last_meta = {}
+
+            first = compute_device_sync_ops(store, last_meta)
+            self.assertEqual([op.kind for op in first], ["upsert"])
+            last_meta["run-1"] = run_sync_fingerprint(store.get_run("run-1"))
+
+            self.assertEqual(compute_device_sync_ops(store, last_meta), [])
+
+            store.append_output("run-1", "stdout_tail", "hello\n")
+            second = compute_device_sync_ops(store, last_meta)
+            self.assertEqual([op.kind for op in second], ["append"])
+            self.assertEqual(second[0].deltas["output_tail"], "hello\n")
+            self.assertEqual(second[0].output_start, 0)
+            self.assertEqual(second[0].output_end, len("hello\n"))
+
+    def test_cloud_syncer_skips_http_when_device_ws_connected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            store = RunStore(home / "runs.db")
+            store.create_run("run-1", ["sleep", "1"], "/tmp")
+            store.mark_running("run-1", 123)
+            write_heartbeat_state(home / "heartbeat.json", wsConnected=True)
+            self.assertTrue(device_ws_connected(home / "heartbeat.json"))
+
+            config = CloudConfig(
+                api_url="https://example.com",
+                account="default",
+                token="x" * 32,
+                encryption_key=generate_account_key(),
+            )
+            client = CapturingCloudClient(config)
+            syncer = CloudSyncer.__new__(CloudSyncer)
+            syncer.store = store
+            syncer.run_id = "run-1"
+            syncer.client = client
+            syncer._event = threading.Event()
+            syncer._stop = threading.Event()
+            syncer._thread = None
+            syncer.last_error = None
+            syncer._last_sync_at = 0.0
+            syncer._started_at = 0.0
+            syncer._last_output_at = 0.0
+            syncer._initial_synced = False
+            syncer._synced_output_len = 0
+            syncer._synced_stdout_len = 0
+            syncer._synced_stderr_len = 0
+            syncer._failure_count = 0
+            syncer._next_retry_at = 0.0
+
+            with patch.object(cloud_module, "heartbeat_state_path", return_value=home / "heartbeat.json"):
+                syncer._sync_once(force=False)
+                syncer._sync_once(force=True)
+
+            self.assertEqual(client.requests, [])
+
+    def test_heartbeat_state_path_sits_next_to_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict("os.environ", {"HAOLEME_HOME": tmp}, clear=False):
+                self.assertEqual(heartbeat_state_path(), Path(tmp) / "heartbeat.json")
 
 
 def sample_run_record():

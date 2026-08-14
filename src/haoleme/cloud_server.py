@@ -540,55 +540,30 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "missing run", "code": "missing_run"}, status=HTTPStatus.BAD_REQUEST)
                 return
             if payload.get("append"):
-                stored = append_run_update(self.server.db_path, auth.account_key, run, auth)
-                if stored is None:
-                    self.send_json({"error": "run not found", "code": "run_not_found"}, status=HTTPStatus.NOT_FOUND)
+                result = apply_run_append(self.server, auth, run)
+                if not result.get("ok"):
+                    status = (
+                        HTTPStatus.NOT_FOUND
+                        if result.get("code") == "run_not_found"
+                        else HTTPStatus.BAD_REQUEST
+                    )
+                    self.send_json({"error": result.get("error"), "code": result.get("code")}, status=status)
                     return
-                if auth.scope == "write":
-                    stored["deviceId"] = auth.device_id
-                    if not stored.get("deviceName"):
-                        stored["deviceName"] = auth.device_name
-                stream_chunk = stored.pop("_streamOutputChunk", None)
-                stream_append = str(stored.pop("_streamOutputAppend", "") or "")
-                event = stream_run_payload(stored)
-                if isinstance(stream_chunk, dict):
-                    event["chunk"] = stream_chunk
-                    event["outputChunkCount"] = stored.get("outputChunkCount", 0)
-                    self.server.notify_stream(auth.account_key, "tail_delta", event)
-                elif stream_append:
-                    event["outputAppend"] = stream_append
-                    self.server.notify_stream(auth.account_key, "tail_delta", event)
-                else:
-                    self.server.notify_stream(auth.account_key, "run_patch", event)
                 self.send_json({
                     "ok": True,
-                    "outputLength": stored.get("outputLength", 0),
-                    "outputChunks": stored.get("outputChunkCount", 0),
+                    "outputLength": result.get("outputLength", 0),
+                    "outputChunks": result.get("outputChunks", 0),
                 })
                 return
-            stored = normalize_run(run)
-            if server_requires_e2ee() and not is_e2ee_run(stored):
-                self.send_json(
-                    {"error": "end-to-end encryption required", "code": "e2ee_required"},
-                    status=HTTPStatus.BAD_REQUEST,
+            result = apply_run_upsert(self.server, auth, run)
+            if not result.get("ok"):
+                status = (
+                    HTTPStatus.NOT_FOUND
+                    if result.get("code") == "run_not_found"
+                    else HTTPStatus.BAD_REQUEST
                 )
+                self.send_json({"error": result.get("error"), "code": result.get("code")}, status=status)
                 return
-            if auth.scope == "write":
-                stored["deviceId"] = auth.device_id
-                if not stored.get("deviceName"):
-                    stored["deviceName"] = auth.device_name
-            upsert_run(self.server.db_path, auth.account_key, stored)
-            received_at = iso_now()
-            if stored.get("deviceId"):
-                upsert_device(
-                    self.server.db_path,
-                    auth.account_key,
-                    stored.get("deviceId", ""),
-                    stored.get("deviceName", "") or "好了么 CLI",
-                    received_at,
-                )
-            touch_token(self.server.db_path, auth.token_hash, received_at)
-            self.server.notify_stream(auth.account_key, "run_patch", stream_run_payload(stored))
             self.send_json({"ok": True})
             return
 
@@ -817,57 +792,18 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
 
     def device_heartbeat(self, auth: AuthContext) -> None:
         payload = self.read_json()
-        if auth.scope == "write":
-            device_id = auth.device_id
-            device_name = auth.device_name
-        else:
-            device_id = str(payload.get("deviceId") or "").strip()
-            device_name = str(payload.get("deviceName") or "").strip()
-        if not device_id:
-            self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
+        result = apply_device_heartbeat(self.server, auth, payload)
+        if not result.get("ok"):
+            self.send_json(
+                {"error": result.get("error"), "code": result.get("code")},
+                status=HTTPStatus.BAD_REQUEST,
+            )
             return
-
-        gpus = sanitize_gpus(payload.get("gpus")) if "gpus" in payload else None
-        cpu = sanitize_cpu(payload.get("cpu")) if "cpu" in payload else None
-        autostart_enabled = bool(payload.get("autostartEnabled")) if "autostartEnabled" in payload else None
-        seen_at = iso_now()
-        device = record_device_heartbeat(
-            self.server.db_path,
-            auth.account_key,
-            device_id,
-            device_name or "好了么 CLI",
-            seen_at,
-            gpus=gpus,
-            cpu=cpu,
-            autostart_enabled=autostart_enabled,
-        )
-        touch_token(self.server.db_path, auth.token_hash, seen_at)
-        actions = claim_pending_run_actions(
-            self.server.db_path,
-            auth.account_key,
-            device_id,
-            now=seen_at,
-            limit=REMOTE_ACTIONS_PER_HEARTBEAT,
-        )
-        hb: dict[str, Any] = {
-            "deviceId": device_id,
-            "online": True,
-            "lastSeenAt": seen_at,
-        }
-        if device:
-            if device.get("name"):
-                hb["name"] = device.get("name")
-            if device.get("cpu") is not None:
-                hb["cpu"] = device.get("cpu")
-            if device.get("gpus") is not None:
-                hb["gpus"] = device.get("gpus")
-            hb["autostartEnabled"] = bool(device.get("autostartEnabled"))
-        self.server.notify_stream(auth.account_key, "hb", hb)
         self.send_json({
             "ok": True,
-            "device": device,
-            "onlineWindowSeconds": DEVICE_ONLINE_WINDOW_SECONDS,
-            "actions": actions,
+            "device": result.get("device"),
+            "onlineWindowSeconds": result.get("onlineWindowSeconds", DEVICE_ONLINE_WINDOW_SECONDS),
+            "actions": result.get("actions") or [],
         })
 
     def do_DELETE(self) -> None:
@@ -4132,6 +4068,221 @@ def is_recent_timestamp_at(value: str, window_seconds: int, now: str) -> bool:
     return (now_timestamp - timestamp) <= window_seconds
 
 
+def apply_device_heartbeat(
+    server: HaolemeCloudServer,
+    auth: AuthContext,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    if auth.scope == "write":
+        device_id = auth.device_id
+        device_name = auth.device_name
+    else:
+        device_id = str(data.get("deviceId") or "").strip()
+        device_name = str(data.get("deviceName") or "").strip()
+    if not device_id:
+        return {"ok": False, "code": "missing_device_id", "error": "missing device id"}
+
+    gpus = sanitize_gpus(data.get("gpus")) if "gpus" in data else None
+    cpu = sanitize_cpu(data.get("cpu")) if "cpu" in data else None
+    autostart_enabled = bool(data.get("autostartEnabled")) if "autostartEnabled" in data else None
+    seen_at = iso_now()
+    device = record_device_heartbeat(
+        server.db_path,
+        auth.account_key,
+        device_id,
+        device_name or "好了么 CLI",
+        seen_at,
+        gpus=gpus,
+        cpu=cpu,
+        autostart_enabled=autostart_enabled,
+    )
+    touch_token(server.db_path, auth.token_hash, seen_at)
+    actions = claim_pending_run_actions(
+        server.db_path,
+        auth.account_key,
+        device_id,
+        now=seen_at,
+        limit=REMOTE_ACTIONS_PER_HEARTBEAT,
+    )
+    hb: dict[str, Any] = {
+        "deviceId": device_id,
+        "online": True,
+        "lastSeenAt": seen_at,
+    }
+    if device:
+        if device.get("name"):
+            hb["name"] = device.get("name")
+        if device.get("cpu") is not None:
+            hb["cpu"] = device.get("cpu")
+        if device.get("gpus") is not None:
+            hb["gpus"] = device.get("gpus")
+        hb["autostartEnabled"] = bool(device.get("autostartEnabled"))
+    server.notify_stream(auth.account_key, "hb", hb)
+    return {
+        "ok": True,
+        "device": device,
+        "onlineWindowSeconds": DEVICE_ONLINE_WINDOW_SECONDS,
+        "actions": actions,
+        "hb": hb,
+    }
+
+
+def apply_device_presence_offline(server: HaolemeCloudServer, auth: AuthContext) -> dict[str, Any]:
+    device_id = auth.device_id
+    if not device_id:
+        return {"ok": False, "code": "missing_device_id", "error": "missing device id"}
+    hb: dict[str, Any] = {
+        "deviceId": device_id,
+        "online": False,
+    }
+    if auth.device_name:
+        hb["name"] = auth.device_name
+    server.notify_stream(auth.account_key, "hb", hb)
+    return {"ok": True, "hb": hb}
+
+
+def apply_run_upsert(server: HaolemeCloudServer, auth: AuthContext, run: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(run, dict) or not run.get("id"):
+        return {"ok": False, "code": "missing_run", "error": "missing run"}
+    stored = normalize_run(run)
+    if server_requires_e2ee() and not is_e2ee_run(stored):
+        return {"ok": False, "code": "e2ee_required", "error": "end-to-end encryption required"}
+    if auth.scope == "write":
+        stored["deviceId"] = auth.device_id
+        if not stored.get("deviceName"):
+            stored["deviceName"] = auth.device_name
+    upsert_run(server.db_path, auth.account_key, stored)
+    received_at = iso_now()
+    if stored.get("deviceId"):
+        upsert_device(
+            server.db_path,
+            auth.account_key,
+            stored.get("deviceId", ""),
+            stored.get("deviceName", "") or "好了么 CLI",
+            received_at,
+        )
+    touch_token(server.db_path, auth.token_hash, received_at)
+    server.notify_stream(auth.account_key, "run_patch", stream_run_payload(stored))
+    return {"ok": True, "run": stored}
+
+
+def apply_run_append(server: HaolemeCloudServer, auth: AuthContext, run: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(run, dict) or not run.get("id"):
+        return {"ok": False, "code": "missing_run", "error": "missing run"}
+    stored = append_run_update(server.db_path, auth.account_key, run, auth)
+    if stored is None:
+        return {"ok": False, "code": "run_not_found", "error": "run not found"}
+    if auth.scope == "write":
+        stored["deviceId"] = auth.device_id
+        if not stored.get("deviceName"):
+            stored["deviceName"] = auth.device_name
+    stream_chunk = stored.pop("_streamOutputChunk", None)
+    stream_append = str(stored.pop("_streamOutputAppend", "") or "")
+    event = stream_run_payload(stored)
+    if isinstance(stream_chunk, dict):
+        event["chunk"] = stream_chunk
+        event["outputChunkCount"] = stored.get("outputChunkCount", 0)
+        server.notify_stream(auth.account_key, "tail_delta", event)
+    elif stream_append:
+        event["outputAppend"] = stream_append
+        server.notify_stream(auth.account_key, "tail_delta", event)
+    else:
+        server.notify_stream(auth.account_key, "run_patch", event)
+    return {
+        "ok": True,
+        "outputLength": stored.get("outputLength", 0),
+        "outputChunks": stored.get("outputChunkCount", 0),
+        "run": stored,
+    }
+
+
+def pending_device_controls(server: HaolemeCloudServer, auth: AuthContext) -> dict[str, list[dict[str, Any]]]:
+    device_id = auth.device_id
+    if not device_id:
+        return {"actions": [], "interrupts": []}
+    return {
+        "actions": claim_pending_run_actions(
+            server.db_path,
+            auth.account_key,
+            device_id,
+            limit=REMOTE_ACTIONS_PER_HEARTBEAT,
+        ),
+        "interrupts": list_pending_interrupts(server.db_path, auth.account_key, device_id),
+    }
+
+
+def apply_device_ws_message(
+    server: HaolemeCloudServer,
+    auth: AuthContext,
+    message: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(message, dict):
+        return {"t": "error", "code": "bad_message"}
+    kind = str(message.get("t") or "").strip()
+    if kind == "hb":
+        result = apply_device_heartbeat(server, auth, message)
+    elif kind == "run_upsert":
+        run = message.get("run") if isinstance(message.get("run"), dict) else None
+        result = apply_run_upsert(server, auth, run or {})
+    elif kind == "run_append":
+        run = message.get("run") if isinstance(message.get("run"), dict) else None
+        result = apply_run_append(server, auth, run or {})
+    else:
+        return {"t": "error", "code": "unknown_type"}
+    if not result.get("ok"):
+        return {"t": "error", "code": str(result.get("code") or "bad_request")}
+    reply: dict[str, Any] = {"t": "ack", "ok": True}
+    if "outputLength" in result:
+        reply["outputLength"] = result.get("outputLength", 0)
+        reply["outputChunks"] = result.get("outputChunks", 0)
+    controls = pending_device_controls(server, auth)
+    if kind == "hb":
+        extra_actions = list(result.get("actions") or [])
+        seen = {str(item.get("id") or "") for item in extra_actions if isinstance(item, dict)}
+        for item in controls["actions"]:
+            action_id = str(item.get("id") or "")
+            if action_id and action_id not in seen:
+                extra_actions.append(item)
+        controls["actions"] = extra_actions
+    if controls["actions"] or controls["interrupts"]:
+        reply["actions"] = controls["actions"]
+        reply["interrupts"] = controls["interrupts"]
+    return reply
+
+
+def allow_device_ws_write(server: HaolemeCloudServer, auth: AuthContext) -> bool:
+    return allow_rate(
+        server.write_attempts,
+        server.write_attempts_lock,
+        auth.token_hash,
+        WRITE_RATE_LIMIT,
+        READ_RATE_WINDOW_SECONDS,
+    )
+
+
+def websocket_request_path(websocket: Any, path: str | None) -> str:
+    if path:
+        return path
+    request = getattr(websocket, "request", None)
+    request_path = getattr(request, "path", None) or getattr(websocket, "path", None)
+    return str(request_path or "/")
+
+
+def websocket_authorization_token(websocket: Any, query: dict[str, list[str]]) -> str:
+    headers = getattr(websocket, "request_headers", None)
+    if headers is None:
+        request = getattr(websocket, "request", None)
+        headers = getattr(request, "headers", {}) if request is not None else {}
+    try:
+        auth_header = str(headers.get("Authorization") or "")
+    except Exception:
+        auth_header = ""
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return first_query_value(query, "token")
+
+
 def websocket_server_thread(server: HaolemeCloudServer, host: str, port: int) -> threading.Thread:
     def run() -> None:
         try:
@@ -4140,14 +4291,9 @@ def websocket_server_thread(server: HaolemeCloudServer, host: str, port: int) ->
             cloud_log({"ts": iso_now(), "event": "websocket_disabled", "error": "websockets dependency missing"})
             return
 
-        async def handle(websocket, path: str) -> None:
-            parsed = urlparse(path or "/")
-            if parsed.path != "/ws/app":
-                await websocket.close(code=1008, reason="unknown endpoint")
-                return
-            auth_header = str(websocket.request_headers.get("Authorization") or "")
+        async def handle_app_socket(websocket, parsed) -> None:
             query = parse_qs(parsed.query)
-            token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else first_query_value(query, "token")
+            token = websocket_authorization_token(websocket, query)
             auth = auth_context_for_token(server.db_path, token)
             if auth is None or auth.scope != "admin":
                 await websocket.close(code=1008, reason="authentication required")
@@ -4173,6 +4319,96 @@ def websocket_server_thread(server: HaolemeCloudServer, host: str, port: int) ->
                 event = {"type": event_type, "revision": revision}
                 event.update(payload or {})
                 await websocket.send(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+
+        async def handle_device_socket(websocket, parsed) -> None:
+            query = parse_qs(parsed.query)
+            token = websocket_authorization_token(websocket, query)
+            auth = auth_context_for_token(server.db_path, token)
+            if auth is None or auth.scope != "write" or not auth.device_id:
+                await websocket.close(code=1008, reason="write token required")
+                return
+            hello = apply_device_heartbeat(server, auth, {})
+            controls = pending_device_controls(server, auth)
+            actions = list(hello.get("actions") or [])
+            seen = {str(item.get("id") or "") for item in actions if isinstance(item, dict)}
+            for item in controls["actions"]:
+                action_id = str(item.get("id") or "")
+                if action_id and action_id not in seen:
+                    actions.append(item)
+            if actions or controls["interrupts"]:
+                await websocket.send(
+                    json.dumps(
+                        {"t": "actions", "actions": actions, "interrupts": controls["interrupts"]},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+
+            async def recv_loop() -> None:
+                async for raw in websocket:
+                    try:
+                        message = json.loads(raw)
+                    except (TypeError, json.JSONDecodeError):
+                        await websocket.send(json.dumps({"t": "error", "code": "bad_json"}, separators=(",", ":")))
+                        continue
+                    if not allow_device_ws_write(server, auth):
+                        await websocket.send(
+                            json.dumps({"t": "error", "code": "write_rate_limited"}, separators=(",", ":"))
+                        )
+                        continue
+                    reply = apply_device_ws_message(server, auth, message if isinstance(message, dict) else {})
+                    await websocket.send(json.dumps(reply, ensure_ascii=False, separators=(",", ":")))
+
+            async def action_loop() -> None:
+                generation = server.action_generation
+                loop = asyncio.get_running_loop()
+                while True:
+                    generation = await loop.run_in_executor(
+                        None,
+                        server.wait_for_action_notification,
+                        generation,
+                        2.0,
+                    )
+                    controls = pending_device_controls(server, auth)
+                    if controls["actions"] or controls["interrupts"]:
+                        await websocket.send(
+                            json.dumps({"t": "actions", **controls}, ensure_ascii=False, separators=(",", ":"))
+                        )
+
+            recv_task = asyncio.create_task(recv_loop())
+            action_task = asyncio.create_task(action_loop())
+            try:
+                done, pending_tasks = await asyncio.wait(
+                    {recv_task, action_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending_tasks:
+                    task.cancel()
+                for task in done:
+                    if task.cancelled():
+                        continue
+                    exc = task.exception()
+                    if exc is None or isinstance(exc, (asyncio.CancelledError, ConnectionError)):
+                        continue
+                    if "ConnectionClosed" in type(exc).__name__:
+                        continue
+                    raise exc
+            finally:
+                for task in (recv_task, action_task):
+                    if not task.done():
+                        task.cancel()
+                apply_device_presence_offline(server, auth)
+                server.notify_action_waiters()
+
+        async def handle(websocket, path: str | None = None) -> None:
+            parsed = urlparse(websocket_request_path(websocket, path))
+            if parsed.path == "/ws/app":
+                await handle_app_socket(websocket, parsed)
+                return
+            if parsed.path == "/ws/device":
+                await handle_device_socket(websocket, parsed)
+                return
+            await websocket.close(code=1008, reason="unknown endpoint")
 
         async def serve_forever() -> None:
             async with websocket_serve(

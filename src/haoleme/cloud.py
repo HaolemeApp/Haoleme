@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import os
@@ -11,7 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
@@ -56,6 +57,10 @@ SYNC_RETRY_MAX_SECONDS = 30.0
 INTERRUPT_POLL_SECONDS = 1.0
 OUTPUT_CHUNK_BYTES = 256 * 1024
 LIVE_SYNC_MAX_CHUNKS = 4
+DEVICE_WS_SYNC_INTERVAL_SECONDS = 1.0
+DEVICE_WS_HEARTBEAT_INTERVAL_SECONDS = 10.0
+DEVICE_WS_RECONNECT_MIN_SECONDS = 1.0
+DEVICE_WS_RECONNECT_MAX_SECONDS = 60.0
 LEGACY_CLOUD_URLS = {
     "http://api.haoleme.cloud",
 }
@@ -133,6 +138,45 @@ def describe_cloud_error(exc: BaseException) -> str:
 
 def default_config_path() -> Path:
     return default_data_dir() / "config.json"
+
+
+def heartbeat_state_path() -> Path:
+    return default_config_path().with_name("heartbeat.json")
+
+
+def read_heartbeat_state(path: Path | None = None) -> dict[str, Any]:
+    state_path = path or heartbeat_state_path()
+    try:
+        raw = state_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_heartbeat_state(path: Path | None = None, **fields: object) -> None:
+    state_path = path or heartbeat_state_path()
+    state = read_heartbeat_state(state_path)
+    state.update(fields)
+    state["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    if os.name == "posix":
+        try:
+            state_path.chmod(0o600)
+        except OSError:
+            pass
+
+
+def device_ws_connected(path: Path | None = None) -> bool:
+    return bool(read_heartbeat_state(path).get("wsConnected"))
+
+
+def device_websocket_url(api_url: str) -> str:
+    parsed = urllib.parse.urlsplit((api_url or "").strip())
+    scheme = "wss" if parsed.scheme.lower() == "https" else "ws"
+    netloc = parsed.netloc or parsed.path
+    return urllib.parse.urlunsplit((scheme, netloc, "/ws/device", "", ""))
 
 
 @dataclass(frozen=True)
@@ -264,6 +308,95 @@ def get_or_create_machine_id(path: Path | None = None) -> str:
     return machine_id
 
 
+def encode_run_upsert(config: CloudConfig, run: RunRecord, *, include_output: bool = True) -> dict[str, Any]:
+    payload = run.to_dict()
+    if not include_output:
+        # The authoritative cloud cursor advances only after a chunk is
+        # committed. Advertising the local total here would make a retry
+        # look fully uploaded before any output reached the server.
+        payload["outputLength"] = 0
+    meta = client_run_metadata()
+    payload["cliVersion"] = meta["cliVersion"]
+    payload["os"] = meta["os"]
+    payload["hostname"] = meta["hostname"]
+    if config.device_id:
+        payload["deviceId"] = config.device_id
+    if config.device_name:
+        payload["deviceName"] = config.device_name
+    payload.update(progress_fields(str(run.output_tail or "")))
+    if is_valid_account_key(config.encryption_key):
+        return encrypt_run_payload(payload, config.encryption_key, include_output=include_output)
+    if not env_flag("HAOLEME_ALLOW_PLAINTEXT_CLOUD_RUNS", False):
+        raise RuntimeError("E2EE is not configured; run `hao login` from the app again before cloud sync")
+    return payload
+
+
+def encode_run_append(
+    config: CloudConfig,
+    run: RunRecord,
+    deltas: dict[str, str],
+    output_start: int | None = None,
+    output_end: int | None = None,
+) -> dict[str, Any]:
+    patch: dict[str, Any] = {
+        "id": run.id,
+        "status": run.status,
+        "pid": run.pid,
+        "exitCode": run.exit_code,
+        "endedAt": run.ended_at,
+        "updatedAt": run.updated_at,
+        "project": run.project,
+        "outputLength": run.output_length if output_end is None else output_end,
+    }
+    if output_start is not None:
+        patch["outputStart"] = max(0, output_start)
+    if config.device_id:
+        patch["deviceId"] = config.device_id
+    if config.device_name:
+        patch["deviceName"] = config.device_name
+    patch.update(progress_fields(str(run.output_tail or deltas.get("output_tail") or "")))
+    output_delta = deltas.get("output_tail") or ""
+    stdout_delta = deltas.get("stdout_tail") or ""
+    stderr_delta = deltas.get("stderr_tail") or ""
+    if is_valid_account_key(config.encryption_key):
+        chunk_fields = {
+            "outputTail": output_delta,
+            "stdoutTail": stdout_delta,
+            "stderrTail": stderr_delta,
+        }
+        chunk_fields = {key: value for key, value in chunk_fields.items() if value}
+        if chunk_fields:
+            patch["e2eeOutputChunk"] = encrypt_output_chunk(run.id, config.encryption_key, chunk_fields)
+        return patch
+    if output_delta:
+        patch["outputDelta"] = output_delta
+    if stdout_delta:
+        patch["stdoutDelta"] = stdout_delta
+    if stderr_delta:
+        patch["stderrDelta"] = stderr_delta
+    return patch
+
+
+def encode_heartbeat(
+    config: CloudConfig,
+    gpus: list[dict[str, Any]] | None = None,
+    cpu: dict[str, Any] | None = None,
+    autostart_enabled: bool | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if config.device_id:
+        payload["deviceId"] = config.device_id
+    if config.device_name:
+        payload["deviceName"] = config.device_name
+    if gpus is not None:
+        payload["gpus"] = gpus
+    if cpu is not None:
+        payload["cpu"] = cpu
+    if autostart_enabled is not None:
+        payload["autostartEnabled"] = bool(autostart_enabled)
+    return payload
+
+
 class CloudClient:
     def __init__(self, config: CloudConfig, timeout: float = 5.0) -> None:
         self.config = config
@@ -273,25 +406,7 @@ class CloudClient:
         return self.request("GET", "/health")
 
     def upsert_run(self, run: RunRecord, *, include_output: bool = True) -> None:
-        payload = run.to_dict()
-        if not include_output:
-            # The authoritative cloud cursor advances only after a chunk is
-            # committed. Advertising the local total here would make a retry
-            # look fully uploaded before any output reached the server.
-            payload["outputLength"] = 0
-        meta = client_run_metadata()
-        payload["cliVersion"] = meta["cliVersion"]
-        payload["os"] = meta["os"]
-        payload["hostname"] = meta["hostname"]
-        if self.config.device_id:
-            payload["deviceId"] = self.config.device_id
-        if self.config.device_name:
-            payload["deviceName"] = self.config.device_name
-        payload.update(progress_fields(str(run.output_tail or "")))
-        if is_valid_account_key(self.config.encryption_key):
-            payload = encrypt_run_payload(payload, self.config.encryption_key, include_output=include_output)
-        elif not env_flag("HAOLEME_ALLOW_PLAINTEXT_CLOUD_RUNS", False):
-            raise RuntimeError("E2EE is not configured; run `hao login` from the app again before cloud sync")
+        payload = encode_run_upsert(self.config, run, include_output=include_output)
         self.request("POST", "/api/runs", {"run": payload})
 
     def append_run_update(
@@ -301,42 +416,7 @@ class CloudClient:
         output_start: int | None = None,
         output_end: int | None = None,
     ) -> dict[str, Any]:
-        patch: dict[str, Any] = {
-            "id": run.id,
-            "status": run.status,
-            "pid": run.pid,
-            "exitCode": run.exit_code,
-            "endedAt": run.ended_at,
-            "updatedAt": run.updated_at,
-            "project": run.project,
-            "outputLength": run.output_length if output_end is None else output_end,
-        }
-        if output_start is not None:
-            patch["outputStart"] = max(0, output_start)
-        if self.config.device_id:
-            patch["deviceId"] = self.config.device_id
-        if self.config.device_name:
-            patch["deviceName"] = self.config.device_name
-        patch.update(progress_fields(str(run.output_tail or deltas.get("output_tail") or "")))
-        output_delta = deltas.get("output_tail") or ""
-        stdout_delta = deltas.get("stdout_tail") or ""
-        stderr_delta = deltas.get("stderr_tail") or ""
-        if is_valid_account_key(self.config.encryption_key):
-            chunk_fields = {
-                "outputTail": output_delta,
-                "stdoutTail": stdout_delta,
-                "stderrTail": stderr_delta,
-            }
-            chunk_fields = {key: value for key, value in chunk_fields.items() if value}
-            if chunk_fields:
-                patch["e2eeOutputChunk"] = encrypt_output_chunk(run.id, self.config.encryption_key, chunk_fields)
-        else:
-            if output_delta:
-                patch["outputDelta"] = output_delta
-            if stdout_delta:
-                patch["stdoutDelta"] = stdout_delta
-            if stderr_delta:
-                patch["stderrDelta"] = stderr_delta
+        patch = encode_run_append(self.config, run, deltas, output_start, output_end)
         return self.request("POST", "/api/runs", {"append": True, "run": patch})
 
     def heartbeat(
@@ -345,18 +425,7 @@ class CloudClient:
         cpu: dict[str, Any] | None = None,
         autostart_enabled: bool | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {}
-        if self.config.device_id:
-            payload["deviceId"] = self.config.device_id
-        if self.config.device_name:
-            payload["deviceName"] = self.config.device_name
-        if gpus is not None:
-            payload["gpus"] = gpus
-        if cpu is not None:
-            payload["cpu"] = cpu
-        if autostart_enabled is not None:
-            payload["autostartEnabled"] = bool(autostart_enabled)
-        return self.request("POST", "/api/devices/heartbeat", payload)
+        return self.request("POST", "/api/devices/heartbeat", encode_heartbeat(self.config, gpus, cpu, autostart_enabled))
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         payload = self.request("GET", f"/api/runs/{run_id}")
@@ -653,6 +722,8 @@ class CloudSyncer:
     def _sync_once_locked(self, force: bool = False) -> None:
         if self.client is None:
             return
+        if device_ws_connected():
+            return
         run = self.store.get_run(self.run_id)
         if run is None:
             return
@@ -720,6 +791,269 @@ def utf8_prefix(text: str, max_bytes: int = OUTPUT_CHUNK_BYTES) -> str:
         else:
             high = middle - 1
     return text[:low]
+
+
+@dataclass(frozen=True)
+class DeviceSyncOp:
+    kind: str
+    run: RunRecord
+    output_start: int | None = None
+    output_end: int | None = None
+    deltas: dict[str, str] = field(default_factory=dict)
+
+
+def run_sync_fingerprint(run: RunRecord) -> tuple[Any, ...]:
+    fields = progress_fields(str(run.output_tail or ""))
+    return (
+        run.status,
+        run.pid,
+        run.exit_code,
+        run.ended_at,
+        fields.get("progress"),
+        fields.get("lastLoss"),
+        fields.get("etaSeconds"),
+    )
+
+
+def compute_device_sync_ops(
+    store: RunStore,
+    last_meta: dict[str, tuple[Any, ...]],
+    *,
+    max_chunks: int = LIVE_SYNC_MAX_CHUNKS,
+) -> list[DeviceSyncOp]:
+    ops: list[DeviceSyncOp] = []
+    seen: set[str] = set()
+    runs: list[RunRecord] = []
+    for run in store.list_active_runs(limit=100):
+        runs.append(run)
+        seen.add(run.id)
+    for run in store.list_unsynced_runs(limit=100):
+        if run.id in seen:
+            continue
+        runs.append(run)
+        seen.add(run.id)
+    for run in runs:
+        fingerprint = run_sync_fingerprint(run)
+        if last_meta.get(run.id) != fingerprint:
+            ops.append(DeviceSyncOp("upsert", run))
+        cursor = run.cloud_output_cursor
+        chunks = 0
+        while chunks < max(1, max_chunks):
+            delta, start, end = next_output_chunk(run, cursor)
+            if not delta:
+                break
+            ops.append(
+                DeviceSyncOp(
+                    "append",
+                    run,
+                    start,
+                    end,
+                    {"output_tail": delta, "stdout_tail": "", "stderr_tail": ""},
+                )
+            )
+            cursor = end
+            chunks += 1
+    return ops
+
+
+class DeviceSocket:
+    def __init__(
+        self,
+        config: CloudConfig,
+        *,
+        store_factory: Callable[[], RunStore] | None = None,
+        metrics_fn: Callable[[], tuple[list[dict[str, Any]], dict[str, Any], str]] | None = None,
+        autostart_fn: Callable[[], bool] | None = None,
+        on_actions: Callable[[list[dict[str, Any]], list[dict[str, Any]]], None] | None = None,
+        on_heartbeat_ok: Callable[[], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+        state_path: Path | None = None,
+    ) -> None:
+        self.config = config
+        self.store_factory = store_factory or RunStore
+        self.metrics_fn = metrics_fn
+        self.autostart_fn = autostart_fn
+        self.on_actions = on_actions
+        self.on_heartbeat_ok = on_heartbeat_ok
+        self.on_error = on_error
+        self.state_path = state_path
+        self._stop = threading.Event()
+        self._connected = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.last_error = ""
+
+    @property
+    def connected(self) -> bool:
+        return self._connected.is_set()
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="haoleme-device-ws", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=3)
+        self._mark_disconnected()
+
+    def _mark_disconnected(self) -> None:
+        was_connected = self._connected.is_set()
+        self._connected.clear()
+        if was_connected:
+            write_heartbeat_state(self.state_path, wsConnected=False)
+
+    def _run(self) -> None:
+        try:
+            asyncio.run(self._main())
+        except Exception as exc:
+            self.last_error = str(exc)[:300]
+            if self.on_error is not None:
+                self.on_error(self.last_error)
+        finally:
+            self._mark_disconnected()
+
+    async def _main(self) -> None:
+        delay = DEVICE_WS_RECONNECT_MIN_SECONDS
+        while not self._stop.is_set():
+            try:
+                await self._session()
+                delay = DEVICE_WS_RECONNECT_MIN_SECONDS
+            except Exception as exc:
+                self.last_error = str(exc)[:300]
+                if self.on_error is not None:
+                    self.on_error(self.last_error)
+            self._mark_disconnected()
+            if self._stop.is_set():
+                return
+            await asyncio.sleep(delay)
+            delay = min(DEVICE_WS_RECONNECT_MAX_SECONDS, max(DEVICE_WS_RECONNECT_MIN_SECONDS, delay * 2))
+
+    async def _session(self) -> None:
+        try:
+            from websockets.legacy.client import connect as ws_connect
+        except ImportError as exc:
+            raise RuntimeError("websockets dependency missing") from exc
+
+        config = CloudConfig.load() or self.config
+        url = device_websocket_url(config.api_url)
+        headers = {
+            "Authorization": f"Bearer {config.token}",
+            "User-Agent": USER_AGENT,
+        }
+        async with ws_connect(
+            url,
+            extra_headers=headers,
+            ping_interval=25,
+            ping_timeout=20,
+            max_size=2 * 1024 * 1024,
+            open_timeout=8,
+        ) as websocket:
+            self._connected.set()
+            write_heartbeat_state(self.state_path, wsConnected=True)
+            last_meta: dict[str, tuple[Any, ...]] = {}
+            last_hb = 0.0
+            await self._send_heartbeat(websocket, config)
+            last_hb = time.monotonic()
+            if self.on_heartbeat_ok is not None:
+                self.on_heartbeat_ok()
+
+            async def recv_loop() -> None:
+                async for raw in websocket:
+                    try:
+                        message = json.loads(raw)
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(message, dict):
+                        continue
+                    self._handle_server_message(message)
+
+            recv_task = asyncio.create_task(recv_loop())
+            try:
+                while not self._stop.is_set():
+                    now = time.monotonic()
+                    if now - last_hb >= DEVICE_WS_HEARTBEAT_INTERVAL_SECONDS:
+                        await self._send_heartbeat(websocket, config)
+                        last_hb = now
+                        if self.on_heartbeat_ok is not None:
+                            self.on_heartbeat_ok()
+                    await self._flush_runs(websocket, config, last_meta)
+                    done, _pending = await asyncio.wait({recv_task}, timeout=DEVICE_WS_SYNC_INTERVAL_SECONDS)
+                    if recv_task in done:
+                        if recv_task.cancelled():
+                            return
+                        exc = recv_task.exception()
+                        if exc is not None and "ConnectionClosed" not in type(exc).__name__:
+                            raise exc
+                        return
+            finally:
+                if not recv_task.done():
+                    recv_task.cancel()
+
+    async def _send_heartbeat(self, websocket: Any, config: CloudConfig) -> None:
+        gpus: list[dict[str, Any]] | None = None
+        cpu: dict[str, Any] | None = None
+        if self.metrics_fn is not None:
+            try:
+                gpus, cpu, _error = self.metrics_fn()
+            except Exception:
+                gpus, cpu = [], {}
+        autostart = None
+        if self.autostart_fn is not None:
+            try:
+                autostart = bool(self.autostart_fn())
+            except Exception:
+                autostart = None
+        payload = encode_heartbeat(config, gpus, cpu, autostart)
+        payload["t"] = "hb"
+        await websocket.send(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+
+    async def _flush_runs(self, websocket: Any, config: CloudConfig, last_meta: dict[str, tuple[Any, ...]]) -> None:
+        store = self.store_factory()
+        for op in compute_device_sync_ops(store, last_meta):
+            try:
+                if op.kind == "upsert":
+                    payload = encode_run_upsert(config, op.run, include_output=False)
+                    message = {"t": "run_upsert", "run": payload}
+                else:
+                    payload = encode_run_append(
+                        config,
+                        op.run,
+                        op.deltas,
+                        op.output_start,
+                        op.output_end,
+                    )
+                    message = {"t": "run_append", "run": payload}
+            except Exception as exc:
+                self.last_error = str(exc)[:300]
+                if self.on_error is not None:
+                    self.on_error(self.last_error)
+                continue
+            await websocket.send(json.dumps(message, ensure_ascii=False, separators=(",", ":")))
+            if op.kind == "upsert":
+                last_meta[op.run.id] = run_sync_fingerprint(op.run)
+                continue
+            if op.output_end is not None:
+                store.mark_cloud_output_cursor(op.run.id, op.output_end)
+                if op.output_end >= op.run.output_length and op.run.status not in {"created", "running"}:
+                    store.mark_cloud_synced(op.run.id)
+
+    def _handle_server_message(self, message: dict[str, Any]) -> None:
+        kind = str(message.get("t") or "")
+        actions = message.get("actions") if isinstance(message.get("actions"), list) else []
+        interrupts = message.get("interrupts") if isinstance(message.get("interrupts"), list) else []
+        if kind == "error":
+            self.last_error = str(message.get("code") or "device_ws_error")
+            if self.on_error is not None:
+                self.on_error(self.last_error)
+            return
+        if (kind == "actions" or actions or interrupts) and self.on_actions is not None:
+            self.on_actions(
+                [item for item in actions if isinstance(item, dict)],
+                [item for item in interrupts if isinstance(item, dict)],
+            )
 
 
 def next_output_chunk(run: RunRecord, cursor: int) -> tuple[str, int, int]:

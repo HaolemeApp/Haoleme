@@ -12,6 +12,8 @@ from haoleme.cloud_server import (
     active_user_stats,
     AuthContext,
     append_run_update,
+    apply_device_presence_offline,
+    apply_device_ws_message,
     authenticate_device_token,
     build_run_fetch_payload,
     claim_pending_run_actions,
@@ -30,6 +32,7 @@ from haoleme.cloud_server import (
     expire_stale_running_runs,
     get_pair,
     get_run,
+    get_device,
     init_db,
     health_payload,
     HaolemeCloudServer,
@@ -66,6 +69,7 @@ from haoleme.cloud_server import (
     token_hash,
     upsert_device,
     upsert_run,
+    websocket_server_thread,
 )
 
 
@@ -1533,6 +1537,135 @@ class CloudServerAppendTest(unittest.TestCase):
             "stderrTail": "",
             "outputTail": "hello\n",
         }
+
+
+class DeviceWebsocketTest(unittest.TestCase):
+    def test_apply_device_ws_message_writes_and_notifies_stream(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 22)
+            try:
+                account_key = "account-key"
+                auth = AuthContext(
+                    account_key=account_key,
+                    token_hash="write-hash",
+                    scope="write",
+                    device_id="dev_1",
+                    device_name="Mac",
+                )
+                hb = apply_device_ws_message(
+                    server,
+                    auth,
+                    {"t": "hb", "cpu": {"utilization": 12, "memoryUtilization": 40}},
+                )
+                self.assertEqual(hb["t"], "ack")
+                device = get_device(db_path, account_key, "dev_1")
+                self.assertIsNotNone(device)
+                self.assertEqual(device["cpu"]["utilization"], 12)
+                revision, event_type, payload = server.wait_for_stream_event(account_key, 0, 0)
+                self.assertEqual(event_type, "hb")
+                self.assertTrue(payload["online"])
+                self.assertEqual(payload["deviceId"], "dev_1")
+
+                upsert = apply_device_ws_message(
+                    server,
+                    auth,
+                    {"t": "run_upsert", "run": CloudServerDeviceTest.sample_run(
+                        self, "run-1", "dev_1", "Mac", "running"
+                    )},
+                )
+                self.assertEqual(upsert["t"], "ack")
+                revision, event_type, payload = server.wait_for_stream_event(account_key, revision, 0)
+                self.assertEqual(event_type, "run_patch")
+                self.assertEqual(payload["runId"], "run-1")
+
+                appended = apply_device_ws_message(
+                    server,
+                    auth,
+                    {
+                        "t": "run_append",
+                        "run": {
+                            "id": "run-1",
+                            "status": "running",
+                            "outputDelta": "more\n",
+                            "outputLength": len("hello\nmore\n"),
+                        },
+                    },
+                )
+                self.assertEqual(appended["t"], "ack")
+                self.assertEqual(appended["outputLength"], len("hello\nmore\n"))
+                revision, event_type, payload = server.wait_for_stream_event(account_key, revision, 0)
+                self.assertEqual(event_type, "tail_delta")
+                self.assertEqual(payload.get("outputAppend"), "more\n")
+
+                apply_device_presence_offline(server, auth)
+                _revision, event_type, payload = server.wait_for_stream_event(account_key, revision, 0)
+                self.assertEqual(event_type, "hb")
+                self.assertFalse(payload["online"])
+                self.assertEqual(payload["deviceId"], "dev_1")
+            finally:
+                server.server_close()
+
+    def test_apply_device_ws_message_rejects_unknown_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = HaolemeCloudServer(("127.0.0.1", 0), Path(tmp) / "cloud.db", 22)
+            try:
+                auth = AuthContext(account_key="a", token_hash="h", scope="write", device_id="dev_1")
+                result = apply_device_ws_message(server, auth, {"t": "nope"})
+                self.assertEqual(result, {"t": "error", "code": "unknown_type"})
+            finally:
+                server.server_close()
+
+    def test_device_websocket_accepts_write_token_and_rejects_admin(self):
+        try:
+            from websockets.legacy.client import connect as ws_connect
+        except ImportError:
+            self.skipTest("websockets is not installed")
+
+        import asyncio
+        import socket
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            server = HaolemeCloudServer(("127.0.0.1", 0), db_path, 22)
+            account_key = token_hash("account-for-ws")
+            write_token = "device-write-token-for-ws-test"
+            admin_token = "app-admin-token-for-ws-test"
+            init_db(db_path)
+            store_device_token(db_path, account_key, "dev_ws", "WS Mac", write_token, iso_now())
+            store_app_token(db_path, account_key, "app_ws", "Test App", "android", admin_token, iso_now())
+            sock = socket.socket()
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            sock.close()
+            websocket_server_thread(server, "127.0.0.1", port)
+            time.sleep(0.3)
+
+            async def talk(path: str, token: str, payload=None):
+                url = f"ws://127.0.0.1:{port}{path}"
+                async with ws_connect(
+                    url,
+                    extra_headers={"Authorization": f"Bearer {token}"},
+                    open_timeout=3,
+                    close_timeout=1,
+                ) as websocket:
+                    if payload is not None:
+                        await websocket.send(json.dumps(payload))
+                    return await asyncio.wait_for(websocket.recv(), 3)
+
+            try:
+                reply = asyncio.run(talk("/ws/device", write_token, {"t": "hb", "cpu": {"utilization": 9}}))
+                parsed = json.loads(reply)
+                self.assertEqual(parsed.get("t"), "ack")
+                device = get_device(db_path, account_key, "dev_ws")
+                self.assertEqual(device["cpu"]["utilization"], 9)
+
+                with self.assertRaises(Exception):
+                    asyncio.run(talk("/ws/device", admin_token, {"t": "hb"}))
+                with self.assertRaises(Exception):
+                    asyncio.run(talk("/ws/app", write_token))
+            finally:
+                server.server_close()
 
 
 if __name__ == "__main__":
