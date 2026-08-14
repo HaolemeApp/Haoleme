@@ -8,6 +8,7 @@ services:
     environment:
       HAOLEME_RELAY_HOST: 0.0.0.0
       HAOLEME_RELAY_PORT: 8000
+      HAOLEME_CLOUD_WS_PORT: 8001
       HAOLEME_RELAY_DATA_DIR: /data
       HAOLEME_REQUIRE_E2EE: "1"
       HAOLEME_ALLOW_LEGACY_ADMIN_TOKENS: "0"
@@ -16,6 +17,7 @@ services:
       - relay_data:/data
     expose:
       - "8000"
+      - "8001"
     healthcheck:
       test: ["CMD", "python", "-m", "haoleme.relay", "health", "--db", "/data/relay.db"]
       interval: 30s

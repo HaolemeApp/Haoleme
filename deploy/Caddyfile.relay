@@ -7,5 +7,9 @@
 
 {$HAOLEME_RELAY_DOMAIN} {
     encode zstd gzip
-    reverse_proxy relay:8000
+    route {
+        @websocket path /ws/*
+        reverse_proxy @websocket relay:8001
+        reverse_proxy relay:8000
+    }
 }

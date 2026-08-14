@@ -14,7 +14,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 
 VOLUME ["/data"]
-EXPOSE 8000
+EXPOSE 8000 8001
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -m haoleme.cloud_server health --db "$HAOLEME_CLOUD_DB" >/dev/null || exit 1
 

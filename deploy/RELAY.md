@@ -63,6 +63,10 @@ Caddy obtains and renews HTTPS automatically. Verify the deployment:
 curl https://hao.example.com/health
 ```
 
+Caddy serves both HTTPS API traffic and secure `wss://` realtime updates on
+port 443. The Relay's internal ports 8000 (HTTP) and 8001 (WebSocket) stay
+inside the Compose network and do not need public firewall rules.
+
 Relay data is held in the `relay_data` Docker volume. Back it up regularly.
 
 ### 3. Pair a computer

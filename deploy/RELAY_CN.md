@@ -49,6 +49,10 @@ Caddy 会自动申请并续期 HTTPS 证书。使用以下命令验证部署：
 curl https://hao.example.com/health
 ```
 
+Caddy 会在 443 端口同时提供 HTTPS API 和加密的 `wss://` 实时更新。Relay
+内部的 8000（HTTP）与 8001（WebSocket）端口只留在 Compose 网络中，无需在
+公网防火墙开放。
+
 Relay 数据保存在 `relay_data` Docker 卷中，请定期备份。
 
 ### 3. 配对电脑

@@ -20,7 +20,11 @@ haoleme.example.com {
         format console
     }
 
-    reverse_proxy 127.0.0.1:8000
+    route {
+        @websocket path /ws/*
+        reverse_proxy @websocket 127.0.0.1:8001
+        reverse_proxy 127.0.0.1:8000
+    }
 }
 
 # Temporary compatibility for old clients. New apps and CLI should use HTTPS.
@@ -34,5 +38,9 @@ haoleme.example.com {
         format console
     }
 
-    reverse_proxy 127.0.0.1:8000
+    route {
+        @websocket path /ws/*
+        reverse_proxy @websocket 127.0.0.1:8001
+        reverse_proxy 127.0.0.1:8000
+    }
 }
