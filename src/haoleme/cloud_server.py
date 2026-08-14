@@ -1751,7 +1751,11 @@ def health_payload(db_path: Path, min_android_version_code: int, detailed: bool 
     try:
         with connect(db_path) as db:
             if detailed:
-                db.execute("PRAGMA quick_check").fetchone()
+                # A full quick_check scans the entire database and can stall
+                # live sync on large output stores. Health requests stay
+                # constant-time; scheduled backup/monitor jobs perform the
+                # heavier integrity audit instead.
+                db.execute("SELECT 1").fetchone()
                 for table in ("runs", "run_actions", "devices", "device_tokens", "app_tokens", "pairs", "space_join_codes"):
                     row = db.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
                     stats[table] = int(row["count"]) if row is not None else 0

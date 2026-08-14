@@ -3108,16 +3108,6 @@ def doctor_command(argv: Sequence[str]) -> int:
                 report("cloud disk", "OK" if disk.get("ok") else "WARN", detail)
         except Exception as exc:
             report("cloud health", "FAIL", describe_cloud_error(exc))
-        else:
-            # Doctor diagnoses only. Uploading a large historical backlog here
-            # used to turn an otherwise healthy check into repeated 413/429
-            # requests and a misleading second "cloud health" failure.
-            try:
-                devs = client.list_devices()
-                active_devs = sum(1 for d in devs if d.get("online"))
-                report("cloud devices", "OK", f"{len(devs)} total ({active_devs} online)")
-            except Exception as exc:
-                report("cloud devices", "WARN", describe_cloud_error(exc))
 
     print()
     if failures:
