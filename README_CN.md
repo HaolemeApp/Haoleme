@@ -16,7 +16,7 @@
 <p align="center">
   <a href="https://haoleme.cloud/">官网</a>
   ·
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/Haoleme-1.0.2.apk">下载 APK</a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.3/Haoleme-1.0.3.apk">下载 APK</a>
   ·
   <a href="#快速开始">快速开始</a>
   ·
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/Haoleme-1.0.2.apk"><img src="https://img.shields.io/badge/APK-v1.0.2-3DDC84?logo=android&logoColor=white" alt="Android APK 1.0.2"></a>
+  <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.3/Haoleme-1.0.3.apk"><img src="https://img.shields.io/badge/APK-v1.0.3-3DDC84?logo=android&logoColor=white" alt="Android APK 1.0.3"></a>
   <a href="https://pypi.org/project/haoleme/"><img src="https://img.shields.io/pypi/v/haoleme?label=CLI&logo=pypi&logoColor=white&color=F0B429" alt="PyPI 上的 Haoleme CLI"></a>
   <a href="https://github.com/HaolemeApp/Haoleme/issues"><img src="https://img.shields.io/github/issues-search/HaolemeApp/Haoleme?query=is%3Aissue&label=issues&logo=github&color=E85D75" alt="GitHub Issue 总数"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-8B5CF6" alt="许可证：AGPL-3.0-or-later"></a>
@@ -35,7 +35,7 @@
 </p>
 
 > [!NOTE]
-> **好了么 v1.0.2 是稳定版本。** 新增 WebSocket 实时同步，并保留 SSE 与 HTTP 降级通道；模型训练进度监控仍属于开发中功能。
+> **好了么 v1.0.3 是稳定版本。** 电脑端可通过 WebSocket 推送实时输出和设备占用，App 仍保留 SSE 与 HTTP 降级；模型训练进度监控仍属于开发中功能。
 > [查看最新 Release](https://github.com/HaolemeApp/Haoleme/releases/latest)，已有版本可以直接覆盖安装升级。
 
 ## 为什么使用好了么
@@ -57,7 +57,7 @@
 
 ### 1. 下载 Android App
 
-[下载好了么 v1.0.2](https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/Haoleme-1.0.2.apk)
+[下载好了么 v1.0.3](https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.3/Haoleme-1.0.3.apk)
 
 ### 2. 安装 CLI
 

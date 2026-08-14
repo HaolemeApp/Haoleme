@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 184,
-    "versionName": "1.0.2",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-1.0.2.apk",
+    "versionCode": 185,
+    "versionName": "1.0.3",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-1.0.3.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-1.0.2.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/Haoleme-1.0.2.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-1.0.3.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.3/Haoleme-1.0.3.apk"
     ],
-    "sha256": "0ae06d416e7908f6d68d6316416efd9a4e97017e05303b1814e64801cbbf270c",
+    "sha256": "f4cca200293b314c1a384934e1f69e890c80e4f640b8a4d91f8168d6e4e83420",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Realtime WebSocket sync, smoother long-console and run-list navigation, compact safe-area navigation, device autostart controls, and reliable language switching. / 新增 WebSocket 实时同步，优化长控制台与运行列表切换，收紧并适配安全区底栏，增加设备自启动控制及语言切换稳定性。"
+    "notes": "Computer-side WebSocket upload for ~1s console updates and 10s device meters, with HTTP fallback. / 电脑端改为 WebSocket 上行，控制台约 1 秒更新、设备占用约 10 秒刷新，并保留 HTTP 兜底。"
   },
   "python": {
-    "version": "0.5.6",
+    "version": "0.5.7",
     "packageUrl": "haoleme",
-    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/update.whl",
-    "notes": "Added realtime control waiting, WebSocket gateway support, and lightweight cloud health checks. / 新增实时控制等待、WebSocket 网关支持与轻量云端健康检查。"
+    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.3/update.whl",
+    "notes": "Heartbeat now keeps a /ws/device connection, pushes run diffs about once a second, and pauses HTTP while connected. / heartbeat 保持 /ws/device 长连，约 1 秒推送运行增量，连通时暂停 HTTP 双写。"
   }
 }
