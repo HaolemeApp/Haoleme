@@ -7,10 +7,10 @@
       "https://api.haoleme.cloud/downloads/Haoleme-1.0.2.apk",
       "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.2/Haoleme-1.0.2.apk"
     ],
-    "sha256": "b7b94db5eaa5e7551e29022f82588281059cf4d8cebd243f28602908f25b807f",
+    "sha256": "0ae06d416e7908f6d68d6316416efd9a4e97017e05303b1814e64801cbbf270c",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Realtime WebSocket sync, smoother page transitions, device autostart controls, and reliable language switching. / 新增 WebSocket 实时同步、优化页面切换、设备自启动控制及语言切换稳定性。"
+    "notes": "Realtime WebSocket sync, smoother long-console and run-list navigation, compact safe-area navigation, device autostart controls, and reliable language switching. / 新增 WebSocket 实时同步，优化长控制台与运行列表切换，收紧并适配安全区底栏，增加设备自启动控制及语言切换稳定性。"
   },
   "python": {
     "version": "0.5.6",
