@@ -2006,14 +2006,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
         AlertDialog d = dialogBuilder()
                 .setTitle(t("language"))
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
-                    prefs.edit().putString(PREF_LANGUAGE_MODE, values[which]).apply();
-                    dialog.dismiss();
-                    updateLauncherAlias();
-                    if (pageShell != null) pageShell.clearTabContent();
-                    buildUi();
-                    if (statusText != null) {
-                        statusText.setText(t("language_updated"));
+                    String nextLanguage = values[which];
+                    if (nextLanguage.equals(languageMode())) {
+                        dialog.dismiss();
+                        return;
                     }
+                    prefs.edit().putString(PREF_LANGUAGE_MODE, nextLanguage).apply();
+                    dialog.dismiss();
+                    relaunchWithLanguage(nextLanguage);
                 })
                 .setNegativeButton(t("cancel"), null)
                 .create();
@@ -2426,6 +2426,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
         boolean english = isEnglish();
         setAliasEnabled(manager, "com.haoleme.app.MainActivityZh", !english);
         setAliasEnabled(manager, "com.haoleme.app.MainActivityEn", english);
+    }
+
+    private void relaunchWithLanguage(String language) {
+        String targetAlias = LANG_EN.equals(language)
+                ? "com.haoleme.app.MainActivityEn"
+                : "com.haoleme.app.MainActivityZh";
+        PackageManager manager = getPackageManager();
+        setAliasEnabled(manager, targetAlias, true);
+
+        Intent relaunch = new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        startActivity(relaunch);
+        overridePendingTransition(0, 0);
     }
 
     private void setAliasEnabled(PackageManager manager, String className, boolean enabled) {
