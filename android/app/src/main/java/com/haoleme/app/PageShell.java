@@ -167,11 +167,16 @@ final class PageShell {
     }
 
     boolean popOverlay() {
+        return popOverlay(null);
+    }
+
+    boolean popOverlay(Runnable after) {
         if (overlays.isEmpty()) return false;
         View top = overlays.removeLast();
         PageMotion.popOverlay(top, () -> {
             if (top.getParent() == overlayHost) overlayHost.removeView(top);
             if (overlays.isEmpty()) overlayHost.setClickable(false);
+            if (after != null) after.run();
         });
         return true;
     }

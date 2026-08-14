@@ -212,8 +212,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private static final String TAG_RUN_ETA = "run_eta";
     private static final String TAG_RUN_ETA_BAR = "run_eta_bar";
     private static final String TAG_RUN_TRAINING_SECTION = "run_training_section";
-    private static final int CONSOLE_RENDER_INITIAL_CHARS = 60000;
-    private static final int CONSOLE_RENDER_STEP_CHARS = 60000;
+    private static final int CONSOLE_RENDER_INITIAL_CHARS = 12_000;
+    private static final int CONSOLE_RENDER_STEP_CHARS = 24_000;
     private static final int CONSOLE_HISTORY_DEFAULT_CHARS = 100_000_000;
     private static final int CPU_HISTORY_MAX_POINTS = 36;
     private static final String THEME_LIGHT = "light";
@@ -258,6 +258,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private LinearLayout devicesContainer;
     private RecyclerView runsContainer;
     private RunListAdapter runListAdapter;
+    private boolean runsListScrolling = false;
+    private List<JSONObject> deferredRunRows;
+    private Runnable deferredRunCommitCallback;
     private Button renameDeviceButton;
     private Button revokeDeviceButton;
     private Button clearDeviceRunsButton;
@@ -637,7 +640,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             scheduleRealtimeRefresh("runs");
             return;
         }
-        List<JSONObject> current = new ArrayList<>(runListAdapter.getCurrentList());
+        List<JSONObject> current = currentRunRows();
         boolean found = false;
         for (int i = 0; i < current.size(); i++) {
             JSONObject run = current.get(i);
@@ -655,7 +658,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             break;
         }
         if (found) {
-            runListAdapter.submitList(orderPinnedRunList(current));
+            submitRunRows(orderPinnedRunList(current), null);
         } else {
             scheduleRealtimeRefresh("runs");
         }
@@ -719,7 +722,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         String runId = payload.optString("runId", "").trim();
-        List<JSONObject> current = new ArrayList<>(runListAdapter.getCurrentList());
+        List<JSONObject> current = currentRunRows();
         boolean found = false;
         for (int i = 0; i < current.size(); i++) {
             JSONObject run = current.get(i);
@@ -738,7 +741,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             break;
         }
         if (found) {
-            runListAdapter.submitList(orderPinnedRunList(current));
+            submitRunRows(orderPinnedRunList(current), null);
             submitBackground(() -> saveRunsCache(new JSONArray(current)));
         } else {
             scheduleRealtimeRefresh("runs");
@@ -922,6 +925,9 @@ public class MainActivity extends Activity implements LifecycleOwner {
         devicesScrollView = null;
         devicesContainer = null;
         runsContainer = null;
+        runsListScrolling = false;
+        deferredRunRows = null;
+        deferredRunCommitCallback = null;
         renameDeviceButton = null;
         revokeDeviceButton = null;
         clearDeviceRunsButton = null;
@@ -1144,13 +1150,25 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         // RecyclerView keeps only visible cards alive and applies row-level diffs.
         runsContainer = new RecyclerView(this);
-        runsContainer.setLayoutManager(new LinearLayoutManager(this));
+        LinearLayoutManager runsLayoutManager = new LinearLayoutManager(this);
+        runsLayoutManager.setItemPrefetchEnabled(true);
+        runsLayoutManager.setInitialPrefetchItemCount(6);
+        runsContainer.setLayoutManager(runsLayoutManager);
         runsContainer.setHasFixedSize(false);
+        runsContainer.setItemViewCacheSize(14);
         runsContainer.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
         runsContainer.setVerticalScrollBarEnabled(false);
         runListAdapter = new RunListAdapter();
         runsContainer.setAdapter(runListAdapter);
         runsContainer.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
+                runsListScrolling = newState != RecyclerView.SCROLL_STATE_IDLE;
+                if (!runsListScrolling) {
+                    flushDeferredRunRows();
+                }
+            }
+
             @Override
             public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
                 LinearLayoutManager manager = (LinearLayoutManager) recyclerView.getLayoutManager();
@@ -3500,7 +3518,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
-        tabs.setPadding(dp(12), dp(2), dp(12), 0);
+        tabs.setPadding(dp(12), dp(1), dp(12), 0);
         tabs.addView(tabButton("home", null, isEnglish() ? "Home" : "主页"),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         tabs.addView(tabButton("settings", "⚙", t("settings")),
@@ -3513,7 +3531,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         LinearLayout button = new LinearLayout(this);
         button.setOrientation(LinearLayout.VERTICAL);
         button.setGravity(Gravity.CENTER);
-        button.setPadding(0, dp(6), 0, dp(2));
+        button.setPadding(0, dp(4), 0, dp(1));
         button.setClickable(true);
         boolean selected = tab.equals(currentTab);
 
@@ -3546,7 +3564,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         else tabSettingsLabel = labelView;
         LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        labelParams.setMargins(0, dp(3), 0, 0);
+        labelParams.setMargins(0, dp(2), 0, 0);
         button.addView(labelView, labelParams);
 
         button.setOnClickListener(v -> switchMainTab(tab));
@@ -3554,10 +3572,10 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private void applyTabBarInsets(View bar) {
-        bar.setPadding(0, 0, 0, dp(8));
+        bar.setPadding(0, 0, 0, dp(4));
         bar.setOnApplyWindowInsetsListener((v, insets) -> {
             int bottom = systemNavInset(insets);
-            v.setPadding(0, 0, 0, bottom + dp(8));
+            v.setPadding(0, 0, 0, bottom + dp(4));
             return insets;
         });
         bar.requestApplyInsets();
@@ -5952,7 +5970,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         Set<String> previousRunIds = new HashSet<>();
-        for (JSONObject current : runListAdapter.getCurrentList()) {
+        for (JSONObject current : currentRunRows()) {
             if (current == null) continue;
             String id = current.optString("id", "");
             if (!id.isEmpty() && !"__empty__".equals(id)) previousRunIds.add(id);
@@ -5996,7 +6014,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         final boolean revealQuietly = !discoveredRuns.isEmpty()
                 && userIsNearTop
                 && now - lastNewRunAutoRevealAt >= 8000L;
-        runListAdapter.submitList(rows, () -> {
+        submitRunRows(rows, () -> {
             if (revealQuietly && runsContainer != null) {
                 lastNewRunAutoRevealAt = now;
                 clearNewRunHint();
@@ -7030,8 +7048,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
         currentConsoleOutput = "";
         currentConsoleStoredBytes = 0L;
         buildConsoleUi();
-        loadCachedRunDetail(id);
-        refreshRunDetail(id, true);
+        // Let the lightweight page transition finish before laying out console
+        // text. A large monospace TextView can otherwise compete with the push
+        // animation for the same UI frames.
+        handler.postDelayed(() -> {
+            if (!id.equals(selectedRunId)) {
+                return;
+            }
+            loadCachedRunDetail(id);
+            refreshRunDetail(id, true);
+        }, PageMotion.PUSH_MS + 16L);
         // Re-arm the auto-refresh loop so the console starts polling within ~800ms
         // (not up to one list-cadence later) and is guaranteed running.
         handler.removeCallbacks(pollRunnable);
@@ -7253,7 +7279,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         List<JSONObject> rows = new ArrayList<>();
-        for (JSONObject run : runListAdapter.getCurrentList()) {
+        for (JSONObject run : currentRunRows()) {
             if (run == null) continue;
             String runId = run.optString("id", "");
             if ("__empty__".equals(runId)) continue;
@@ -7279,11 +7305,47 @@ public class MainActivity extends Activity implements LifecycleOwner {
             rows.add(empty);
         }
         final boolean scrollTop = pinned;
-        runListAdapter.submitList(rows, () -> {
+        submitRunRows(rows, () -> {
             if (scrollTop && runsContainer != null) {
                 runsContainer.scrollToPosition(0);
             }
         });
+    }
+
+    private List<JSONObject> currentRunRows() {
+        if (deferredRunRows != null) {
+            return new ArrayList<>(deferredRunRows);
+        }
+        if (runListAdapter == null) {
+            return new ArrayList<>();
+        }
+        return new ArrayList<>(runListAdapter.getCurrentList());
+    }
+
+    private void submitRunRows(List<JSONObject> rows, Runnable commitCallback) {
+        if (runListAdapter == null || rows == null) {
+            return;
+        }
+        List<JSONObject> snapshot = new ArrayList<>(rows);
+        if (runsListScrolling) {
+            deferredRunRows = snapshot;
+            if (commitCallback != null || deferredRunCommitCallback == null) {
+                deferredRunCommitCallback = commitCallback;
+            }
+            return;
+        }
+        runListAdapter.submitList(snapshot, commitCallback);
+    }
+
+    private void flushDeferredRunRows() {
+        if (runListAdapter == null || deferredRunRows == null) {
+            return;
+        }
+        List<JSONObject> rows = deferredRunRows;
+        Runnable callback = deferredRunCommitCallback;
+        deferredRunRows = null;
+        deferredRunCommitCallback = null;
+        runListAdapter.submitList(rows, callback);
     }
 
     private void removePinnedRun(String id) {
@@ -9037,11 +9099,17 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private void returnToList() {
         selectedRunId = null;
         selectedRunStatus = "";
+        handler.removeCallbacks(consoleRenderRunnable);
+        consoleRenderScheduled = false;
+        consoleAutoScrollAfterRender = false;
+        consoleUserTouching = false;
         lastRenderedConsoleText = "";
         lastRenderedConsoleLength = 0;
         if (pageShell != null && pageShell.hasOverlay()) {
-            pageShell.popOverlay();
-            refreshRuns();
+            pageShell.popOverlay(() -> {
+                releaseConsoleUiReferences();
+                refreshRuns(false);
+            });
             return;
         }
         currentTab = "home";
@@ -9053,6 +9121,19 @@ public class MainActivity extends Activity implements LifecycleOwner {
             buildUi();
         }
         refreshRuns();
+    }
+
+    private void releaseConsoleUiReferences() {
+        detailMeta = null;
+        detailConsole = null;
+        consoleAutoScrollButton = null;
+        consoleInterruptButton = null;
+        consoleRerunButton = null;
+        consoleShutdownButton = null;
+        consoleTerminalButton = null;
+        consoleTopMoreButton = null;
+        consoleSearchInput = null;
+        consoleVerticalScroll = null;
     }
 
     private void deleteRun(String id) {
@@ -11424,14 +11505,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
         if (output.isEmpty()) {
             output = run.optString("stdoutTail", "");
         }
-        String[] lines = renderTerminalText(output).split("\\r?\\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i].trim();
-            if (!line.isEmpty()) {
-                return trim(line);
-            }
+        int end = output.length();
+        while (end > 0 && (output.charAt(end - 1) == '\n' || output.charAt(end - 1) == '\r')) {
+            end--;
         }
-        return "";
+        if (end <= 0) return "";
+        int start = end;
+        while (start > 0 && output.charAt(start - 1) != '\n' && output.charAt(start - 1) != '\r') {
+            start--;
+        }
+        return trim(renderTerminalText(output.substring(start, end)).trim());
     }
 
     private String trim(String value) {

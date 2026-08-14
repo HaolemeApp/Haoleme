@@ -14,6 +14,8 @@ public class PageMotionTest {
         assertEquals(180L, PageMotion.DIALOG_IN_MS);
         assertEquals(140L, PageMotion.DIALOG_OUT_MS);
         assertTrue(PageMotion.EASE != null);
+        assertTrue(PageMotion.PAGE_IN_EASE != null);
+        assertTrue(PageMotion.PAGE_OUT_EASE != null);
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.haoleme.app;
 import android.view.View;
 import android.view.ViewPropertyAnimator;
 import android.view.animation.DecelerateInterpolator;
+import android.view.animation.PathInterpolator;
 
 final class PageMotion {
     static final long TAB_MS = 220L;
@@ -12,6 +13,8 @@ final class PageMotion {
     static final long DIALOG_OUT_MS = 140L;
     static final float DIALOG_DIM = 0.45f;
     static final DecelerateInterpolator EASE = new DecelerateInterpolator(1.6f);
+    static final PathInterpolator PAGE_IN_EASE = new PathInterpolator(0.20f, 0f, 0f, 1f);
+    static final PathInterpolator PAGE_OUT_EASE = new PathInterpolator(0.40f, 0f, 1f, 1f);
 
     private PageMotion() {
     }
@@ -63,16 +66,14 @@ final class PageMotion {
         if (view == null) return;
         cancel(view);
         view.setVisibility(View.VISIBLE);
-        view.setAlpha(0.94f);
+        view.setAlpha(1f);
         view.setTranslationY(0f);
-        view.setTranslationX(dp(view, 28));
-        view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        view.setTranslationX(pageWidth(view));
         view.animate()
-                .alpha(1f)
                 .translationX(0f)
                 .setDuration(PUSH_MS)
-                .setInterpolator(EASE)
-                .withEndAction(() -> view.setLayerType(View.LAYER_TYPE_NONE, null))
+                .setInterpolator(PAGE_IN_EASE)
+                .withEndAction(null)
                 .start();
     }
 
@@ -82,20 +83,22 @@ final class PageMotion {
             return;
         }
         cancel(view);
-        view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         ViewPropertyAnimator animator = view.animate()
-                .alpha(0.96f)
-                .translationX(dp(view, 24))
+                .translationX(pageWidth(view))
                 .setDuration(POP_MS)
-                .setInterpolator(EASE);
+                .setInterpolator(PAGE_OUT_EASE);
         animator.withEndAction(() -> {
             view.setVisibility(View.GONE);
             view.setTranslationX(0f);
             view.setAlpha(1f);
-            view.setLayerType(View.LAYER_TYPE_NONE, null);
             if (after != null) after.run();
         });
         animator.start();
+    }
+
+    private static float pageWidth(View view) {
+        int width = view.getWidth();
+        return width > 0 ? width : view.getResources().getDisplayMetrics().widthPixels;
     }
 
     private static float dp(View view, int value) {
