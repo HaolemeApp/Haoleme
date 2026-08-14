@@ -44,6 +44,7 @@ DEFAULT_CLOUD_OUTPUT_BYTES = 20 * 1024 * 1024
 MAX_CLOUD_OUTPUT_BYTES = 100 * 1024 * 1024
 MAX_LIST_OUTPUT_PREVIEW = 2000
 MAX_LIST_E2EE_CIPHERTEXT = 64 * 1024
+STREAM_E2EE_MAX_CHARS = 16 * 1024
 DEFAULT_LOG_MAX_BYTES = 50 * 1024 * 1024
 DEVICE_ONLINE_WINDOW_SECONDS = 240
 STALE_RUNNING_GRACE_SECONDS = 240
@@ -3884,9 +3885,25 @@ def stream_run_payload(run: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(run, dict):
         return {}
     payload: dict[str, Any] = {"runId": str(run.get("id") or "")}
-    for key in ("status", "outputLength", "progress", "lastLoss", "etaSeconds", "updatedAt"):
+    for key in ("status", "outputLength", "progress", "lastLoss", "etaSeconds", "updatedAt", "project", "deviceId", "deviceName"):
         if run.get(key) is not None:
             payload[key] = run.get(key)
+    command_text = str(run.get("commandText") or "").strip()
+    if command_text and command_text != "Encrypted command":
+        payload["commandText"] = command_text
+    command = run.get("command")
+    if isinstance(command, list) and command:
+        payload["command"] = [str(item) for item in command[:32]]
+    e2ee = run.get("e2ee")
+    if isinstance(e2ee, dict):
+        ciphertext = str(e2ee.get("ciphertext") or "")
+        if ciphertext and len(ciphertext) <= STREAM_E2EE_MAX_CHARS:
+            payload["e2ee"] = {
+                "v": int_or_none(e2ee.get("v")) or 1,
+                "alg": str(e2ee.get("alg") or "AES-256-GCM")[:40],
+                "nonce": str(e2ee.get("nonce") or "")[:128],
+                "ciphertext": ciphertext,
+            }
     return payload
 
 

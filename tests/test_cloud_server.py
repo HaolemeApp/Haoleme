@@ -69,6 +69,7 @@ from haoleme.cloud_server import (
     token_hash,
     upsert_device,
     upsert_run,
+    stream_run_payload,
     websocket_server_thread,
 )
 
@@ -83,6 +84,29 @@ class CloudServerDeviceTest(unittest.TestCase):
                 self.assertIsInstance(server.write_attempts, dict)
             finally:
                 server.server_close()
+
+    def test_stream_run_payload_includes_small_e2ee_and_skips_placeholder_command(self):
+        payload = stream_run_payload({
+            "id": "run-1",
+            "status": "running",
+            "updatedAt": "2026-08-14T12:00:00Z",
+            "commandText": "Encrypted command",
+            "command": [],
+            "e2ee": {"v": 1, "alg": "AES-256-GCM", "nonce": "n", "ciphertext": "abc"},
+        })
+        self.assertEqual(payload["runId"], "run-1")
+        self.assertNotIn("commandText", payload)
+        self.assertEqual(payload["e2ee"]["ciphertext"], "abc")
+
+        plain = stream_run_payload({
+            "id": "run-2",
+            "status": "running",
+            "commandText": "echo hello",
+            "command": ["echo", "hello"],
+        })
+        self.assertEqual(plain["commandText"], "echo hello")
+        self.assertEqual(plain["command"], ["echo", "hello"])
+        self.assertNotIn("e2ee", plain)
 
     def test_realtime_revision_is_scoped_and_wakes_waiters(self):
         with tempfile.TemporaryDirectory() as tmp:

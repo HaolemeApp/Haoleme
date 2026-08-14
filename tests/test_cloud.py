@@ -74,7 +74,8 @@ class CloudSyncerReliabilityTest(unittest.TestCase):
             syncer._failure_count = 0
             syncer._next_retry_at = 0.0
 
-            syncer._sync_once(force=True)
+            with patch.object(cloud_module, "device_ws_connected", return_value=False):
+                syncer._sync_once(force=True)
 
             self.assertEqual(store.get_run("run-1").cloud_synced_at, "")
             self.assertIn("offline", syncer.last_error)
@@ -106,7 +107,8 @@ class CloudSyncerReliabilityTest(unittest.TestCase):
             syncer._failure_count = 0
             syncer._next_retry_at = 0.0
 
-            syncer._sync_once(force=True)
+            with patch.object(cloud_module, "device_ws_connected", return_value=False):
+                syncer._sync_once(force=True)
 
             run = store.get_run("run-1")
             self.assertEqual(len(client.chunks), 2)

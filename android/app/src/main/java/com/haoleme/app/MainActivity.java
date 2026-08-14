@@ -371,7 +371,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
     private TextView headerTitle;
     private ImageView tabHomeIcon;
     private TextView tabHomeLabel;
-    private TextView tabSettingsIcon;
+    private ImageView tabSettingsIcon;
     private TextView tabSettingsLabel;
 
     private final Runnable consoleRenderRunnable = () -> {
@@ -640,6 +640,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
             scheduleRealtimeRefresh("runs");
             return;
         }
+        JSONObject incoming = decryptRun(runFromPatch(payload, runId));
+        String incomingCommand = RunCommandText.resolve(incoming, loadCachedRunDetailJson(runId), "", "");
         List<JSONObject> current = currentRunRows();
         boolean found = false;
         for (int i = 0; i < current.size(); i++) {
@@ -648,8 +650,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
             found = true;
             try {
                 JSONObject next = new JSONObject(run.toString());
-                for (String key : new String[]{"status", "updatedAt", "progress", "lastLoss", "etaSeconds", "outputLength"}) {
+                for (String key : new String[]{"status", "updatedAt", "progress", "lastLoss", "etaSeconds", "outputLength", "project", "deviceId", "deviceName"}) {
                     if (payload.has(key)) next.put(key, payload.get(key));
+                }
+                if (RunCommandText.isUsable(incomingCommand)) {
+                    next.put("commandText", incomingCommand);
+                    if (incoming.optJSONArray("command") != null) {
+                        next.put("command", incoming.getJSONArray("command"));
+                    }
                 }
                 next.put("__pinned", isRunPinned(runId));
                 current.set(i, next);
@@ -657,11 +665,46 @@ public class MainActivity extends Activity implements LifecycleOwner {
             }
             break;
         }
-        if (found) {
-            submitRunRows(orderPinnedRunList(current), null);
-        } else {
+        if (!found) {
+            try {
+                incoming.put("__pinned", isRunPinned(runId));
+                if (RunCommandText.isUsable(incomingCommand)) {
+                    incoming.put("commandText", incomingCommand);
+                }
+                List<JSONObject> nextRows = new ArrayList<>();
+                for (JSONObject run : current) {
+                    if (run != null && !"__empty__".equals(run.optString("id", ""))) {
+                        nextRows.add(run);
+                    }
+                }
+                nextRows.add(0, incoming);
+                current = nextRows;
+            } catch (Exception ignored) {
+                scheduleRealtimeRefresh("runs");
+                return;
+            }
             scheduleRealtimeRefresh("runs");
         }
+        submitRunRows(orderPinnedRunList(current), null);
+        List<JSONObject> snapshot = current;
+        submitBackground(() -> saveRunsCache(new JSONArray(snapshot)));
+    }
+
+    private JSONObject runFromPatch(JSONObject payload, String runId) {
+        JSONObject run = new JSONObject();
+        try {
+            run.put("id", runId);
+            for (String key : new String[]{
+                    "status", "updatedAt", "progress", "lastLoss", "etaSeconds", "outputLength",
+                    "project", "deviceId", "deviceName", "commandText", "command", "e2ee"
+            }) {
+                if (payload.has(key)) {
+                    run.put(key, payload.get(key));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return run;
     }
 
     private void applyTailDelta(JSONObject payload) {
@@ -977,22 +1020,33 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
     private void updateTabButtonStyles() {
         boolean home = !"settings".equals(currentTab);
-        styleHomeGlyph(home);
-        styleTabGlyph(tabSettingsIcon, tabSettingsLabel, !home);
+        styleTabGlyph(
+                tabHomeIcon,
+                tabHomeLabel,
+                home,
+                R.drawable.ic_tab_home_filled,
+                R.drawable.ic_tab_home
+        );
+        styleTabGlyph(
+                tabSettingsIcon,
+                tabSettingsLabel,
+                !home,
+                R.drawable.ic_tab_settings_filled,
+                R.drawable.ic_tab_settings
+        );
     }
 
-    private void styleHomeGlyph(boolean selected) {
-        if (tabHomeIcon == null) return;
-        tabHomeIcon.setImageResource(selected ? R.drawable.ic_tab_home_filled : R.drawable.ic_tab_home);
-        tabHomeIcon.setColorFilter(selected ? textPrimary() : textSecondary(), PorterDuff.Mode.SRC_IN);
-        if (tabHomeLabel != null) {
-            tabHomeLabel.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
-            tabHomeLabel.setTextColor(selected ? textPrimary() : textSecondary());
+    private void styleTabGlyph(
+            ImageView icon,
+            TextView label,
+            boolean selected,
+            int selectedIcon,
+            int idleIcon
+    ) {
+        if (icon != null) {
+            icon.setImageResource(selected ? selectedIcon : idleIcon);
+            icon.setColorFilter(selected ? textPrimary() : textSecondary(), PorterDuff.Mode.SRC_IN);
         }
-    }
-
-    private void styleTabGlyph(TextView icon, TextView label, boolean selected) {
-        if (icon != null) icon.setTextColor(selected ? textPrimary() : textSecondary());
         if (label != null) {
             label.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
             label.setTextColor(selected ? textPrimary() : textSecondary());
@@ -3360,22 +3414,14 @@ public class MainActivity extends Activity implements LifecycleOwner {
     }
 
     private String commandTextForDisplay(JSONObject run, String fallback) {
-        String value = run == null ? "" : run.optString("commandText", "");
-        if (value == null || value.trim().isEmpty()) {
-            return fallback;
-        }
-        if (!"Encrypted command".equals(value.trim())) {
-            return value;
-        }
-        String id = run.optString("id", "").trim();
+        String id = run == null ? "" : run.optString("id", "").trim();
         JSONObject cached = id.isEmpty() ? null : loadCachedRunDetailJson(id);
-        if (cached != null) {
-            String cachedCommand = cached.optString("commandText", "").trim();
-            if (!cachedCommand.isEmpty() && !"Encrypted command".equals(cachedCommand)) {
-                return cachedCommand;
-            }
-        }
-        return isEnglish() ? "Syncing encrypted command..." : "正在同步命令...";
+        return RunCommandText.resolve(
+                run,
+                cached,
+                isEnglish() ? "Syncing encrypted command..." : "正在同步命令...",
+                fallback
+        );
     }
 
     private String maskSensitive(String raw) {
@@ -3518,49 +3564,44 @@ public class MainActivity extends Activity implements LifecycleOwner {
 
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
-        tabs.setPadding(dp(12), dp(1), dp(12), 0);
-        tabs.addView(tabButton("home", null, isEnglish() ? "Home" : "主页"),
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        tabs.addView(tabButton("settings", "⚙", t("settings")),
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        tabs.setBaselineAligned(false);
+        tabs.setGravity(Gravity.CENTER_VERTICAL);
+        tabs.setPadding(dp(12), 0, dp(12), 0);
+        tabs.addView(tabButton("home", isEnglish() ? "Home" : "主页"),
+                new LinearLayout.LayoutParams(0, dp(46), 1));
+        tabs.addView(tabButton("settings", t("settings")),
+                new LinearLayout.LayoutParams(0, dp(46), 1));
         bar.addView(tabs, matchWrap());
         return bar;
     }
 
-    private LinearLayout tabButton(String tab, String icon, String label) {
+    private LinearLayout tabButton(String tab, String label) {
         LinearLayout button = new LinearLayout(this);
         button.setOrientation(LinearLayout.VERTICAL);
         button.setGravity(Gravity.CENTER);
-        button.setPadding(0, dp(4), 0, dp(1));
+        button.setPadding(0, 0, 0, 0);
         button.setClickable(true);
         boolean selected = tab.equals(currentTab);
+        boolean home = "home".equals(tab);
 
-        if ("home".equals(tab)) {
-            ImageView homeIcon = new ImageView(this);
-            homeIcon.setImageResource(selected ? R.drawable.ic_tab_home_filled : R.drawable.ic_tab_home);
-            homeIcon.setColorFilter(selected ? textPrimary() : textSecondary(), PorterDuff.Mode.SRC_IN);
-            homeIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            button.addView(homeIcon, new LinearLayout.LayoutParams(dp(20), dp(20)));
-            tabHomeIcon = homeIcon;
-        } else {
-            TextView iconView = new TextView(this);
-            iconView.setText(icon);
-            iconView.setTextSize(20);
-            iconView.setGravity(Gravity.CENTER);
-            iconView.setTypeface(null, Typeface.BOLD);
-            iconView.setTextColor(selected ? textPrimary() : textSecondary());
-            button.addView(iconView, new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-            tabSettingsIcon = iconView;
-        }
+        ImageView iconView = new ImageView(this);
+        iconView.setImageResource(home
+                ? (selected ? R.drawable.ic_tab_home_filled : R.drawable.ic_tab_home)
+                : (selected ? R.drawable.ic_tab_settings_filled : R.drawable.ic_tab_settings));
+        iconView.setColorFilter(selected ? textPrimary() : textSecondary(), PorterDuff.Mode.SRC_IN);
+        iconView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        button.addView(iconView, new LinearLayout.LayoutParams(dp(20), dp(20)));
+        if (home) tabHomeIcon = iconView;
+        else tabSettingsIcon = iconView;
 
         TextView labelView = new TextView(this);
         labelView.setText(label);
         labelView.setTextSize(10);
         labelView.setGravity(Gravity.CENTER);
+        labelView.setIncludeFontPadding(false);
         labelView.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
         labelView.setTextColor(selected ? textPrimary() : textSecondary());
-        if ("home".equals(tab)) tabHomeLabel = labelView;
+        if (home) tabHomeLabel = labelView;
         else tabSettingsLabel = labelView;
         LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -3659,6 +3700,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 });
                 submitBackground(() -> saveRunsCache(runs));
                 scheduleMissingLocalOutputsSync(runs);
+                hydrateMissingRunCommands(runs);
                 submitBackground(this::syncPendingRunDeletesBlocking);
             } catch (Exception e) {
                 Log.w(TAG, "refreshRuns failed for " + safeRequestLabel(requestUrl), e);
@@ -6108,7 +6150,8 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 + run.opt("progress") + "|"
                 + run.opt("lastLoss") + "|"
                 + run.opt("etaSeconds") + "|"
-                + run.opt("exitCode");
+                + run.opt("exitCode") + "|"
+                + RunCommandText.resolve(run, null, "syncing", "");
     }
 
     private void bindRunTrainingChrome(TextView lossView, TextView etaView, MeterBarView etaBar, JSONObject run) {
@@ -8550,6 +8593,86 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return detail;
         } catch (Exception ignored) {
             return null;
+        }
+    }
+
+    private void hydrateMissingRunCommands(JSONArray runs) {
+        if (runs == null || accountToken().isEmpty()) {
+            return;
+        }
+        submitBackground(() -> {
+            int fetched = 0;
+            for (int i = 0; i < runs.length() && fetched < 8; i++) {
+                JSONObject run = runs.optJSONObject(i);
+                if (run == null) {
+                    continue;
+                }
+                String runId = run.optString("id", "").trim();
+                if (runId.isEmpty() || "__empty__".equals(runId)) {
+                    continue;
+                }
+                if (RunCommandText.isUsable(run.optString("commandText", ""))
+                        || !RunCommandText.joinCommand(run).isEmpty()) {
+                    continue;
+                }
+                try {
+                    JSONObject payload = new JSONObject(httpGet(
+                            normalizedServerUrl() + "/api/runs/" + Uri.encode(runId),
+                            HTTP_LIST_READ_TIMEOUT_MS
+                    ));
+                    JSONObject full = decryptRun(payload.optJSONObject("run"));
+                    String command = RunCommandText.resolve(full, null, "", "");
+                    if (!RunCommandText.isUsable(command)) {
+                        continue;
+                    }
+                    fetched++;
+                    JSONArray commandParts = full.optJSONArray("command");
+                    handler.post(() -> applyHydratedCommand(runId, command, commandParts));
+                } catch (Exception ignored) {
+                }
+            }
+        });
+    }
+
+    private void applyHydratedCommand(String runId, String command, JSONArray commandParts) {
+        if (runListAdapter == null || runId == null || !RunCommandText.isUsable(command)) {
+            return;
+        }
+        List<JSONObject> current = currentRunRows();
+        boolean found = false;
+        for (int i = 0; i < current.size(); i++) {
+            JSONObject run = current.get(i);
+            if (run == null || !runId.equals(run.optString("id", ""))) {
+                continue;
+            }
+            try {
+                JSONObject next = new JSONObject(run.toString());
+                next.put("commandText", command);
+                if (commandParts != null) {
+                    next.put("command", commandParts);
+                }
+                current.set(i, next);
+                found = true;
+            } catch (Exception ignored) {
+            }
+            break;
+        }
+        if (!found) {
+            return;
+        }
+        submitRunRows(orderPinnedRunList(current), null);
+        submitBackground(() -> saveRunsCache(new JSONArray(current)));
+        if (selectedRunId != null && selectedRunId.equals(runId) && detailCommand != null) {
+            try {
+                JSONObject detail = currentRunDetail == null ? new JSONObject() : currentRunDetail;
+                detail.put("commandText", command);
+                if (commandParts != null) {
+                    detail.put("command", commandParts);
+                }
+                currentRunDetail = detail;
+                detailCommand.setText(displayText(command));
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -11124,7 +11247,6 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 byte[] plaintext = cipher.doFinal(ciphertext);
                 JSONObject fields = new JSONObject(new String(plaintext, StandardCharsets.UTF_8));
                 copy = new JSONObject(run.toString());
-                copy.put("commandText", fields.optString("commandText", copy.optString("commandText", "")));
                 copy.put("cwd", fields.optString("cwd", copy.optString("cwd", "")));
                 copy.put("cliVersion", fields.optString("cliVersion", copy.optString("cliVersion", "")));
                 copy.put("os", fields.optString("os", copy.optString("os", "")));
@@ -11134,6 +11256,16 @@ public class MainActivity extends Activity implements LifecycleOwner {
                 copy.put("outputTail", fields.optString("outputTail", ""));
                 if (fields.has("command")) {
                     copy.put("command", fields.optJSONArray("command"));
+                }
+                String commandText = fields.optString("commandText", "");
+                if (!RunCommandText.isUsable(commandText)) {
+                    commandText = RunCommandText.joinCommand(fields);
+                }
+                if (!RunCommandText.isUsable(commandText)) {
+                    commandText = RunCommandText.joinCommand(copy);
+                }
+                if (RunCommandText.isUsable(commandText)) {
+                    copy.put("commandText", commandText);
                 }
             } catch (Exception ignored) {
                 try {

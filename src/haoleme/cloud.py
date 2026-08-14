@@ -310,6 +310,8 @@ def get_or_create_machine_id(path: Path | None = None) -> str:
 
 def encode_run_upsert(config: CloudConfig, run: RunRecord, *, include_output: bool = True) -> dict[str, Any]:
     payload = run.to_dict()
+    if not str(payload.get("commandText") or "").strip() and payload.get("command"):
+        payload["commandText"] = " ".join(str(part) for part in payload.get("command") or [] if str(part).strip())
     if not include_output:
         # The authoritative cloud cursor advances only after a chunk is
         # committed. Advertising the local total here would make a retry

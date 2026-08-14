@@ -213,7 +213,7 @@ public class HaolemeForegroundService extends Service {
     // if no key is paired or decryption fails, the run is left as-is.
     private JSONObject decryptRun(JSONObject run) {
         JSONObject e2ee = run.optJSONObject("e2ee");
-        if (e2ee == null || e2ee.optInt("v", 0) != 1) {
+        if (e2ee == null || e2ee.optString("ciphertext", "").isEmpty()) {
             return run;
         }
         byte[] key = accountKeyBytesOrNull();
@@ -229,13 +229,22 @@ public class HaolemeForegroundService extends Service {
             byte[] plaintext = cipher.doFinal(ciphertext);
             JSONObject fields = new JSONObject(new String(plaintext, StandardCharsets.UTF_8));
             JSONObject copy = new JSONObject(run.toString());
-            copy.put("commandText", fields.optString("commandText", copy.optString("commandText", "")));
             copy.put("cwd", fields.optString("cwd", copy.optString("cwd", "")));
             copy.put("stdoutTail", fields.optString("stdoutTail", ""));
             copy.put("stderrTail", fields.optString("stderrTail", ""));
             copy.put("outputTail", fields.optString("outputTail", ""));
             if (fields.has("command")) {
                 copy.put("command", fields.optJSONArray("command"));
+            }
+            String commandText = fields.optString("commandText", "");
+            if (!RunCommandText.isUsable(commandText)) {
+                commandText = RunCommandText.joinCommand(fields);
+            }
+            if (!RunCommandText.isUsable(commandText)) {
+                commandText = RunCommandText.joinCommand(copy);
+            }
+            if (RunCommandText.isUsable(commandText)) {
+                copy.put("commandText", commandText);
             }
             return copy;
         } catch (Exception ignored) {

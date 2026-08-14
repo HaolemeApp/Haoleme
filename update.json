@@ -1,21 +1,21 @@
 {
   "android": {
-    "versionCode": 185,
-    "versionName": "1.0.3",
-    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-1.0.3.apk",
+    "versionCode": 186,
+    "versionName": "1.0.4",
+    "apkUrl": "https://api.haoleme.cloud/downloads/Haoleme-1.0.4.apk",
     "apkUrls": [
-      "https://api.haoleme.cloud/downloads/Haoleme-1.0.3.apk",
-      "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.3/Haoleme-1.0.3.apk"
+      "https://api.haoleme.cloud/downloads/Haoleme-1.0.4.apk",
+      "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.4/Haoleme-1.0.4.apk"
     ],
-    "sha256": "f4cca200293b314c1a384934e1f69e890c80e4f640b8a4d91f8168d6e4e83420",
+    "sha256": "c8da4634fda2e2b69b117d458bd8a9a4c3f1daa5f5999fd4f73adf8befae567e",
     "minSupportedVersionCode": 66,
     "forceUpdate": false,
-    "notes": "Computer-side WebSocket upload for ~1s console updates and 10s device meters, with HTTP fallback. / 电脑端改为 WebSocket 上行，控制台约 1 秒更新、设备占用约 10 秒刷新，并保留 HTTP 兜底。"
+    "notes": "Aligned bottom navigation and more reliable live command summaries, with WebSocket, SSE, and HTTP fallback retained. / 对齐底部导航并提高实时命令摘要可靠性，继续保留 WebSocket、SSE 与 HTTP 降级。"
   },
   "python": {
     "version": "0.5.7",
     "packageUrl": "haoleme",
-    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.3/update.whl",
+    "wheelUrl": "https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.4/update.whl",
     "notes": "Heartbeat now keeps a /ws/device connection, pushes run diffs about once a second, and pauses HTTP while connected. / heartbeat 保持 /ws/device 长连，约 1 秒推送运行增量，连通时暂停 HTTP 双写。"
   }
 }
