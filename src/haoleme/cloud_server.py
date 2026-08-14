@@ -4157,8 +4157,10 @@ def websocket_server_thread(server: HaolemeCloudServer, host: str, port: int) ->
                 since = current
                 await websocket.send(json.dumps({"type": "refresh", "revision": current}, ensure_ascii=False))
             while True:
-                revision, event_type, payload = await asyncio.to_thread(
-                    server.wait_for_stream_event, auth.account_key, since, 20.0
+                loop = asyncio.get_running_loop()
+                revision, event_type, payload = await loop.run_in_executor(
+                    None,
+                    lambda: server.wait_for_stream_event(auth.account_key, since, 20.0),
                 )
                 if revision <= since:
                     await websocket.ping()
