@@ -339,7 +339,12 @@ class CloudClient:
                 patch["stderrDelta"] = stderr_delta
         return self.request("POST", "/api/runs", {"append": True, "run": patch})
 
-    def heartbeat(self, gpus: list[dict[str, Any]] | None = None, cpu: dict[str, Any] | None = None) -> dict[str, Any]:
+    def heartbeat(
+        self,
+        gpus: list[dict[str, Any]] | None = None,
+        cpu: dict[str, Any] | None = None,
+        autostart_enabled: bool | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         if self.config.device_id:
             payload["deviceId"] = self.config.device_id
@@ -349,6 +354,8 @@ class CloudClient:
             payload["gpus"] = gpus
         if cpu is not None:
             payload["cpu"] = cpu
+        if autostart_enabled is not None:
+            payload["autostartEnabled"] = bool(autostart_enabled)
         return self.request("POST", "/api/devices/heartbeat", payload)
 
     def get_run(self, run_id: str) -> dict[str, Any]:

@@ -580,11 +580,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
             return;
         }
         if ("tail_delta".equals(type)) {
-            if (selectedRunId != null && selectedRunId.equals(payload.optString("runId", ""))) {
-                refreshRunDetail(selectedRunId, false);
-            } else {
-                applyRunPatch(payload);
-            }
+            applyTailDelta(payload);
             return;
         }
         scheduleRealtimeRefresh(type);
@@ -660,6 +656,90 @@ public class MainActivity extends Activity implements LifecycleOwner {
         }
         if (found) {
             runListAdapter.submitList(orderPinnedRunList(current));
+        } else {
+            scheduleRealtimeRefresh("runs");
+        }
+    }
+
+    private void applyTailDelta(JSONObject payload) {
+        String runId = payload.optString("runId", "").trim();
+        if (runId.isEmpty()) {
+            scheduleRealtimeRefresh("runs");
+            return;
+        }
+        JSONObject chunk = payload.optJSONObject("chunk");
+        JSONObject cached = loadCachedRunDetailJson(runId);
+        int localChunks = cachedLocalOutputChunkCount(cached);
+        int sequence = chunk == null ? -1 : chunk.optInt("seq", -1);
+        if (sequence > localChunks) {
+            // A reconnect or process burst skipped at least one event. The
+            // existing incremental endpoint remains the durable repair path.
+            if (selectedRunId != null && selectedRunId.equals(runId)) {
+                refreshRunDetail(runId, false);
+            } else {
+                scheduleRealtimeRefresh("runs");
+            }
+            return;
+        }
+
+        String appended = "";
+        if (chunk != null && sequence == localChunks) {
+            appended = decryptOutputChunk(runId, chunk);
+        } else if (chunk == null) {
+            appended = payload.optString("outputAppend", "");
+        }
+        if (!appended.isEmpty()) {
+            appendConsoleCache(runId, appended);
+        }
+        int remoteChunks = payload.optInt("outputChunkCount", sequence >= 0 ? sequence + 1 : localChunks);
+        int nextChunks = Math.max(localChunks, remoteChunks);
+        int remoteLength = Math.max(payload.optInt("outputLength", 0), cachedOutputLength(cached));
+        JSONObject metadata = cached == null ? new JSONObject() : cached;
+        try {
+            metadata.put("id", runId);
+            for (String key : new String[]{"status", "updatedAt", "progress", "lastLoss", "etaSeconds"}) {
+                if (payload.has(key)) metadata.put(key, payload.get(key));
+            }
+            storeRunDetail(runId, localRunMetadataSnapshot(metadata, nextChunks, remoteLength).toString());
+        } catch (Exception ignored) {
+        }
+
+        if (selectedRunId != null && selectedRunId.equals(runId) && !appended.isEmpty()) {
+            currentConsoleOutput = (currentConsoleOutput == null ? "" : currentConsoleOutput) + appended;
+            consoleOutputSyncedLength = Math.max(consoleOutputSyncedLength, remoteLength);
+            outputChunkSyncedCount = Math.max(outputChunkSyncedCount, nextChunks);
+            renderConsoleText();
+        }
+        applyRunTailPreview(payload, appended);
+    }
+
+    private void applyRunTailPreview(JSONObject payload, String appended) {
+        if (runListAdapter == null) {
+            scheduleRealtimeRefresh("runs");
+            return;
+        }
+        String runId = payload.optString("runId", "").trim();
+        List<JSONObject> current = new ArrayList<>(runListAdapter.getCurrentList());
+        boolean found = false;
+        for (int i = 0; i < current.size(); i++) {
+            JSONObject run = current.get(i);
+            if (run == null || !runId.equals(run.optString("id", ""))) continue;
+            found = true;
+            try {
+                JSONObject next = new JSONObject(run.toString());
+                for (String key : new String[]{"status", "updatedAt", "progress", "lastLoss", "etaSeconds", "outputLength", "outputChunkCount"}) {
+                    if (payload.has(key)) next.put(key, payload.get(key));
+                }
+                if (!appended.isEmpty()) next.put("outputTail", appended);
+                next.put("__pinned", isRunPinned(runId));
+                current.set(i, next);
+            } catch (Exception ignored) {
+            }
+            break;
+        }
+        if (found) {
+            runListAdapter.submitList(orderPinnedRunList(current));
+            submitBackground(() -> saveRunsCache(new JSONArray(current)));
         } else {
             scheduleRealtimeRefresh("runs");
         }
@@ -1082,7 +1162,7 @@ public class MainActivity extends Activity implements LifecycleOwner {
         DefaultItemAnimator animator = new DefaultItemAnimator();
         animator.setAddDuration(180L);
         animator.setRemoveDuration(180L);
-        animator.setMoveDuration(200L);
+        animator.setMoveDuration(150L);
         animator.setChangeDuration(0L);
         animator.setSupportsChangeAnimations(false);
         runsContainer.setItemAnimator(animator);
@@ -4189,6 +4269,12 @@ public class MainActivity extends Activity implements LifecycleOwner {
             actions.add(1);
             labels.add(isEnglish() ? "Revoke" : "撤销");
             actions.add(2);
+            JSONObject selected = cachedDevice(selectedDeviceId);
+            boolean autostart = selected != null && selected.optBoolean("autostartEnabled", false);
+            labels.add(autostart
+                    ? (isEnglish() ? "Disable startup monitoring" : "关闭开机监控")
+                    : (isEnglish() ? "Enable startup monitoring" : "开启开机监控"));
+            actions.add(4);
         }
         labels.add(showOfflineDevicesEnabled()
                 ? (isEnglish() ? "Hide Offline Devices" : "隐藏离线设备")
@@ -4207,11 +4293,50 @@ public class MainActivity extends Activity implements LifecycleOwner {
                         showRevokeDeviceDialog(selectedDeviceId, label);
                     } else if (action == 3) {
                         toggleOfflineDevicesVisible();
+                    } else if (action == 4) {
+                        JSONObject selected = cachedDevice(selectedDeviceId);
+                        boolean enabled = selected == null || !selected.optBoolean("autostartEnabled", false);
+                        setDeviceAutostart(selectedDeviceId, enabled);
                     }
                 })
                 .create();
         applyDialogStyle(d);
         d.show();
+    }
+
+    private JSONObject cachedDevice(String deviceId) {
+        JSONArray devices = cachedDevicesArray();
+        for (int i = 0; i < devices.length(); i++) {
+            JSONObject device = devices.optJSONObject(i);
+            if (device != null && deviceId.equals(device.optString("id", ""))) return device;
+        }
+        return null;
+    }
+
+    private void setDeviceAutostart(String deviceId, boolean enabled) {
+        if (deviceId == null || deviceId.isEmpty() || "all".equals(deviceId)) return;
+        if (!Boolean.TRUE.equals(deviceOnline.get(deviceId))) {
+            statusText.setText(isEnglish()
+                    ? "This device is offline. Reconnect it before changing startup monitoring."
+                    : "设备当前离线，请联网后再修改开机监控。");
+            return;
+        }
+        statusText.setText(isEnglish() ? "Sending startup setting…" : "正在发送开机设置…");
+        submitBackground(() -> {
+            try {
+                JSONObject payload = new JSONObject();
+                payload.put("enabled", enabled);
+                httpPostJson(normalizedServerUrl() + "/api/devices/" + Uri.encode(deviceId) + "/autostart", payload.toString());
+                handler.post(() -> {
+                    statusText.setText(enabled
+                            ? (isEnglish() ? "Startup monitoring will be enabled on this device." : "已请求开启该设备的开机监控。")
+                            : (isEnglish() ? "Startup monitoring will be disabled on this device." : "已请求关闭该设备的开机监控。"));
+                    refreshDevices();
+                });
+            } catch (Exception error) {
+                handler.post(() -> statusText.setText((isEnglish() ? "Startup setting failed: " : "开机设置失败：") + String.valueOf(error.getMessage())));
+            }
+        });
     }
 
     private boolean showOfflineDevicesEnabled() {
@@ -7119,9 +7244,13 @@ public class MainActivity extends Activity implements LifecycleOwner {
             if (run == null) continue;
             String runId = run.optString("id", "");
             if ("__empty__".equals(runId)) continue;
+            if (!id.equals(runId)) {
+                rows.add(run);
+                continue;
+            }
             try {
                 JSONObject next = new JSONObject(run.toString());
-                next.put("__pinned", isRunPinned(runId));
+                next.put("__pinned", pinned);
                 rows.add(next);
             } catch (Exception ignored) {
                 rows.add(run);

@@ -11,6 +11,7 @@ import re
 import secrets
 import signal
 import shutil
+import shlex
 import subprocess
 import sys
 import threading
@@ -37,6 +38,7 @@ RESERVED_COMMANDS = {
     "ngrok",
     "login",
     "heartbeat",
+    "autostart",
     "cloud-login",
     "cloud-logout",
     "cloud-status",
@@ -100,6 +102,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return pairing_login_command(args[1:])
     if first == "heartbeat":
         return heartbeat_command(args[1:])
+    if first == "autostart":
+        return autostart_command(args[1:])
     if first == "cloud-login":
         return cloud_login_command(args[1:])
     if first == "cloud-logout":
@@ -1011,6 +1015,130 @@ def heartbeat_command(argv: Sequence[str]) -> int:
     return 1
 
 
+def autostart_command(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="hao autostart")
+    parser.add_argument("action", nargs="?", choices=["enable", "disable", "status"], default="status")
+    ns = parser.parse_args(argv)
+    if ns.action == "status":
+        enabled = is_autostart_enabled()
+        print("Autostart: enabled" if enabled else "Autostart: disabled")
+        return 0 if enabled else 1
+    ok, message = configure_autostart(ns.action == "enable")
+    print(f"Autostart: {message}")
+    return 0 if ok else 1
+
+
+def autostart_marker_path() -> Path:
+    return default_config_path().with_name("autostart.json")
+
+
+def macos_launch_agent_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / "cloud.haoleme.heartbeat.plist"
+
+
+def linux_systemd_unit_path() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / "haoleme-heartbeat.service"
+
+
+def is_autostart_enabled() -> bool:
+    if os.name == "nt":
+        return autostart_marker_path().exists()
+    if sys.platform == "darwin":
+        return macos_launch_agent_path().exists()
+    return linux_systemd_unit_path().exists()
+
+
+def configure_autostart(enabled: bool) -> tuple[bool, str]:
+    try:
+        if os.name == "nt":
+            return configure_windows_autostart(enabled)
+        if sys.platform == "darwin":
+            return configure_macos_autostart(enabled)
+        return configure_linux_autostart(enabled)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+
+
+def configure_windows_autostart(enabled: bool) -> tuple[bool, str]:
+    task_name = "Haoleme Heartbeat"
+    marker = autostart_marker_path()
+    if enabled:
+        python = Path(sys.executable)
+        pythonw = python.with_name("pythonw.exe")
+        executable = pythonw if pythonw.exists() else python
+        command = f'"{executable}" -m haoleme heartbeat start'
+        result = subprocess.run(
+            ["schtasks", "/Create", "/SC", "ONLOGON", "/TN", task_name, "/TR", command, "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=15,
+            **windows_no_window_kwargs(),
+        )
+        if result.returncode != 0:
+            return False, (result.stderr or "could not create Windows startup task").strip()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text('{"enabled":true}\n', encoding="utf-8")
+        return True, "enabled"
+    subprocess.run(
+        ["schtasks", "/Delete", "/TN", task_name, "/F"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=15,
+        **windows_no_window_kwargs(),
+    )
+    unlink_missing(marker)
+    return True, "disabled"
+
+
+def configure_macos_autostart(enabled: bool) -> tuple[bool, str]:
+    import plistlib
+
+    path = macos_launch_agent_path()
+    domain = f"gui/{os.getuid()}"
+    if not enabled:
+        subprocess.run(["launchctl", "bootout", domain, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        unlink_missing(path)
+        return True, "disabled"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "Label": "cloud.haoleme.heartbeat",
+        "ProgramArguments": [sys.executable, "-m", "haoleme", "heartbeat", "start"],
+        "RunAtLoad": True,
+        "StandardOutPath": str(heartbeat_log_path()),
+        "StandardErrorPath": str(heartbeat_log_path()),
+        "ProcessType": "Background",
+    }
+    with path.open("wb") as handle:
+        plistlib.dump(payload, handle)
+    subprocess.run(["launchctl", "bootout", domain, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    result = subprocess.run(["launchctl", "bootstrap", domain, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=False)
+    if result.returncode != 0:
+        return False, (result.stderr or "could not load LaunchAgent").strip()
+    return True, "enabled"
+
+
+def configure_linux_autostart(enabled: bool) -> tuple[bool, str]:
+    path = linux_systemd_unit_path()
+    if not enabled:
+        subprocess.run(["systemctl", "--user", "disable", "--now", "haoleme-heartbeat.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        unlink_missing(path)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        return True, "disabled"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "[Unit]\nDescription=Haoleme heartbeat startup\nAfter=network-online.target\n\n"
+        "[Service]\nType=oneshot\nExecStart=" + shlex.quote(sys.executable) + " -m haoleme heartbeat start\n"
+        "RemainAfterExit=yes\n\n[Install]\nWantedBy=default.target\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["systemctl", "--user", "enable", "--now", "haoleme-heartbeat.service"], check=True, stdout=subprocess.DEVNULL)
+    return True, "enabled"
+
+
 def heartbeat_pid_path() -> Path:
     return default_config_path().with_name("heartbeat.pid")
 
@@ -1082,6 +1210,14 @@ def is_process_running(pid: int) -> bool:
     return True
 
 
+def windows_no_window_kwargs() -> dict[str, int]:
+    """Hide short-lived helper processes without hiding monitored commands."""
+    if os.name != "nt":
+        return {}
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return {"creationflags": flags} if flags else {}
+
+
 def is_heartbeat_process_running(pid: int) -> bool:
     """Return true only when pid belongs to this user's heartbeat daemon."""
     if not is_process_running(pid):
@@ -1113,6 +1249,7 @@ def is_heartbeat_process_running(pid: int) -> bool:
                 text=True,
                 stderr=subprocess.DEVNULL,
                 timeout=3,
+                **windows_no_window_kwargs(),
             )
         except (OSError, subprocess.SubprocessError):
             return False
@@ -1129,6 +1266,7 @@ def is_windows_process_running(pid: int) -> bool:
             text=True,
             timeout=3,
             check=False,
+            **windows_no_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -1147,6 +1285,7 @@ def terminate_windows_process(pid: int) -> bool:
             stderr=subprocess.DEVNULL,
             timeout=5,
             check=False,
+            **windows_no_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -1216,6 +1355,7 @@ def start_heartbeat_daemon() -> tuple[bool, str]:
                 popen_kwargs["creationflags"] = (
                     getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                     | getattr(subprocess, "DETACHED_PROCESS", 0)
+                    | getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 )
             else:
                 popen_kwargs["start_new_session"] = True
@@ -1308,6 +1448,7 @@ def _collect_nvidia_gpu_stats() -> list:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            **windows_no_window_kwargs(),
         )
     except Exception:
         return []
@@ -1369,6 +1510,7 @@ def _collect_nvidia_compute_apps() -> dict[str, list[dict]]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            **windows_no_window_kwargs(),
         )
     except Exception:
         return {}
@@ -1387,6 +1529,7 @@ def _collect_nvidia_gpu_uuids() -> dict[int | None, str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            **windows_no_window_kwargs(),
         )
     except Exception:
         return {}
@@ -1421,6 +1564,7 @@ def _windows_json_command(script: str):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=8,
+            **windows_no_window_kwargs(),
         )
     except Exception:
         return None
@@ -1843,13 +1987,13 @@ def apply_remote_actions(
         if not isinstance(item, dict):
             continue
         action = str(item.get("action") or "").strip()
-        if action not in {"rerun", "terminal", "shutdown_after_run"}:
+        if action not in {"rerun", "terminal", "shutdown_after_run", "autostart"}:
             continue
         action_id = str(item.get("id") or "").strip()
         source_run_id = str(item.get("runId") or "").strip()
         target_run_id = str(item.get("targetRunId") or "").strip()
         cancelling = bool(item.get("cancel"))
-        if not action_id or (action != "terminal" and not source_run_id):
+        if not action_id or (action not in {"terminal", "autostart"} and not source_run_id):
             continue
 
         if action == "shutdown_after_run" and cancelling:
@@ -1883,7 +2027,16 @@ def apply_remote_actions(
             # the durable reservation may launch it.
             continue
         launcher_pid = None
-        if action == "shutdown_after_run":
+        if action == "autostart":
+            payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+            enabled = bool(payload.get("enabled", True))
+            ok, detail = configure_autostart(enabled)
+            status = "completed" if ok else "failed"
+            messages.append(
+                ("Autostart enabled." if enabled else "Autostart disabled.")
+                if ok else f"Autostart failed: {detail}"
+            )
+        elif action == "shutdown_after_run":
             run = store.get_run(source_run_id)
             if run is None:
                 status = "failed"
@@ -2054,7 +2207,11 @@ def heartbeat_run_foreground() -> int:
                     # backlog. Send it first, then spend a bounded amount of
                     # time on maintenance below.
                     gpus, cpu, metrics_error = collect_heartbeat_metrics()
-                    heartbeat_payload = client.heartbeat(gpus=gpus, cpu=cpu)
+                    heartbeat_payload = client.heartbeat(
+                        gpus=gpus,
+                        cpu=cpu,
+                        autostart_enabled=is_autostart_enabled(),
+                    )
                     for action_message in apply_remote_actions(store, client, heartbeat_payload.get("actions")):
                         print(action_message, flush=True)
                     for shutdown_message in apply_scheduled_shutdowns(store, client):

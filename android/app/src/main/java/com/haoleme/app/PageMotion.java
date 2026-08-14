@@ -6,8 +6,8 @@ import android.view.animation.DecelerateInterpolator;
 
 final class PageMotion {
     static final long TAB_MS = 220L;
-    static final long PUSH_MS = 260L;
-    static final long POP_MS = 200L;
+    static final long PUSH_MS = 210L;
+    static final long POP_MS = 180L;
     static final long DIALOG_IN_MS = 180L;
     static final long DIALOG_OUT_MS = 140L;
     static final float DIALOG_DIM = 0.45f;
@@ -63,17 +63,16 @@ final class PageMotion {
         if (view == null) return;
         cancel(view);
         view.setVisibility(View.VISIBLE);
-        view.setAlpha(1f);
+        view.setAlpha(0.94f);
         view.setTranslationY(0f);
-        float width = view.getWidth();
-        if (width <= 0f) {
-            width = view.getResources().getDisplayMetrics().widthPixels;
-        }
-        view.setTranslationX(width);
+        view.setTranslationX(dp(view, 28));
+        view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         view.animate()
+                .alpha(1f)
                 .translationX(0f)
                 .setDuration(PUSH_MS)
                 .setInterpolator(EASE)
+                .withEndAction(() -> view.setLayerType(View.LAYER_TYPE_NONE, null))
                 .start();
     }
 
@@ -83,17 +82,17 @@ final class PageMotion {
             return;
         }
         cancel(view);
-        float width = view.getWidth();
-        if (width <= 0f) {
-            width = view.getResources().getDisplayMetrics().widthPixels;
-        }
+        view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         ViewPropertyAnimator animator = view.animate()
-                .translationX(width)
+                .alpha(0.96f)
+                .translationX(dp(view, 24))
                 .setDuration(POP_MS)
                 .setInterpolator(EASE);
         animator.withEndAction(() -> {
             view.setVisibility(View.GONE);
             view.setTranslationX(0f);
+            view.setAlpha(1f);
+            view.setLayerType(View.LAYER_TYPE_NONE, null);
             if (after != null) after.run();
         });
         animator.start();

@@ -12,7 +12,7 @@ def releaseKeyPassword = System.getenv("HAOLEME_ANDROID_KEY_PASSWORD") ?: ""
 // reliable public fallback so the app can always discover new versions for self-update
 // even if the server manifest is temporarily stale or unreachable.
 def defaultServerUrl = (project.findProperty("HAOLEME_DEFAULT_SERVER_URL") ?: System.getenv("HAOLEME_DEFAULT_SERVER_URL") ?: "https://api.haoleme.cloud").toString()
-def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json https://api.haoleme.cloud/downloads/update.json").toString()
+def defaultUpdateUrls = (project.findProperty("HAOLEME_UPDATE_URLS") ?: System.getenv("HAOLEME_UPDATE_URLS") ?: "https://api.haoleme.cloud/downloads/update.json https://raw.githubusercontent.com/HaolemeApp/Haoleme/main/update.json").toString()
 
 // Official releases should set HAOLEME_ANDROID_KEYSTORE* environment variables.
 // Do not commit signing material to this repository.
@@ -60,8 +60,8 @@ android {
         applicationId "com.haoleme.app"
         minSdk 23
         targetSdk 35
-        versionCode 183
-        versionName "1.0.1"
+        versionCode 184
+        versionName "1.0.2"
         buildConfigField "String", "HAOLEME_DEFAULT_SERVER_URL", "\"${defaultServerUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\""
         buildConfigField "String", "HAOLEME_UPDATE_URLS", "\"${defaultUpdateUrls.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")}\""
 
@@ -96,5 +96,6 @@ dependencies {
     implementation "androidx.camera:camera-lifecycle:$camerax_version"
     implementation "androidx.camera:camera-view:$camerax_version"
     implementation "com.google.mlkit:barcode-scanning:17.3.0"
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
     testImplementation "junit:junit:4.13.2"
 }

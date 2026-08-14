@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://haolemeapp.github.io/">官网</a>
+  <a href="https://haoleme.cloud/">官网</a>
   ·
   <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk">下载 APK</a>
   ·
@@ -31,7 +31,7 @@
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/85658?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85658"><img src="https://trendshift.io/api/badge/trendshift/repositories/85658/daily?language=Java" alt="HaolemeApp/Haoleme 在 Trendshift 上的趋势" width="180" height="40"></a>
+  <a href="https://trendshift.io/repositories/85658?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85658"><img src="https://trendshift.io/api/badge/trendshift/repositories/85658/daily?language=Java" alt="HaolemeApp/Haoleme 在 Trendshift 上的趋势" width="220" height="48"></a>
 </p>
 
 > [!NOTE]
@@ -99,6 +99,8 @@ hao bash script.sh
 - **多台设备：**在电脑和服务器之间切换，重命名设备并查看在线状态。
 - **项目与指标：**按项目整理运行记录，查看 CPU、内存和 GPU 利用率。
 - **远程控制：**停止、重新运行、打开远程终端，或设置完成后关机。
+- **按设备设置开机监控：**可在 App 中单独开启或关闭，也可运行 `hao autostart enable|disable|status`。
+- **高效实时传输：**WebSocket 让主页和控制台摘要保持一致，并自动降级到 SSE 与 HTTP。
 - **隐私与可靠性：**支持二维码和 6 位配对码、断网补传、本地缓存，以及敏感运行内容的端到端加密。
 
 ## Agent 集成
@@ -123,7 +125,7 @@ flowchart LR
   RELAY["好了么 Cloud 或 Private Relay<br/>配对 + 同步 + 控制"]
   APP["Android App<br/>运行 + 控制台 + 通知"]
   HOST -->|"端到端加密更新 + 心跳"| RELAY
-  RELAY -->|"加密更新"| APP
+  RELAY -->|"WebSocket / SSE 加密更新"| APP
   APP -->|"控制请求"| RELAY
   RELAY -->|"停止 / 重跑 / 终端"| HOST
 ```
@@ -144,7 +146,7 @@ Docker、Caddy、局域网模式、备份与安全说明参阅[私有 Relay 部�
 
 ## 帮助与贡献
 
-- 查看[官网](https://haolemeapp.github.io/)和仓库文档。
+- 查看[官网](https://haoleme.cloud/)和仓库文档。
 - 在 [GitHub Issues](https://github.com/HaolemeApp/Haoleme/issues) 报告问题或提出功能建议。
 - 提交 Pull Request 前阅读[贡献指南](CONTRIBUTING_CN.md)。
 - 按照[安全策略](SECURITY_CN.md)私下报告安全漏洞。

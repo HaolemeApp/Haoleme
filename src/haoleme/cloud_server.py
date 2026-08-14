@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import shutil
 import hashlib
 import json
@@ -13,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -53,6 +55,7 @@ DEFAULT_MONITOR_MAX_BACKUP_AGE_HOURS = 30
 SPACE_JOIN_CODE_TTL_SECONDS = 300
 DEFAULT_MAX_REQUEST_THREADS = 32
 DEFAULT_MAX_ACTION_WAITERS = 256
+STREAM_EVENT_BACKLOG = 256
 DEFAULT_MAX_STREAM_LISTENERS = 256
 REMOTE_ACTION_LEASE_SECONDS = 120
 REMOTE_ACTIONS_PER_HEARTBEAT = 3
@@ -121,8 +124,7 @@ class HaolemeCloudServer(ThreadingHTTPServer):
         self.stream_slots = threading.BoundedSemaphore(max(8, min(configured_streams, 1024)))
         self.stream_condition = threading.Condition()
         self.stream_revisions: dict[str, int] = {}
-        self.stream_event_types: dict[str, str] = {}
-        self.stream_payloads: dict[str, dict[str, Any]] = {}
+        self.stream_events: dict[str, deque[tuple[int, str, dict[str, Any]]]] = {}
         init_db(db_path)
 
     def notify_action_waiters(self) -> None:
@@ -142,8 +144,8 @@ class HaolemeCloudServer(ThreadingHTTPServer):
         with self.stream_condition:
             revision = self.stream_revisions.get(account_key, 0) + 1
             self.stream_revisions[account_key] = revision
-            self.stream_event_types[account_key] = event_type or "refresh"
-            self.stream_payloads[account_key] = dict(payload or {})
+            events = self.stream_events.setdefault(account_key, deque(maxlen=STREAM_EVENT_BACKLOG))
+            events.append((revision, event_type or "refresh", dict(payload or {})))
             self.stream_condition.notify_all()
             return revision
 
@@ -153,12 +155,18 @@ class HaolemeCloudServer(ThreadingHTTPServer):
             if revision <= since:
                 self.stream_condition.wait(timeout=max(0.0, timeout))
                 revision = self.stream_revisions.get(account_key, 0)
-            event_type = self.stream_event_types.get(account_key, "refresh")
-            payload = dict(self.stream_payloads.get(account_key) or {})
-            if revision - since > 1:
-                event_type = "refresh"
-                payload = {}
-            return revision, event_type, payload
+            if revision <= since:
+                return revision, "refresh", {}
+            events = self.stream_events.get(account_key)
+            if not events:
+                return revision, "refresh", {}
+            oldest_revision = events[0][0]
+            if since < oldest_revision - 1:
+                return revision, "refresh", {}
+            for event_revision, event_type, payload in events:
+                if event_revision > since:
+                    return event_revision, event_type, dict(payload)
+            return revision, "refresh", {}
 
     def current_stream_revision(self, account_key: str) -> int:
         with self.stream_condition:
@@ -481,6 +489,13 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             device_id = unquote(remove_suffix(remove_prefix(parsed.path, "/api/devices/"), "/terminal")).strip("/")
             self.start_terminal_run(auth, device_id)
             return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/autostart"):
+            if auth.scope != "admin":
+                self.send_json({"error": "read token required", "code": "read_token_required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            device_id = unquote(remove_suffix(remove_prefix(parsed.path, "/api/devices/"), "/autostart")).strip("/")
+            self.set_device_autostart(auth, device_id)
+            return
         if parsed.path == "/api/devices/heartbeat":
             if not self.allow_write_attempt(auth):
                 self.send_json({"error": "too many write requests, slow down", "code": "write_rate_limited"}, status=HTTPStatus.TOO_MANY_REQUESTS)
@@ -533,7 +548,18 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                     stored["deviceId"] = auth.device_id
                     if not stored.get("deviceName"):
                         stored["deviceName"] = auth.device_name
-                self.server.notify_stream(auth.account_key, "run_patch", stream_run_payload(stored))
+                stream_chunk = stored.pop("_streamOutputChunk", None)
+                stream_append = str(stored.pop("_streamOutputAppend", "") or "")
+                event = stream_run_payload(stored)
+                if isinstance(stream_chunk, dict):
+                    event["chunk"] = stream_chunk
+                    event["outputChunkCount"] = stored.get("outputChunkCount", 0)
+                    self.server.notify_stream(auth.account_key, "tail_delta", event)
+                elif stream_append:
+                    event["outputAppend"] = stream_append
+                    self.server.notify_stream(auth.account_key, "tail_delta", event)
+                else:
+                    self.server.notify_stream(auth.account_key, "run_patch", event)
                 self.send_json({
                     "ok": True,
                     "outputLength": stored.get("outputLength", 0),
@@ -652,6 +678,20 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         self.server.notify_action_waiters()
         self.send_json({"ok": True, "action": result or {}})
 
+    def set_device_autostart(self, auth: AuthContext, device_id: str) -> None:
+        if not device_id:
+            self.send_json({"error": "missing device id", "code": "missing_device_id"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        enabled = bool(self.read_json().get("enabled", True))
+        result, error_code = request_device_autostart(
+            self.server.db_path, auth.account_key, device_id, enabled
+        )
+        if error_code == "device_not_found":
+            self.send_json({"error": "device not found", "code": "device_not_found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        self.server.notify_action_waiters()
+        self.send_json({"ok": True, "autostartEnabled": enabled, "action": result or {}})
+
     def wait_for_remote_actions(self, auth: AuthContext, wait_seconds: int) -> None:
         deadline = time.monotonic() + wait_seconds
         generation = self.server.action_generation
@@ -689,11 +729,14 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
         self.send_cors_headers()
         self.end_headers()
 
-        # Always reconcile once after connecting. Revisions live in memory and
-        # restart at zero after a Relay restart, so they are wake-up hints rather
-        # than durable cursors; the existing HTTP APIs remain the source of truth.
-        revision = self.server.current_stream_revision(auth.account_key)
-        self.write_stream_event("refresh", revision, None)
+        current_revision = self.server.current_stream_revision(auth.account_key)
+        if since <= 0 or since > current_revision:
+            # Revisions restart after a Relay restart. Reconcile when the client
+            # has no usable cursor, otherwise replay the bounded event backlog.
+            revision = current_revision
+            self.write_stream_event("refresh", revision, None)
+        else:
+            revision = since
         deadline = time.monotonic() + 55.0
         while time.monotonic() < deadline:
             self.server.suspend_current_request_slot()
@@ -753,6 +796,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "action not found", "code": "action_not_found"}, status=HTTPStatus.NOT_FOUND)
             return
         self.server.notify_stream(auth.account_key, "runs")
+        self.server.notify_stream(auth.account_key, "devices")
         self.send_json({"ok": True})
 
     def rename_device(self, auth: AuthContext, device_id: str) -> None:
@@ -785,6 +829,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
 
         gpus = sanitize_gpus(payload.get("gpus")) if "gpus" in payload else None
         cpu = sanitize_cpu(payload.get("cpu")) if "cpu" in payload else None
+        autostart_enabled = bool(payload.get("autostartEnabled")) if "autostartEnabled" in payload else None
         seen_at = iso_now()
         device = record_device_heartbeat(
             self.server.db_path,
@@ -794,6 +839,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
             seen_at,
             gpus=gpus,
             cpu=cpu,
+            autostart_enabled=autostart_enabled,
         )
         touch_token(self.server.db_path, auth.token_hash, seen_at)
         actions = claim_pending_run_actions(
@@ -815,6 +861,7 @@ class HaolemeCloudHandler(BaseHTTPRequestHandler):
                 hb["cpu"] = device.get("cpu")
             if device.get("gpus") is not None:
                 hb["gpus"] = device.get("gpus")
+            hb["autostartEnabled"] = bool(device.get("autostartEnabled"))
         self.server.notify_stream(auth.account_key, "hb", hb)
         self.send_json({
             "ok": True,
@@ -1666,6 +1713,7 @@ def init_db(db_path: Path) -> None:
         ensure_column(db, "devices", "gpus_updated_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "devices", "cpu", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "devices", "cpu_updated_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "devices", "autostart_enabled", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "app_tokens", "revoked_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "space_join_codes", "encryption_key", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "space_join_codes", "client_name", "TEXT NOT NULL DEFAULT ''")
@@ -2247,6 +2295,33 @@ def find_app_token(db_path: Path, token_hash_value: str) -> sqlite3.Row | None:
         ).fetchone()
 
 
+def auth_context_for_token(db_path: Path, token: str) -> AuthContext | None:
+    """Authenticate realtime transports without depending on an HTTP handler."""
+    clean_token = str(token or "").strip()
+    if len(clean_token) < 16:
+        return None
+    token_hash_value = token_hash(clean_token)
+    app_token = find_app_token(db_path, token_hash_value)
+    if app_token is not None and not app_token["revoked_at"]:
+        return AuthContext(
+            account_key=app_token["account_key"],
+            token_hash=token_hash_value,
+            scope="admin",
+            device_id=app_token["client_id"],
+            device_name=app_token["client_name"],
+        )
+    stored = find_device_token(db_path, token_hash_value)
+    if stored is not None and not stored["revoked_at"]:
+        return AuthContext(
+            account_key=stored["account_key"],
+            token_hash=token_hash_value,
+            scope=stored["scope"],
+            device_id=stored["device_id"],
+            device_name=stored["device_name"],
+        )
+    return None
+
+
 def account_has_cloud_data(db_path: Path, account_key: str) -> bool:
     if not account_key:
         return False
@@ -2633,6 +2708,8 @@ def append_run_update(
     run_id = str(patch.get("id") or "").strip()
     if not run_id:
         return None
+    stream_chunk: dict[str, Any] | None = None
+    stream_plain_append = ""
     with connect(db_path) as db:
         row = db.execute(
             "SELECT payload FROM runs WHERE account_key = ? AND id = ?",
@@ -2721,6 +2798,8 @@ def append_run_update(
                     ),
                 )
                 if cursor.rowcount > 0:
+                    stream_chunk = dict(chunk_copy)
+                    stream_chunk["seq"] = chunk_count
                     chunk_count += 1
                     trim_output_chunks(db, account_key, run_id)
             existing["outputChunkCount"] = chunk_count
@@ -2744,6 +2823,8 @@ def append_run_update(
                 merged = str(existing.get(target) or "") + delta
                 existing[target] = merged[-MAX_OUTPUT_TAIL:]
                 appended_plain_output = True
+                if target == "outputTail":
+                    stream_plain_append += delta
             if patch_output_length is not None:
                 existing["outputLength"] = max(
                     0,
@@ -2780,6 +2861,10 @@ def append_run_update(
                 json.dumps(stored, ensure_ascii=False),
             ),
         )
+    if stream_chunk is not None:
+        stored["_streamOutputChunk"] = stream_chunk
+    if stream_plain_append:
+        stored["_streamOutputAppend"] = stream_plain_append
     return stored
 
 
@@ -3172,6 +3257,46 @@ def request_terminal_run(
     }, None
 
 
+def request_device_autostart(
+    db_path: Path,
+    account_key: str,
+    device_id: str,
+    enabled: bool,
+) -> tuple[dict[str, Any] | None, str | None]:
+    action_id = str(uuid.uuid4())
+    requested_at = iso_now()
+    with connect(db_path) as db:
+        device = db.execute(
+            "SELECT 1 FROM devices WHERE account_key = ? AND id = ? AND revoked_at = ''",
+            (account_key, device_id),
+        ).fetchone()
+        if device is None:
+            return None, "device_not_found"
+        db.execute(
+            """
+            INSERT INTO run_actions (
+                account_key, id, run_id, target_run_id, device_id, action, status, payload,
+                requested_at, claimed_at, completed_at, detail, launcher_pid
+            ) VALUES (?, ?, '', '', ?, 'autostart', 'pending', ?, ?, '', '', '', NULL)
+            """,
+            (
+                account_key,
+                action_id,
+                device_id,
+                json.dumps({"enabled": bool(enabled)}, separators=(",", ":")),
+                requested_at,
+            ),
+        )
+    return {
+        "id": action_id,
+        "deviceId": device_id,
+        "action": "autostart",
+        "enabled": bool(enabled),
+        "status": "pending",
+        "requestedAt": requested_at,
+    }, None
+
+
 def claim_pending_run_actions(
     db_path: Path,
     account_key: str,
@@ -3256,6 +3381,10 @@ def complete_run_action(
 ) -> bool:
     clean_status = status if status in {"started", "scheduled", "completed", "cancelled", "failed"} else "failed"
     with connect(db_path) as db:
+        action_row = db.execute(
+            "SELECT action, payload FROM run_actions WHERE account_key = ? AND id = ? AND device_id = ?",
+            (account_key, action_id, device_id),
+        ).fetchone()
         cursor = db.execute(
             """
             UPDATE run_actions
@@ -3274,6 +3403,15 @@ def complete_run_action(
             ),
         )
         if cursor.rowcount > 0:
+            if action_row is not None and action_row["action"] == "autostart" and clean_status == "completed":
+                try:
+                    action_payload = json.loads(action_row["payload"] or "{}")
+                except json.JSONDecodeError:
+                    action_payload = {}
+                db.execute(
+                    "UPDATE devices SET autostart_enabled = ? WHERE account_key = ? AND id = ?",
+                    (1 if bool(action_payload.get("enabled")) else 0, account_key, device_id),
+                )
             return True
         row = db.execute(
             """
@@ -3379,6 +3517,7 @@ def record_device_heartbeat(
     seen_at: str,
     gpus: list[dict[str, Any]] | None = None,
     cpu: dict[str, Any] | None = None,
+    autostart_enabled: bool | None = None,
 ) -> dict[str, Any] | None:
     upsert_device(db_path, account_key, device_id, name, seen_at)
     if gpus is not None:
@@ -3392,6 +3531,12 @@ def record_device_heartbeat(
             db.execute(
                 "UPDATE devices SET cpu = ?, cpu_updated_at = ? WHERE account_key = ? AND id = ?",
                 (json.dumps(cpu, ensure_ascii=False), seen_at, account_key, device_id),
+            )
+    if autostart_enabled is not None:
+        with connect(db_path) as db:
+            db.execute(
+                "UPDATE devices SET autostart_enabled = ? WHERE account_key = ? AND id = ?",
+                (1 if autostart_enabled else 0, account_key, device_id),
             )
     return get_device(db_path, account_key, device_id)
 
@@ -3511,7 +3656,7 @@ def get_device(db_path: Path, account_key: str, device_id: str, include_revoked:
     with connect(db_path) as db:
         row = db.execute(
             f"""
-            SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at, cpu, cpu_updated_at
+            SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at, cpu, cpu_updated_at, autostart_enabled
             FROM devices
             WHERE account_key = ? AND id = ? {revoked_filter}
             """,
@@ -3528,7 +3673,7 @@ def get_device_by_machine_id(db_path: Path, account_key: str, machine_id: str, i
     with connect(db_path) as db:
         row = db.execute(
             f"""
-            SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at, cpu, cpu_updated_at
+            SELECT id, name, created_at, last_seen_at, revoked_at, gpus, gpus_updated_at, cpu, cpu_updated_at, autostart_enabled
             FROM devices
             WHERE account_key = ? AND machine_id = ? {revoked_filter}
             ORDER BY last_seen_at DESC
@@ -3552,6 +3697,7 @@ def list_devices(db_path: Path, account_key: str) -> list[dict[str, Any]]:
                    d.gpus_updated_at,
                    d.cpu,
                    d.cpu_updated_at,
+                   d.autostart_enabled,
                    MAX(t.last_used_at) AS token_last_used_at
             FROM devices d
             LEFT JOIN device_tokens t
@@ -3559,7 +3705,7 @@ def list_devices(db_path: Path, account_key: str) -> list[dict[str, Any]]:
                AND t.device_id = d.id
                AND t.revoked_at = ''
             WHERE d.account_key = ? AND d.revoked_at = ''
-            GROUP BY d.id, d.name, d.created_at, d.last_seen_at, d.revoked_at, d.gpus, d.gpus_updated_at, d.cpu, d.cpu_updated_at
+            GROUP BY d.id, d.name, d.created_at, d.last_seen_at, d.revoked_at, d.gpus, d.gpus_updated_at, d.cpu, d.cpu_updated_at, d.autostart_enabled
             ORDER BY last_seen_at DESC
             """,
             (account_key,),
@@ -3599,6 +3745,7 @@ def format_device(row: sqlite3.Row) -> dict[str, Any]:
         "gpusUpdatedAt": safe_row_get(row, "gpus_updated_at") or "",
         "cpu": cpu,
         "cpuUpdatedAt": safe_row_get(row, "cpu_updated_at") or "",
+        "autostartEnabled": bool(safe_row_get(row, "autostart_enabled") or 0),
     }
 
 
@@ -3981,9 +4128,74 @@ def is_recent_timestamp_at(value: str, window_seconds: int, now: str) -> bool:
     return (now_timestamp - timestamp) <= window_seconds
 
 
-def serve(host: str, port: int, db_path: Path, min_android_version_code: int) -> None:
+def websocket_server_thread(server: HaolemeCloudServer, host: str, port: int) -> threading.Thread:
+    def run() -> None:
+        try:
+            from websockets.legacy.server import serve as websocket_serve
+        except ImportError:
+            cloud_log({"ts": iso_now(), "event": "websocket_disabled", "error": "websockets dependency missing"})
+            return
+
+        async def handle(websocket, path: str) -> None:
+            parsed = urlparse(path or "/")
+            if parsed.path != "/ws/app":
+                await websocket.close(code=1008, reason="unknown endpoint")
+                return
+            auth_header = str(websocket.request_headers.get("Authorization") or "")
+            query = parse_qs(parsed.query)
+            token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else first_query_value(query, "token")
+            auth = auth_context_for_token(server.db_path, token)
+            if auth is None or auth.scope != "admin":
+                await websocket.close(code=1008, reason="authentication required")
+                return
+            try:
+                since = max(0, int(first_query_value(query, "since") or "0"))
+            except ValueError:
+                since = 0
+            current = server.current_stream_revision(auth.account_key)
+            if since <= 0 or since > current:
+                since = current
+                await websocket.send(json.dumps({"type": "refresh", "revision": current}, ensure_ascii=False))
+            while True:
+                revision, event_type, payload = await asyncio.to_thread(
+                    server.wait_for_stream_event, auth.account_key, since, 20.0
+                )
+                if revision <= since:
+                    await websocket.ping()
+                    continue
+                since = revision
+                event = {"type": event_type, "revision": revision}
+                event.update(payload or {})
+                await websocket.send(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+
+        async def serve_forever() -> None:
+            async with websocket_serve(
+                handle,
+                host,
+                port,
+                ping_interval=25,
+                ping_timeout=20,
+                max_size=2 * 1024 * 1024,
+                compression="deflate",
+            ):
+                cloud_log({"ts": iso_now(), "event": "websocket_startup", "listen": f"ws://{host}:{port}"})
+                await asyncio.Future()
+
+        try:
+            asyncio.run(serve_forever())
+        except Exception as exc:
+            cloud_log({"ts": iso_now(), "event": "websocket_failed", "error": str(exc)[:300]})
+
+    thread = threading.Thread(target=run, name="haoleme-websocket", daemon=True)
+    thread.start()
+    return thread
+
+
+def serve(host: str, port: int, db_path: Path, min_android_version_code: int, ws_port: int = 8001) -> None:
     server = HaolemeCloudServer((host, port), db_path, min_android_version_code)
     cloud_log({"ts": iso_now(), "event": "startup", "listen": f"http://{host}:{port}", "db": str(db_path), "version": __version__})
+    if ws_port > 0:
+        websocket_server_thread(server, host, ws_port)
     server.serve_forever()
 
 
@@ -4005,6 +4217,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="haoleme-cloud")
     parser.add_argument("--host", default=os.environ.get("HAOLEME_CLOUD_HOST") or os.environ.get("REMINDER_CLOUD_HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("HAOLEME_CLOUD_PORT") or os.environ.get("REMINDER_CLOUD_PORT", "8000")))
+    parser.add_argument("--ws-port", type=int, default=int(os.environ.get("HAOLEME_CLOUD_WS_PORT", "8001")))
     parser.add_argument("--db", default=os.environ.get("HAOLEME_CLOUD_DB") or os.environ.get("REMINDER_CLOUD_DB", "/data/haoleme-cloud.db"))
     parser.add_argument(
         "--min-android-version-code",
@@ -4012,7 +4225,7 @@ def main(argv: list[str] | None = None) -> int:
         default=int(os.environ.get("MIN_ANDROID_VERSION_CODE", str(DEFAULT_MIN_ANDROID_VERSION_CODE))),
     )
     ns = parser.parse_args(args)
-    serve(ns.host, ns.port, Path(ns.db), ns.min_android_version_code)
+    serve(ns.host, ns.port, Path(ns.db), ns.min_android_version_code, ns.ws_port)
     return 0
 
 

@@ -68,6 +68,7 @@ from haoleme.cli import (
     uses_private_relay,
     write_update_check_cache,
     write_heartbeat_state,
+    windows_no_window_kwargs,
     _parse_windows_gpu_payload,
     _windows_memory_stats,
 )
@@ -153,6 +154,25 @@ class CliPairingTest(unittest.TestCase):
             self.assertEqual(second, [])
             self.assertEqual(client.completed[-1][1], "started")
             self.assertEqual(client.completed[-1][3], 4321)
+
+    def test_remote_autostart_action_does_not_require_a_run(self):
+        class ActionClient:
+            def __init__(self):
+                self.completed = []
+
+            def complete_remote_action(self, action_id, status, detail="", launcher_pid=None):
+                self.completed.append((action_id, status, detail, launcher_pid))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / "runs.db")
+            client = ActionClient()
+            action = {"id": "action-autostart", "runId": "", "action": "autostart", "payload": {"enabled": True}}
+            with patch("haoleme.cli.configure_autostart", return_value=(True, "enabled")) as configure:
+                messages = apply_remote_actions(store, client, [action])
+
+            configure.assert_called_once_with(True)
+            self.assertEqual(client.completed[-1][1], "completed")
+            self.assertIn("enabled", messages[0].lower())
 
     def test_active_control_poll_applies_stop_and_rerun_together(self):
         class ControlClient:
@@ -784,6 +804,12 @@ class CliPairingTest(unittest.TestCase):
         )
         with patch("haoleme.cli.os.name", "nt"), patch("haoleme.cli.subprocess.run", return_value=result):
             self.assertTrue(is_process_running(4321))
+
+    def test_windows_helpers_use_no_window_creation_flag(self):
+        with patch("haoleme.cli.os.name", "nt"), patch.object(
+            subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True
+        ):
+            self.assertEqual(windows_no_window_kwargs(), {"creationflags": 0x08000000})
 
     def test_windows_process_running_returns_false_when_missing(self):
         result = subprocess.CompletedProcess(args=[], returncode=0, stdout="INFO: No tasks are running which match the specified criteria.\n")

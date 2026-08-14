@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "haoleme"
-version = "0.5.5"
+version = "0.5.6"
 description = "Run commands with Haoleme monitoring and expose their status to the mobile app."
 readme = "README.md"
 requires-python = ">=3.7"
 authors = [{ name = "Haoleme" }]
 license = "AGPL-3.0-or-later"
-dependencies = ["cryptography>=42", "qrcode>=7.4"]
+dependencies = ["cryptography>=42", "qrcode>=7.4", "websockets>=10.4"]
 license-files = ["LICENSE"]
 
 [project.scripts]

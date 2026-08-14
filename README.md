@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://haolemeapp.github.io/">Website</a>
+  <a href="https://haoleme.cloud/">Website</a>
   ·
   <a href="https://github.com/HaolemeApp/Haoleme/releases/download/v1.0.1/Haoleme-1.0.1.apk">Download APK</a>
   ·
@@ -31,7 +31,7 @@
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/85658?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85658"><img src="https://trendshift.io/api/badge/trendshift/repositories/85658/daily?language=Java" alt="HaolemeApp/Haoleme on Trendshift" width="180" height="40"></a>
+  <a href="https://trendshift.io/repositories/85658?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85658"><img src="https://trendshift.io/api/badge/trendshift/repositories/85658/daily?language=Java" alt="HaolemeApp/Haoleme on Trendshift" width="220" height="48"></a>
 </p>
 
 > [!NOTE]
@@ -99,6 +99,8 @@ The run, live console output, and final status will appear in the app automatica
 - **Multiple machines:** switch between computers and servers, rename devices, and see online status.
 - **Projects and metrics:** group related runs and inspect CPU, memory, and GPU utilization.
 - **Remote controls:** stop, rerun, open a remote terminal, or request shutdown after completion.
+- **Per-device startup monitoring:** enable or disable background startup from the app, or use `hao autostart enable|disable|status`.
+- **Efficient realtime delivery:** WebSocket updates keep runs and console previews in sync, with automatic SSE and HTTP fallback.
 - **Private by design:** QR or 6-digit pairing, offline retry, local caches, and E2EE for sensitive run content.
 
 ## Agent Integrations
@@ -123,7 +125,7 @@ flowchart LR
   RELAY["Haoleme Cloud or Private Relay<br/>pairing + sync + control"]
   APP["Android app<br/>runs + console + notifications"]
   HOST -->|"E2EE run updates + heartbeat"| RELAY
-  RELAY -->|"encrypted updates"| APP
+  RELAY -->|"WebSocket / SSE encrypted updates"| APP
   APP -->|"control requests"| RELAY
   RELAY -->|"stop / rerun / terminal"| HOST
 ```
@@ -144,7 +146,7 @@ See the [Private Relay deployment guide](deploy/RELAY.md) for Docker, Caddy, LAN
 
 ## Help and Contributing
 
-- Read the [website](https://haolemeapp.github.io/) and repository documentation.
+- Read the [website](https://haoleme.cloud/) and repository documentation.
 - Report bugs or request features in [GitHub Issues](https://github.com/HaolemeApp/Haoleme/issues).
 - Read the [contribution guide](CONTRIBUTING.md) before opening a pull request.
 - Report vulnerabilities privately according to the [security policy](SECURITY.md).

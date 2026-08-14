@@ -55,6 +55,7 @@ from haoleme.cloud_server import (
     request_run_interrupt,
     request_run_rerun,
     request_shutdown_after_run,
+    request_device_autostart,
     request_terminal_run,
     revoke_device,
     store_device_token,
@@ -91,7 +92,8 @@ class CloudServerDeviceTest(unittest.TestCase):
                 self.assertEqual(server.wait_for_stream_event("account-a", 1, 0)[2]["runId"], "r1")
                 self.assertEqual(server.notify_stream("account-a", "runs"), 3)
                 self.assertEqual(server.notify_stream("account-a", "devices"), 4)
-                self.assertEqual(server.wait_for_stream_event("account-a", 2, 0)[:2], (4, "refresh"))
+                self.assertEqual(server.wait_for_stream_event("account-a", 2, 0)[:2], (3, "runs"))
+                self.assertEqual(server.wait_for_stream_event("account-a", 3, 0)[:2], (4, "devices"))
                 self.assertEqual(server.current_stream_revision("account-b"), 0)
                 self.assertEqual(server.notify_stream("account-a", "hb", {"deviceId": "dev-1"}), 5)
                 self.assertEqual(server.wait_for_stream_event("account-a", 4, 0), (5, "hb", {"deviceId": "dev-1"}))
@@ -301,6 +303,21 @@ class CloudServerDeviceTest(unittest.TestCase):
                     (account_key, action["id"]),
                 ).fetchone()["payload"]
             self.assertNotIn("command", stored)
+
+    def test_device_autostart_action_is_claimed_without_a_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cloud.db"
+            init_db(db_path)
+            upsert_device(db_path, "account-key", "dev_123", "Server A", iso_now())
+
+            action, error = request_device_autostart(
+                db_path, "account-key", "dev_123", True
+            )
+            self.assertIsNone(error)
+            self.assertEqual(action["action"], "autostart")
+            claimed = claim_pending_run_actions(db_path, "account-key", "dev_123")
+            self.assertEqual(claimed[0]["runId"], "")
+            self.assertTrue(claimed[0]["payload"]["enabled"])
 
     def test_old_backlog_sync_cannot_move_device_last_seen_backwards(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1245,7 +1262,7 @@ class CloudServerDeviceTest(unittest.TestCase):
             auth = AuthContext(account_key=account_key, token_hash="h", scope="write",
                                device_id=device_id, device_name="Server A")
 
-            append_run_update(db_path, account_key, {
+            first = append_run_update(db_path, account_key, {
                 "id": "run-1",
                 "status": "running",
                 "e2eeOutputChunk": {"v": 1, "alg": "AES-256-GCM", "nonce": "n1", "ciphertext": "abc"},
@@ -1263,6 +1280,9 @@ class CloudServerDeviceTest(unittest.TestCase):
                 "outputLength": 10,
             }, auth)
 
+            self.assertEqual(first["_streamOutputChunk"]["seq"], 0)
+            self.assertEqual(first["_streamOutputChunk"]["ciphertext"], "abc")
+            self.assertNotIn("_streamOutputChunk", stored)
             self.assertNotIn("outputChunks", stored)
             detail = get_run(db_path, account_key, "run-1")
             self.assertEqual(len(detail.get("outputChunks") or []), 1)
